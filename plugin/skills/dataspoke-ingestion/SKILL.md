@@ -2,7 +2,7 @@
 name: dataspoke-ingestion
 description: Manage DataSpoke ingestion sources (UC1) on a deployed instance — list and inspect sources, create or edit ACTIVE_CUSTOM_MANAGED and PASSIVE sources, trigger dry-run and real extractor runs, and review run history, emitted datasets, and the unmanaged bucket. Use for any "register/check ingestion" or "is this dataset ingested" question. Answers questions and, on request, writes and fires the API calls.
 argument-hint: "[question or action]"
-allowed-tools: Read, Bash(dataspoke-api *), Bash(dataspoke-schema *), AskUserQuestion
+allowed-tools: Read, Write, Bash(dataspoke-api *), Bash(dataspoke-schema *), AskUserQuestion
 ---
 
 ## Purpose
@@ -40,16 +40,20 @@ structure and the schedule tiers. Narrow the fragment to keep the output small
 |--------|------|
 | List sources (optionally `?mode=…`) | `dataspoke-api GET /spoke/ingestion/sources` |
 | Inspect one source | `dataspoke-api GET /spoke/ingestion/sources/{id}` |
-| Create a source | `dataspoke-api POST /spoke/ingestion/sources '<json>'` |
-| Replace / update | `dataspoke-api PUT|PATCH /spoke/ingestion/sources/{id} '<json>'` |
-| Delete a source | `dataspoke-api DELETE /spoke/ingestion/sources/{id}` |
-| Dry-run (connection check, no writes) | `dataspoke-api POST '/spoke/ingestion/sources/{id}/method/run?dry_run=true' '{}'` |
-| Real run | `dataspoke-api POST /spoke/ingestion/sources/{id}/method/run '{}'` |
+| Create a source | `dataspoke-api --confirm POST /spoke/ingestion/sources @PATH` |
+| Replace / update | `dataspoke-api --confirm PUT|PATCH /spoke/ingestion/sources/{id} @PATH` |
+| Delete a source | `dataspoke-api --confirm DELETE /spoke/ingestion/sources/{id}` |
+| Dry-run (connection check, no writes) | `dataspoke-api --confirm POST '/spoke/ingestion/sources/{id}/method/run?dry_run=true' '{}'` |
+| Real run | `dataspoke-api --confirm POST /spoke/ingestion/sources/{id}/method/run '{}'` |
 | Run / event history | `dataspoke-api GET /spoke/ingestion/sources/{id}/event` |
 | Datasets covered by a source | `dataspoke-api GET /spoke/ingestion/sources/{id}/datasets` |
 | Datasets covered by no source | `dataspoke-api GET /spoke/ingestion/unmanaged` |
 | Available credential refs (Editor+) | `dataspoke-api GET /spoke/ingestion/secrets` |
 | Reverse lookup for a dataset | `dataspoke-api GET /spoke/common/data/{urn}/attr/ingestion` |
+
+`@PATH` writes the verified JSON to a scratch file with the `Write` tool and passes it by
+reference — the recipe body is the most detailed shape in the plugin (nested, multi-field), and
+`@PATH` avoids shell-quoting mistakes a literal argument would invite.
 
 Every list route is paginated — **`limit` defaults to 20** (cap 1000), with `offset` and `sort`.
 Never conclude "there are only N sources" from an unpaged first page; check `total_count`. The

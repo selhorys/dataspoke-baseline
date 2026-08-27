@@ -1,7 +1,7 @@
 ---
 name: dataspoke-ontogen
 description: "Operate DataSpoke Ontology Generation (UC3) on a deployed instance: configure the singleton, curate Markdown seeds, dry-run and run inference, inspect events and ontology results, and review nodes, edges, then eligible triples. Use for ontology inference, business concepts, relationships, ontology seeds, or ontology review."
-allowed-tools: Read, Bash(dataspoke-api *), Bash(dataspoke-schema *), AskUserQuestion
+allowed-tools: Read, Write, Bash(dataspoke-api *), Bash(dataspoke-schema *), AskUserQuestion
 ---
 
 ## Purpose and boundary
@@ -65,19 +65,22 @@ Seeds are human-authored Markdown domain hints, prompts, or naming conventions. 
 seed is **disabled**: it remains visible but does not influence inference until an explicitly
 confirmed enable. Read the whole seed before replacing or deleting it; a delete is hard deletion.
 
-Seed bodies and optional one-shot run prompts require `Content-Type: text/markdown`. After the
-live-schema check and immediate confirmation, preserve each Markdown body as one shell argument
-through the wrapper's explicit public-API form — never serialize Markdown as JSON:
+Seed bodies and optional one-shot run prompts require `Content-Type: text/markdown`. Write the
+Markdown to a scratch file with the `Write` tool and send it via `dataspoke-api`'s `@PATH` body
+form — never serialize Markdown as JSON, and never pass a multi-line body as a literal shell
+argument (a real seed routinely spans multiple lines and can contain characters that break naive
+shell quoting; `@PATH` sidesteps the whole class of mistakes). After the live-schema check and
+immediate confirmation:
 
 ```bash
-dataspoke-api POST /spoke/ontogen/attr/seed --content-type text/markdown '# Domain guidance'
-dataspoke-api PATCH /spoke/ontogen/attr/seed/{seed_id} --content-type text/markdown '# Revised guidance'
-dataspoke-api POST '/spoke/ontogen/method/run?dry_run=true' --content-type text/markdown '# One-shot question'
+dataspoke-api --confirm POST /spoke/ontogen/attr/seed --content-type text/markdown @/tmp/seed.md
+dataspoke-api --confirm PATCH /spoke/ontogen/attr/seed/{seed_id} --content-type text/markdown @/tmp/seed.md
+dataspoke-api --confirm POST '/spoke/ontogen/method/run?dry_run=true' --content-type text/markdown @/tmp/prompt.md
 ```
 
-Use the same `--content-type text/markdown` form for the separately confirmed non-dry prompted
-run. A bodyless run is simply `dataspoke-api POST /spoke/ontogen/method/run`; do not pass `{}` or
-claim a one-shot prompt was persisted.
+Use the same `--content-type text/markdown` `@PATH` form for the separately confirmed non-dry
+prompted run. A bodyless run is simply `dataspoke-api --confirm POST /spoke/ontogen/method/run`;
+do not pass `{}` or claim a one-shot prompt was persisted.
 
 A run without a body uses `default_run_prompt`; a one-shot Markdown prompt augments persistent
 enabled seeds for that run only and is not saved. A dry run evaluates but persists nothing. A

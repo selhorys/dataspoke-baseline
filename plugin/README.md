@@ -57,8 +57,13 @@ messages — so credential handling lives in one place.
 ```text
 dataspoke-api GET  /auth/me
 dataspoke-api GET  /spoke/validation
-dataspoke-api PUT  '/spoke/common/data/<urn>/attr/validation/conf' '{"description":"…","variables":[]}'
+dataspoke-api --confirm PUT '/spoke/common/data/<urn>/attr/validation/conf' @/tmp/conf.json
 ```
+
+Any method other than `GET` requires `--confirm` as the first argument, or the call is
+refused and the method/URL/body are printed for review instead — a mechanical gate, not a
+convention. A body may be a literal JSON string or `@PATH` to read it from a file (required for
+anything multi-line, e.g. a Markdown seed body).
 
 ## Reading the API contract
 
@@ -79,12 +84,16 @@ dataspoke-schema ingestion/sources           # those operations + their resolved
 
 DataSpoke validation is an **API for registration, get, and put of values** — it ships no
 computing engine. There is no metric computation, no forecasting, no anomaly detection, and no
-threshold or rule evaluation inside DataSpoke. A conf declares only `{description, variables[]}`;
-your pipeline computes every number, including the pass/fail `score`, and POSTs
-`{data_time, score, variables}`. DataSpoke stores the history and emits the result to DataHub as
-an assertion.
+threshold or rule evaluation inside DataSpoke. A conf carries four sections: `description` and
+`variables` declare what the pipeline will report; `attribute` states the dataset's data-arrival
+cadence, read back by the governance `validation-score` metric; `parameter` is optional opaque
+storage for the pipeline's own hyperparameters. Your pipeline computes every number, including
+the pass/fail `score`, and POSTs `{data_time, score, variables}`. DataSpoke stores the history
+and emits the result to DataHub as an assertion.
 
 That division of labor is the point: `dataspoke-validation` writes the computing code — metrics,
-baseline comparison, anomaly logic, thresholds — into *your* pipeline, where it runs on your
-engine with your credentials, and touches DataSpoke only to **register** the slot once, **get**
-the recent baseline, and **put** each run's result.
+baseline comparison, anomaly logic, thresholds — into *your* pipeline (or, for a reusable check,
+your own shared package), where it runs on your engine with your credentials. It touches
+DataSpoke only to **register** and, once it knows which utility implements the check,
+**annotate** the conf's `description` at setup, **get** the recent baseline, and **post** each
+run's result.

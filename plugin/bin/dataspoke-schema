@@ -12,38 +12,66 @@
 # document in a browser. Hand that URL to a person; use this helper to read
 # the contract yourself.
 #
+# The fetched document is cached for 24h — keyed on origin AND token, so a
+# document fetched under one identity is never served back to a request
+# under another — in a user cache directory, so "read the contract before
+# every write" is cheap enough that skills will actually do it. Pass
+# --refresh to bypass the cache and re-fetch.
+#
 # Usage:
-#   dataspoke-schema <PATH_FRAGMENT> [--list]
+#   dataspoke-schema <PATH_FRAGMENT> [--list] [--refresh]
 #
 #   PATH_FRAGMENT  case-insensitive substring of the route path,
 #                  e.g. 'ingestion/sources' or 'validation/result'
 #   --list         one line per matching operation (method, path, summary)
 #                  instead of the full schema dump — cheap discovery first
+#   --refresh      bypass the 24h cache and re-fetch /openapi.json
 #
 # Config resolution (first match wins):
-#   1. env: DATASPOKE_API_URL
-#   2. file: ~/.dataspoke/config.json  -> {api_base_url}
+#   1. env: DATASPOKE_API_URL + DATASPOKE_API_TOKEN
+#   2. file: ~/.dataspoke/config.json  -> {api_base_url, token}
+#
+# The token is optional — /openapi.json is public — and is sent only so a
+# deployment that chooses to gate its schema still resolves; it also keys
+# the cache (above).
 #
 # Examples:
 #   dataspoke-schema ingestion/sources --list
 #   dataspoke-schema ingestion/sources
 #   dataspoke-schema attr/validation/result
+#   dataspoke-schema attr/validation/result --refresh
 set -uo pipefail
 
 CONFIG="${HOME}/.dataspoke/config.json"
+CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/dataspoke-schema"
+CACHE_TTL_MINUTES=1440   # 24h
 err() { printf '%s\n' "$*" >&2; }
 
 if [[ $# -lt 1 ]]; then
-  err "usage: dataspoke-schema <PATH_FRAGMENT> [--list]"
+  err "usage: dataspoke-schema <PATH_FRAGMENT> [--list] [--refresh]"
   exit 2
 fi
 
 QUERY="$1"
+shift
 MODE="detail"
-[[ "${2:-}" == "--list" ]] && MODE="list"
+REFRESH=false
+for _a in "$@"; do
+  case "$_a" in
+    --list) MODE="list" ;;
+    --refresh) REFRESH=true ;;
+    *) err "Unknown argument: $_a"; err "usage: dataspoke-schema <PATH_FRAGMENT> [--list] [--refresh]"; exit 2 ;;
+  esac
+done
 
 if [[ -z "$QUERY" ]]; then
   err "PATH_FRAGMENT must not be empty — it would match every route."
+  exit 2
+fi
+
+if [[ "$QUERY" == -* ]]; then
+  err "PATH_FRAGMENT must come before any flag — got: $QUERY"
+  err "usage: dataspoke-schema <PATH_FRAGMENT> [--list] [--refresh]"
   exit 2
 fi
 
@@ -62,38 +90,129 @@ if [[ -z "$BASE" ]]; then
   exit 3
 fi
 
+# The token is about to be (a) hashed via a channel that must not put it in
+# any process's argv, and (b) interpolated into a curl config-file directive
+# — unlike a plain -H value, an embedded newline or quote there could inject
+# a second directive. Constrain it to the token's own charset before either.
+if [[ -n "$TOKEN" && ! "$TOKEN" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+  err "Malformed API token (unexpected characters) — re-run /dataspoke:dataspoke-access."
+  exit 3
+fi
+
 # ORIGIN = base with any trailing /api/v1 and trailing slash stripped.
 ORIGIN="${BASE%/}"
 ORIGIN="${ORIGIN%/api/v1}"
 
-args=(-sS --max-time 20 -w $'\n%{http_code}')
-# /openapi.json is public; the header is sent only so a deployment that chooses
-# to gate its schema still resolves.
-[[ -n "$TOKEN" ]] && args+=(-H "Authorization: Bearer ${TOKEN}")
+if [[ ! "$ORIGIN" =~ ^https?://[^[:space:]]+$ ]]; then
+  err "Invalid DataSpoke API base URL: $ORIGIN"
+  exit 3
+fi
 
-RESP="$(curl "${args[@]}" "${ORIGIN}/openapi.json")" || {
-  err "curl failed for ${ORIGIN}/openapi.json"
-  exit 4
-}
+# Cache key hashes the origin AND the token, not the origin alone: on a
+# deployment that gates /openapi.json, a document fetched with one identity
+# must never be served back to a request running under a different identity
+# (a lower-privileged token, or a different account entirely via env-var
+# override) — a cache key has to cover every input that affects the
+# authorization of the response it stores. The token is passed via the
+# environment, not argv — an argv value is readable from the process table
+# for the life of the interpreter, which is exactly the exposure this
+# script's own curl calls (below) are careful to avoid.
+CACHE_KEY="$(DS_CACHE_ORIGIN="$ORIGIN" DS_CACHE_TOKEN="$TOKEN" python3 -c "
+import hashlib, os
+key = os.environ['DS_CACHE_ORIGIN'] + chr(10) + os.environ['DS_CACHE_TOKEN']
+print(hashlib.sha256(key.encode()).hexdigest())
+")"
+# Fails CLOSED: a key that isn't a plain 64-hex-digit sha256 (e.g. python3
+# missing or erroring, silently under `set -uo pipefail` with no `-e`) must
+# never degrade to a shared/empty cache filename every origin+token would
+# collide on — skip caching entirely instead.
+if [[ ! "$CACHE_KEY" =~ ^[0-9a-f]{64}$ ]]; then
+  CACHE_KEY=""
+fi
+CACHE_FILE="${CACHE_DIR}/${CACHE_KEY}.json"
 
-CODE="${RESP##*$'\n'}"
-PAYLOAD="${RESP%$'\n'*}"
+PAYLOAD=""
+if [[ -n "$CACHE_KEY" ]] && [[ "$REFRESH" != true ]] && [[ -f "$CACHE_FILE" && ! -L "$CACHE_FILE" ]] \
+   && find "$CACHE_FILE" -mmin "-${CACHE_TTL_MINUTES}" -print -quit 2>/dev/null | grep -q .; then
+  PAYLOAD="$(cat "$CACHE_FILE")"
+else
+  args=(-sS --max-time 20 -w $'\n%{http_code}')
 
-if [[ "$CODE" != 2* ]]; then
-  err "→ HTTP ${CODE} fetching ${ORIGIN}/openapi.json"
-  [[ -n "$PAYLOAD" ]] && printf '%s\n' "$PAYLOAD" >&2
-  exit 1
+  # /openapi.json is public; the token is sent only so a deployment that
+  # chooses to gate its schema still resolves. It never reaches curl's argv
+  # (and so never the process table): fed via config-on-stdin (-K -), piped
+  # rather than a `<<<` here-string (bash before 5.1 backs a here-string
+  # with an unlinked temp file; a pipe never touches disk) — same reasoning
+  # as dataspoke-api. TOKEN was already validated against a safe charset
+  # above, so it cannot inject a second config-file directive.
+  if [[ -n "$TOKEN" ]]; then
+    RESP="$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -K - "${args[@]}" "${ORIGIN}/openapi.json")" || {
+      err "curl failed for ${ORIGIN}/openapi.json"
+      exit 4
+    }
+  else
+    RESP="$(curl "${args[@]}" "${ORIGIN}/openapi.json")" || {
+      err "curl failed for ${ORIGIN}/openapi.json"
+      exit 4
+    }
+  fi
+
+  CODE="${RESP##*$'\n'}"
+  PAYLOAD="${RESP%$'\n'*}"
+
+  if [[ "$CODE" != 2* ]]; then
+    err "→ HTTP ${CODE} fetching ${ORIGIN}/openapi.json"
+    [[ -n "$PAYLOAD" ]] && printf '%s\n' "$PAYLOAD" >&2
+    exit 1
+  fi
+
+  # Only cache a response that actually parses as JSON — otherwise the exact
+  # failure the UI-vs-API diagnostic below exists to catch (a 200 with an
+  # HTML body) gets pinned for 24h, and every subsequent invocation re-reads
+  # the stale HTML instead of re-diagnosing or re-fetching.
+  if [[ -n "$CACHE_KEY" ]] && printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1; then
+    # Write atomically via a per-process temp file + rename: `mv` replaces a
+    # symlink rather than writing through it (defeats a pre-planted symlink
+    # at the cache path in a shared cache dir), and a reader never observes
+    # a torn/truncated write racing a concurrent invocation. `chmod 700`
+    # rather than trusting the ambient umask, since the cache holds a
+    # document whose fetch may have required an Editor/Admin token to see.
+    if mkdir -p "$CACHE_DIR" 2>/dev/null && chmod 700 "$CACHE_DIR" 2>/dev/null; then
+      CACHE_TMP="$(mktemp "${CACHE_DIR}/.tmp.XXXXXX" 2>/dev/null)" || CACHE_TMP=""
+      if [[ -n "$CACHE_TMP" ]]; then
+        printf '%s' "$PAYLOAD" > "$CACHE_TMP" 2>/dev/null && mv -f "$CACHE_TMP" "$CACHE_FILE" 2>/dev/null || rm -f "$CACHE_TMP" 2>/dev/null
+      fi
+    fi
+  fi
 fi
 
 # Filter in python: match paths, then close over every referenced schema.
-# Query and mode arrive via env so no user input reaches the source text.
-printf '%s' "$PAYLOAD" | DS_QUERY="$QUERY" DS_MODE="$MODE" python3 -c '
+# Query, mode, and origin arrive via env so no user input reaches the source text.
+printf '%s' "$PAYLOAD" | DS_QUERY="$QUERY" DS_MODE="$MODE" DS_ORIGIN="$ORIGIN" python3 -c '
 import json, os, sys
 
+raw = sys.stdin.read()
 try:
-    spec = json.load(sys.stdin)
+    spec = json.loads(raw)
 except json.JSONDecodeError:
-    print("openapi.json was not valid JSON — is the base URL a DataSpoke API?", file=sys.stderr)
+    origin = os.environ.get("DS_ORIGIN", "")
+    stripped = raw.lstrip().lower()
+    if stripped.startswith("<!doctype") or stripped.startswith("<html"):
+        print(
+            f"openapi.json was not valid JSON — this response is HTML, not a "
+            f"DataSpoke API document. Is DATASPOKE_API_URL ({origin!r}) pointing at "
+            f"the API origin, not the UI? This deployment serves its web UI from a "
+            f"different host, and that host returns HTML here. (If this came from "
+            f"a config or deployment fix rather than the URL itself, re-run with "
+            f"--refresh.)",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "openapi.json was not valid JSON — is the base URL a DataSpoke API? "
+            "(If this deployment was just fixed, re-run with --refresh.)",
+            file=sys.stderr,
+        )
     sys.exit(1)
 
 raw_query = os.environ["DS_QUERY"]

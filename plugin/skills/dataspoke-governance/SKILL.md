@@ -2,7 +2,7 @@
 name: dataspoke-governance
 description: Guide DataSpoke Governance metric configuration and operation (UC5) on a deployed instance. Use for governance metric questions; authoring or editing human-facing YAML; creating, updating, deleting, enabling, or running metrics; and interpreting results, dataset scope/verdicts, freshness, unresolved URNs, or events. Supports ingestion-freshness, validation-score, and doc-health through the public REST API.
 argument-hint: "[question or metric action]"
-allowed-tools: Read, Bash(dataspoke-api *), Bash(dataspoke-schema *), AskUserQuestion
+allowed-tools: Read, Write, Bash(dataspoke-api *), Bash(dataspoke-schema *), AskUserQuestion
 ---
 
 ## Purpose and boundary
@@ -24,7 +24,10 @@ it; evaluate it immediately; then return to its trend and affected datasets. Pas
 reserved in this release: do not propose them (`mode: "passive"` is not implemented).
 
 1. **Check access and inspect.** Run `dataspoke-schema governance/metric --list`, call
-   `GET /auth/me`, report the effective role, then list `GET /spoke/governance/metric` and, for a named metric, read
+   `GET /auth/me`, report the account's current role (not the same as the token's effective
+   role, which no route returns directly — see `/dataspoke:dataspoke-access`'s `role_snapshot`
+   note; a write `403` despite this passing means the token itself needs re-minting), then list
+   `GET /spoke/governance/metric` and, for a named metric, read
    `GET /spoke/governance/metric/{metric_id}/attr/conf`. Writes require Editor or Admin. Do not
    infer that an id is new from an incomplete paginated page; inspect it directly.
 2. **Load the live contract.** Query the narrow relevant operation without `--list` immediately
@@ -46,13 +49,15 @@ reserved in this release: do not propose them (`mode: "passive"` is not implemen
    schedule effect, and exact JSON payload when there is one. Then call `dataspoke-api` once with
    the confirmed request; if state changed before it lands, stop and report the response.
 7. **Exercise safely.** The safe default sequence is **create disabled → dry run → confirm PATCH
-   enable**. After creation or a material definition change, use exactly `dataspoke-api POST
-   '/spoke/governance/metric/{metric_id}/method/run?dry_run=true'` (no body) before enabling its
-   schedule. A dry run evaluates but persists neither a result, a verdict replacement, nor an event;
-   it is not merely request validation. For UC5's enabled Imazon doc-health example, first confirm
-   the enabled create body and then the immediate non-dry run; call its bodyless endpoint as
-   `dataspoke-api POST '/spoke/governance/metric/{metric_id}/method/run'`. Never issue a non-dry
-   run without confirmation.
+   enable**. After creation or a material definition change, use exactly `dataspoke-api --confirm
+   POST '/spoke/governance/metric/{metric_id}/method/run?dry_run=true'` (no body) before enabling
+   its schedule — a dry run still mutates nothing server-side, but it is still a non-idempotent
+   trigger, so it goes through the same mechanical gate as any other write. A dry run evaluates
+   but persists neither a result, a verdict replacement, nor an event; it is not merely request
+   validation. For UC5's enabled Imazon doc-health example, first confirm the enabled create body
+   and then the immediate non-dry run; call its bodyless endpoint as `dataspoke-api --confirm POST
+   '/spoke/governance/metric/{metric_id}/method/run'`. Never issue a non-dry run without
+   confirmation.
 8. **Trend and act.** Later query the chosen time range at `/attr/result`, inspect its persisted
    failing-dataset `breakdown`, and use `/dataset` and `/event` to understand the current verdicts
    and recorded lifecycle changes.
@@ -92,7 +97,14 @@ dataset_filter: "origin = 'PROD' AND is_primary = true"
 
 Valid series names are `total`, `valid_confd`, and `valid_in_time`; all are dataset counts.
 The window is anchored per dataset on its validation configuration cadence, as defined by the live
-contract, rather than being a client-calculated score window.
+contract, rather than being a client-calculated score window. That cadence — the `attribute`
+section of the dataset's validation conf (`cadence_unit`/`cadence_offset`) — is registered by
+`/dataspoke:dataspoke-validation`, not by this skill; see that skill's cadence doctrine for how
+it's chosen. Only `cadence_offset` shifts the window (`cadence_unit` alone, at `offset: 0`, has
+no effect) — a dataset left at the conf's default (no lag) when its data actually arrives with a
+declared lag reads as failing this metric on every run even though nothing is actually stale. A
+genuinely infrequent dataset with *no* lag needs a wider `time_window_sec` on the metric instead;
+widening `cadence_unit` alone changes nothing.
 
 ```yaml
 metric_id: prod-validation-score
@@ -168,10 +180,26 @@ dataset_filter: "origin = 'DEV'"
 ```
 
 For the two windowed types, `time_window_sec: 172800` means two days; do not silently substitute
-a different unit. Filters are SQL-WHERE-like strings over the dataset registry, not arbitrary SQL
-or DataHub search. Use only syntax accepted by live OpenAPI. In particular, booleans are bare
-(`is_primary = true`), while string values use single quotes. An empty string covers every
-registered dataset.
+a different unit. `dataset_filter` is a SQL `WHERE`-clause string over the dataset registry, not
+arbitrary SQL or DataHub search — use only syntax accepted by the live OpenAPI grammar:
+
+| Column | Kind | Operators |
+|---|---|---|
+| `dataset_urn`, `origin`, `platform_urn` | scalar | `=`, `!=`, `IN (...)`, `NOT IN (...)` |
+| `tag_urns`, `glossary_term_urns` | array | `'value' IN column`, `'value' NOT IN column` |
+| `is_primary` | boolean | `= TRUE` / `= FALSE` only — bare word, never quoted, no negation |
+
+`AND`/`OR`/`NOT`/`IN`, `TRUE`/`FALSE`, and column names are case-insensitive (`is_primary =
+true` and `= TRUE` are equivalent); **string values are case-sensitive**.
+String literals use single quotes (`''` escapes an embedded quote); parentheses nest at most two
+deep; mixing `AND`/`OR` at one level requires parentheses. Caps: ≤ 8,000 characters and ≤ 1,000
+string literals — the same bound on every route that writes a filter. `422
+INVALID_DATASET_FILTER` reports the character position of the error; show it and help fix the
+filter, never widen the scope to make the error go away.
+
+An empty string matches every registered dataset — worth stating explicitly, since the server's
+seeded default metrics ship with an empty `dataset_filter`, so enabling one as-is runs it against
+the whole estate, not a scoped subset.
 
 ### What UC5 values mean
 
@@ -190,7 +218,12 @@ the named values and handle a zero denominator.
   unevaluated and read `met: "unknown"` from `/dataset`.
 - **Doc health:** `total` is the resolved scope; `doc_health` counts datasets with both a non-empty
   table description and a non-empty description on every column. Other datasets fail and appear in
-  the result breakdown.
+  the result breakdown. In that breakdown, a failing dataset's `missing_column_descriptions: []` is
+  **not** good news — it does not mean "every column is described." A dataset with no schema
+  metadata at all also reports an empty `missing_column_descriptions`, because there are no known
+  columns to list as missing; the same empty value means "no columns known" on one dataset and would
+  mean "nothing missing" on another. Check `missing_table_description` and the dataset's schema
+  before reading an empty column list as clean.
 
 ### Constrained YAML subset
 
@@ -231,27 +264,29 @@ POST /spoke/governance/metric
 }
 ```
 
-After confirmation, serialize the verified value tree as compact JSON and transport it safely to
-the wrapper. Wrap the complete serialized JSON in POSIX shell single quotes. For every apostrophe
-inside the JSON string, close the surrounding single quote, add the apostrophe as a double-quoted
-single quote, and reopen the surrounding single quote. The literal five-character replacement is
-`'"'"'`. Never interpolate individual fields into an unquoted or double-quoted shell argument.
+After confirmation, serialize the verified value tree as compact JSON, write it to a scratch file
+with the `Write` tool, and send it with `dataspoke-api`'s `@PATH` body form — never inline a
+`dataset_filter` (which routinely contains single quotes, e.g. `origin = 'PROD'`) as a literal
+shell argument. Writing to a file and passing `@PATH` removes the whole class of shell-quoting
+mistakes a `dataset_filter` value invites:
 
-For example, this is a complete safely quoted call whose JSON contains
-`origin = 'PROD' AND is_primary = true`:
-
+```
+Write /tmp/metric.json:
+{"metric_id":"prod-ingestion-freshness","mode":"active","is_enabled":false,"metric_type":"ingestion-freshness","title":"Production ingestion freshness","description":"Counts primary production datasets with ingestion evidence inside a two-day window.","metrics":[{"name":"total","color":"#64748B","idx":1},{"name":"ingested_in_time","color":"#22C55E","idx":2}],"metric_conf":{"time_window_sec":172800},"schedule_tier":"daily","dataset_filter":"origin = 'PROD' AND is_primary = true"}
+```
 ```bash
-dataspoke-api POST /spoke/governance/metric '{"metric_id":"prod-ingestion-freshness","mode":"active","is_enabled":false,"metric_type":"ingestion-freshness","title":"Production ingestion freshness","description":"Counts primary production datasets with ingestion evidence inside a two-day window.","metrics":[{"name":"total","color":"#64748B","idx":1},{"name":"ingested_in_time","color":"#22C55E","idx":2}],"metric_conf":{"time_window_sec":172800},"schedule_tier":"daily","dataset_filter":"origin = '"'"'PROD'"'"' AND is_primary = true"}'
+dataspoke-api --confirm POST /spoke/governance/metric @/tmp/metric.json
 ```
 
-For PUT/PATCH, construct the verified operation-specific JSON first, omitting `metric_id`, and apply
-the same whole-argument quoting algorithm. Do not use a shell placeholder that could be mistaken
-for raw substitution.
+For PUT/PATCH, construct the verified operation-specific JSON first, omitting `metric_id`, write it
+to a file the same way, and pass it as `@PATH`.
 
-Use PUT only for intentional full replacement and PATCH only for an intentional partial change.
-Before enabling a schedule with `{"is_enabled":true}`, explain that scheduled execution begins
-according to `schedule_tier`, recommend a successful dry run, and confirm immediately before the
-PATCH. For deletion, explain that
+Use PUT only for intentional full replacement and PATCH only for an intentional partial change —
+and note `metric_conf` is replaced **wholesale** on PATCH, not deep-merged: patching only
+`metric_type` without also resending its matching `metrics`/`metric_conf` fails, because the
+*merged* definition is what gets validated. Before enabling a schedule with `{"is_enabled":true}`,
+explain that scheduled execution begins according to `schedule_tier`, recommend a successful dry
+run, and confirm immediately before the PATCH. For deletion, explain that
 `DELETE /spoke/governance/metric/{metric_id}/attr/conf` removes the metric definition, then confirm.
 
 ## Reads and interpretation

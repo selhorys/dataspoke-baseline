@@ -256,31 +256,40 @@ The flagship capability writes data-quality validation into the pipeline the eng
 building — the code that runs after a partition is written and checks what landed.
 
 It must be honest about the division of labor. DataSpoke validation is an **API for
-registration, get, and put of values**: the conf declares only `{description, variables[]}`,
-and the service stores results and emits them to DataHub. It ships **no computing engine** —
-no metric computation, no forecasting, no anomaly detection, and no threshold or rule
-evaluation. Every number, each variable and the pass/fail `score` alike, is computed by the
-pipeline on the engineer's own engine with their own credentials.
+registration, get, and put of values**: the conf carries four sections — `description` and
+`variables` are declared by the pipeline (what it will report); `attribute` states the
+dataset's own data-arrival cadence (`cadence_unit`/`cadence_offset`), which DataSpoke reads
+back to anchor the governance `validation-score` metric's window; and the optional
+`parameter` section is opaque storage for the pipeline's own hyperparameters, which
+DataSpoke never interprets. The service stores results and emits them to DataHub. It ships
+**no computing engine** — no metric computation, no forecasting, no anomaly detection, and
+no threshold or rule evaluation. Every number, each variable and the pass/fail `score`
+alike, is computed by the pipeline on the engineer's own engine with their own credentials.
 
 The skill therefore authors the computing code — metrics, baseline comparison, anomaly logic,
-thresholds — and touches DataSpoke through exactly three calls: **register** the slot (once, at
-setup), **get** the recent baseline, and **put** each run's result. A request to have DataSpoke
+thresholds — and touches DataSpoke through a small, fixed set of calls: **register** and,
+once the reuse decision resolves, **annotate** the conf at setup (§1/§3), **get** the recent
+baseline, and **post** each run's result. A request to have DataSpoke
 "detect anomalies" or "enforce a threshold" is answered by writing that logic into the pipeline,
 not by implying the service evaluates it. (See `spec/feature/VALIDATION.md`.)
 
-The skill drives three phases.
+The skill drives four phases.
 
 ### 1. Prerequisite chain (strict order)
 
 Each step must pass before the next; failure stops the flow with a remediation pointer.
 
-1. **Access configured** — `dataspoke-access` has produced a working token (`GET /auth/me`
-   returns an Editor/Admin effective role).
+1. **Access configured** — `dataspoke-access` has produced a working Editor/Admin token. A
+   token's effective role is fixed at mint time and never upgrades on its own, so this is a
+   token-freshness check, not just an account check: `GET /auth/me` reports only the account's
+   current role, not the token's.
 2. **Dataset ingested** — the target dataset exists and is covered, confirmed via
    `GET /spoke/common/data/{dataset_urn}/attr/ingestion`. A dataset with no ingestion
    coverage is sent back to `dataspoke-ingestion` first.
 3. **Conf registered** — a validation slot with the declared `variables` exists
-   (`GET …/attr/validation/conf`); the skill registers one via `PUT` when absent.
+   (`GET …/attr/validation/conf`); the skill registers one via `PUT` when absent. Which
+   utility implements the check is not yet decided at this point, so naming it in
+   `description` is §3's job, not this step's.
 
 ### 2. `dataset_urn` resolution
 
@@ -302,10 +311,39 @@ The engineer rarely knows the exact URN. The skill resolves it carefully, never 
    before it is used in any conf or result call. A wrong URN silently writes to the wrong
    dataset, so this confirmation is mandatory.
 
-### 3. Generate the routine
+### 3. Check for reuse before authoring
 
-The skill emits code **into the engineer's own pipeline script** (their environment, their
-credentials — never DataSpoke's). The generated routine:
+Before writing new check logic, the skill searches for an existing implementation rather
+than assuming none exists: `GET /spoke/validation?coverage=covered` surfaces other datasets'
+registered confs, whose `description` conventionally names the implementing module so a
+match is recognizable, and the skill also searches the user's own shared/validation package
+in their workspace. Once this step resolves which utility implements the check — an existing
+one being reused, or a new one about to be authored in §4 — the skill names it in the conf's
+`description`, via `PATCH …/attr/validation/conf`, so the convention this very search relies
+on stays accurate for the next dataset. When an existing utility already covers the check,
+the skill wires that utility into the pipeline rather than re-authoring the logic.
+
+This makes one ordering invariant load-bearing on both paths, a freshly authored check and a
+reused one alike: **the conf is registered before the pipeline ever calls the utility.**
+Skipping it does not fail loudly — §4's failure-policy invariant means the utility's entry
+point never raises, so a call against an unregistered dataset is caught into a logged
+warning locally rather than an exception, and the pipeline task completes as if it had
+validated while nothing reaches DataSpoke's history.
+
+### 4. Generate the routine
+
+The skill emits code **into the engineer's own codebase** (their environment, their
+credentials — never DataSpoke's). What it generates has two parts, and only one of them is
+dataset-specific:
+
+- **A reusable utility**, placed in the user's own shared package rather than inline in the
+  pipeline script, so it is callable across datasets and pipelines. It owns metric
+  computation, baseline fetch, scoring, and outage handling around the DataSpoke calls — the
+  logic §3's reuse-check searches for.
+- **Dataset-specific wiring**, kept in the pipeline script itself: `dataset_urn` resolution
+  (§2) and the call into the utility with that URN and the partition being validated.
+
+The utility:
 
 1. Computes the declared metrics over the partition just written. Only this step is
    engine-specific; the skill adapts it to the stack in front of it (a Spark aggregation, an
@@ -314,17 +352,35 @@ credentials — never DataSpoke's). The generated routine:
    exactly when the write went wrong.
 2. Fetches the recent baseline via `GET …/attr/validation/result?from=<~14d ago>` (the
    historical-result cache; newest-first, so index 0 is the latest sample).
-3. Fits a forecast over that baseline (e.g. Prophet with default settings) or applies
-   whatever comparison the engineer specifies, deriving expected ranges.
+3. Fits a forecast over that baseline or applies whatever comparison the engineer specifies,
+   deriving expected ranges. When the user has not named a specific check, the skill's named
+   default suggestion is a per-partition row-count anomaly check via Prophet forecasting
+   (default settings).
 4. **Decides the `score`** in pipeline code — pass/fail (or a fractional value) from the
    computed metrics versus the forecast/baseline.
 5. POSTs `{data_time, score, variables}` to `…/attr/validation/result`, keying `variables`
    by the conf's declared names (unknown keys are rejected `422 UNKNOWN_VARIABLE`;
    `score` must satisfy `0.0 ≤ score ≤ 1.0`).
 
-Registration stays out of the generated code. A conf re-registered on every run is a recurring
-opportunity to change the declared variables underneath the accumulated history, so the skill
-performs the `PUT` itself during the prerequisite chain.
+Registration stays out of the generated code, on both the freshly authored and the reused
+path (§3). A conf re-registered on every run is a recurring opportunity to change the
+declared variables underneath the accumulated history, so the skill performs the `PUT`
+itself during the prerequisite chain.
+
+**The failure-policy invariant**: the utility's entry point never raises out of itself. That
+single guarantee plays out as two different outcomes, depending on whether the POST can
+actually land. When the dataset's conf is registered and DataSpoke is reachable, a scoring
+bug or a bad partition becomes a posted `0.0` in the history rather than an exception that
+fails the pipeline task. When the POST cannot land — DataSpoke unreachable, or the conf
+missing (the case §3's registration ordering guards against) — the failure is logged locally
+instead, and nothing reaches DataSpoke's history at all. The recorded case is the deliberate
+trade-off: for a dataset whose conf is registered, the governance `validation-score` metric
+(`spec/feature/BACKEND.md` §Metrics Service) is the backstop — a dataset whose latest result
+scored `< 1.0` drops out of `valid_in_time` and surfaces as a failing verdict, so raising
+inside the routine buys nothing that metric doesn't already catch, at the cost of a failed
+pipeline task. That backstop does not cover a dataset whose conf was never registered — it is
+not evaluated at all rather than counted as failing — which is exactly why §3's registration
+ordering is load-bearing rather than a nicety.
 
 Two properties of the result store shape what the routine may assume. Reads collapse
 last-write-wins per `data_time`, so a retried run corrects its partition rather than duplicating

@@ -65,6 +65,42 @@ router = APIRouter(
 _MAX_MARKDOWN_BYTES = 128 * 1024
 
 
+def _markdown_request_body(*, required: bool) -> dict[str, Any]:
+    """Shared OpenAPI ``requestBody`` block for the raw-Markdown routes.
+
+    ``maxLength`` counts characters (JSON Schema semantics), while
+    ``_read_markdown_body`` enforces ``_MAX_MARKDOWN_BYTES`` on the raw
+    UTF-8 byte length — so the schema is a safe (never-tighter) upper
+    bound, not an exact contract for multi-byte text. The Request Body
+    Object's own ``description`` (mirrored onto the schema for tooling
+    that only surfaces schema-level text) spells out the real,
+    byte-counted limit. The Media Type Object (``content["text/markdown"]``)
+    has no ``description`` field in OpenAPI 3.0/3.1, so it must not live
+    there.
+    """
+    description = (
+        "Raw Markdown document. Hard cap is "
+        f"{_MAX_MARKDOWN_BYTES} bytes of UTF-8 (maxLength is a "
+        "character-count upper bound; multi-byte text reaches "
+        "the cap sooner and returns 413 PAYLOAD_TOO_LARGE)."
+    )
+    return {
+        "requestBody": {
+            "required": required,
+            "description": description,
+            "content": {
+                "text/markdown": {
+                    "schema": {
+                        "type": "string",
+                        "maxLength": _MAX_MARKDOWN_BYTES,
+                        "description": description,
+                    },
+                }
+            },
+        }
+    }
+
+
 async def _read_markdown_body(
     request: Request,
     *,
@@ -263,7 +299,11 @@ async def get_ontogen_seeds(
     )
 
 
-@router.post("/attr/seed", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/attr/seed",
+    status_code=status.HTTP_201_CREATED,
+    openapi_extra=_markdown_request_body(required=True),
+)
 async def post_ontogen_seed(
     request: Request,
     service: OntogenService = Depends(get_ontogen_service),
@@ -289,7 +329,10 @@ async def get_ontogen_seed(
     )
 
 
-@router.patch("/attr/seed/{seed_id}")
+@router.patch(
+    "/attr/seed/{seed_id}",
+    openapi_extra=_markdown_request_body(required=True),
+)
 async def patch_ontogen_seed(
     seed_id: UuidPath,
     request: Request,
@@ -336,7 +379,11 @@ async def delete_ontogen_seed(
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 
-@router.post("/method/run", response_model=OntogenRunResponse)
+@router.post(
+    "/method/run",
+    response_model=OntogenRunResponse,
+    openapi_extra=_markdown_request_body(required=False),
+)
 async def post_ontogen_run(
     request: Request,
     dry_run: bool = Query(default=False),

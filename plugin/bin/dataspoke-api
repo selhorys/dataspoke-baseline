@@ -5,16 +5,50 @@
 # lives in one audited place. Touches ONLY the public API surface.
 #
 # Usage:
-#   dataspoke-api <METHOD> <PATH> [JSON_BODY]
-#   dataspoke-api <METHOD> <PATH> --content-type <MEDIA_TYPE> <BODY>
+#   dataspoke-api [--confirm] <METHOD> <PATH> [JSON_BODY]
+#   dataspoke-api [--confirm] <METHOD> <PATH> --content-type <MEDIA_TYPE> <BODY>
 #
-#   METHOD     GET | POST | PUT | PATCH | DELETE
+#   --confirm   required for any method other than GET, and must be the
+#               FIRST argument — it is never scanned for among the later,
+#               data-bearing positions, so request content (a dataset
+#               description, an LLM-generated body, …) can never self-satisfy
+#               this gate by happening to equal the string `--confirm`.
+#               Without it, the call is NOT made — the method, the resolved
+#               URL, and the body are printed for review and the command
+#               exits non-zero. This is a mechanical gate, not a suggestion:
+#               run once unconfirmed, show the user what will be sent, get
+#               their approval, then re-run with `--confirm` first.
+#   METHOD     GET | POST | PUT | PATCH | DELETE (no skill needs HEAD; a bare
+#              `curl -X HEAD` doesn't suppress the response body curl still
+#              expects, so it isn't offered here — use GET)
 #   PATH       Feature paths (/auth, /spoke) are prefixed with /api/v1
 #              automatically. Root paths (/ready, /redoc, /health, /openapi.json)
 #              and any already-/api/v1-prefixed path are used as-is.
-#   JSON_BODY   optional request body (a JSON string)
-#   MEDIA_TYPE  explicit content type for BODY (for example, text/markdown)
-#   BODY        request body preserved as one argument
+#   JSON_BODY   optional request body — a JSON string (always sent as
+#               `application/json` in this 3-argument form; use `--content-type`
+#               below for anything else), or `@PATH` to read it from a file
+#               instead of a shell argument. Prefer `@PATH` for anything
+#               containing a quote, a newline, or more than a line or two —
+#               it removes the whole class of shell-quoting mistakes and is
+#               the only practical way to send a multi-line body. `@PATH` is
+#               confined: it must resolve (after following no symlinks) to a
+#               plain, readable file, and is refused under a best-effort
+#               denylist of known credential locations (~/.dataspoke, ~/.ssh,
+#               ~/.aws, ~/.config, ~/.netrc, ~/.git-credentials, ~/.kube,
+#               ~/.gnupg, ~/.docker, ~/.npmrc, ~/.pypirc) — it is not a
+#               general file-read/upload primitive, but the denylist is not
+#               exhaustive; choose a scratch path (e.g. under /tmp) rather
+#               than relying on it.
+#   MEDIA_TYPE  explicit content type for BODY (for example, text/markdown) —
+#               use this form for a non-JSON body of any content type,
+#               including via `@PATH`
+#   BODY        request body — a literal string, or `@PATH` (see above)
+#
+# Pre-flight checks (before any network call):
+#   - a `Content-Type: application/json` body must parse as JSON
+#   - any body must be ≤ 128 KiB — a conservative client-side guard matching
+#     the API's strictest per-route cap (the ontogen Markdown seed/run
+#     routes; spec/API.md), not a limit every route actually enforces
 #
 # Config resolution (first match wins):
 #   1. env: DATASPOKE_API_URL + DATASPOKE_API_TOKEN
@@ -23,18 +57,31 @@
 # Examples:
 #   dataspoke-api GET  /auth/me
 #   dataspoke-api GET  /spoke/validation
-#   dataspoke-api PUT  '/spoke/common/data/<urn>/attr/validation/conf' '{"description":"…","variables":[]}'
-#   dataspoke-api POST /spoke/ontogen/attr/seed --content-type text/markdown '# Seed ontology'
+#   dataspoke-api --confirm PUT  '/spoke/common/data/<urn>/attr/validation/conf' @/tmp/conf.json
+#   dataspoke-api --confirm POST /spoke/ontogen/attr/seed --content-type text/markdown @/tmp/seed.md
 #   dataspoke-api GET  /ready
 set -uo pipefail
 
 CONFIG="${HOME}/.dataspoke/config.json"
+MAX_BODY_BYTES=131072   # 128 KiB — client-side guard, matches the API's strictest
+                        # per-route cap (ontogen Markdown seed/run; spec/API.md).
 err() { printf '%s\n' "$*" >&2; }
 
 usage() {
-  err "usage: dataspoke-api <METHOD> <PATH> [JSON_BODY]"
-  err "       dataspoke-api <METHOD> <PATH> --content-type <MEDIA_TYPE> <BODY>"
+  err "usage: dataspoke-api [--confirm] <METHOD> <PATH> [JSON_BODY]"
+  err "       dataspoke-api [--confirm] <METHOD> <PATH> --content-type <MEDIA_TYPE> <BODY>"
 }
+
+# --confirm is recognized ONLY as the very first argument — never scanned for
+# among later, data-bearing positions. A body position can legitimately hold
+# any string (including the literal text "--confirm"), so treating it as a
+# flag wherever it appears would let request content self-satisfy the write
+# gate this script exists to enforce.
+CONFIRM=false
+if [[ "${1:-}" == "--confirm" ]]; then
+  CONFIRM=true
+  shift
+fi
 
 if [[ $# -lt 2 ]]; then
   usage
@@ -46,6 +93,11 @@ PATH_ARG="$2"
 BODY=""
 CONTENT_TYPE=""
 SEND_BODY=false
+
+case "$METHOD" in
+  GET|POST|PUT|PATCH|DELETE) ;;
+  *) err "Unsupported method: $METHOD (expected GET|POST|PUT|PATCH|DELETE)"; exit 2 ;;
+esac
 
 case "$#" in
   2) ;;
@@ -65,7 +117,14 @@ case "$#" in
     SEND_BODY=true
     # A header value must be one well-formed media type. Reject control
     # characters explicitly and allow only horizontal whitespace around params.
-    if [[ "$CONTENT_TYPE" =~ [[:cntrl:]] ]] || [[ ! "$CONTENT_TYPE" =~ ^[[:alnum:]!#\$\&\^_.+-]+/[[:alnum:]!#\$\&\^_.+-]+([[:blank:]]*\;[[:blank:]]*[[:alnum:]!#\$\&\^_.+-]+=[[:alnum:]!#\$\&\^_.:+-]+)*$ ]]; then
+    # ($ and ^ were previously backslash-escaped inside the bracket
+    # expressions below; empirically (bash 3.2/5.x, this repo's dev
+    # environment) that admitted a literal backslash as a matching
+    # character alongside them, which a plain $/^ does not. \& is left
+    # escaped — that one doesn't exhibit the same admission, and bash's own
+    # tokenizer requires the backslash there regardless (an unescaped & at
+    # this position is a syntax error, not a regex question).)
+    if [[ "$CONTENT_TYPE" =~ [[:cntrl:]] ]] || [[ ! "$CONTENT_TYPE" =~ ^[[:alnum:]!#$\&^_.+-]+/[[:alnum:]!#$\&^_.+-]+([[:blank:]]*\;[[:blank:]]*[[:alnum:]!#$\&^_.+-]+=[[:alnum:]!#$\&^_.:+-]+)*$ ]]; then
       err "Invalid content type: $CONTENT_TYPE"
       exit 2
     fi
@@ -75,6 +134,92 @@ case "$#" in
     exit 2
     ;;
 esac
+
+# `@PATH` reads the body from a file instead of a shell argument. Kept as a
+# file reference through to curl (--data-binary "@file") rather than read
+# into a shell variable, so multi-line / large bodies never round-trip
+# through argv or command substitution (which would also silently drop a
+# trailing newline).
+#
+# It is deliberately CONFINED, not a general file-read primitive: this tool
+# is the plugin's designated, most-trusted I/O path, so a path an LLM chose
+# under prompt injection must not be able to turn it into an upload channel
+# for the user's own credentials. Reject a symlink outright (never follow
+# one to decide "is this allowed"), resolve to a real absolute path, require
+# a plain regular file, and refuse anything under a directory this tool
+# knows holds credentials, regardless of readability.
+BODY_FILE=""
+if [[ "$SEND_BODY" == true && "$BODY" == @* ]]; then
+  BODY_FILE="${BODY#@}"
+  if [[ -z "$BODY_FILE" ]]; then
+    err "Empty '@PATH' — expected a file path after '@'."
+    exit 2
+  fi
+  if [[ -L "$BODY_FILE" ]]; then
+    err "Refusing a symlink as body file: $BODY_FILE"
+    exit 2
+  fi
+  BODY_DIR="$(cd "$(dirname -- "$BODY_FILE")" 2>/dev/null && pwd -P)" || {
+    err "Cannot resolve body file path: $BODY_FILE"
+    exit 2
+  }
+  REAL_BODY_FILE="${BODY_DIR}/$(basename -- "$BODY_FILE")"
+  if [[ ! -f "$REAL_BODY_FILE" || ! -r "$REAL_BODY_FILE" ]]; then
+    err "Cannot read body file (must be a plain, readable file): $BODY_FILE"
+    exit 2
+  fi
+  # Compare against a PHYSICALLY resolved $HOME too — comparing a pwd -P'd
+  # candidate against a symlinked $HOME (a common shape: /home -> /var/home,
+  # NFS/autofs homes) makes every pattern below silently match nothing.
+  HOME_REAL="$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)" || {
+    err "Cannot resolve HOME; refusing @PATH body as a precaution."
+    exit 2
+  }
+  # Best-effort denylist, not a substitute for the caller choosing a sane
+  # path — deliberately broader than just this tool's own config.
+  case "$REAL_BODY_FILE" in
+    "${HOME_REAL}/.dataspoke"/*|"${HOME_REAL}/.ssh"/*|"${HOME_REAL}/.aws"/*|"${HOME_REAL}/.config"/*|\
+    "${HOME_REAL}/.netrc"|"${HOME_REAL}/.git-credentials"|"${HOME_REAL}/.kube"/*|\
+    "${HOME_REAL}/.gnupg"/*|"${HOME_REAL}/.docker"/*|"${HOME_REAL}/.npmrc"|"${HOME_REAL}/.pypirc")
+      err "Refusing to send $BODY_FILE as a request body — it is under a credential directory."
+      exit 2
+      ;;
+  esac
+  BODY_FILE="$REAL_BODY_FILE"
+fi
+
+# Pre-flight: size cap and (for JSON bodies) parseability, before any network
+# call — an oversize or malformed body fails locally with a clear message
+# instead of a round trip to a 413/422. Fails CLOSED: if the byte count can't
+# be established as a plain integer, that is itself a rejection, not a skip.
+if [[ "$SEND_BODY" == true ]]; then
+  if [[ -n "$BODY_FILE" ]]; then
+    BODY_BYTES="$(wc -c < "$BODY_FILE" 2>/dev/null | tr -d ' ')"
+    BODY_SOURCE="$BODY_FILE"
+  else
+    BODY_BYTES="$(printf '%s' "$BODY" | wc -c | tr -d ' ')"
+    BODY_SOURCE="<inline body>"
+  fi
+  if [[ ! "$BODY_BYTES" =~ ^[0-9]+$ ]]; then
+    err "Could not determine body size for ${BODY_SOURCE}; refusing to send."
+    exit 2
+  fi
+  if [[ "$BODY_BYTES" -gt "$MAX_BODY_BYTES" ]]; then
+    err "Body too large: ${BODY_SOURCE} is ${BODY_BYTES} bytes, client-side guard is ${MAX_BODY_BYTES} bytes."
+    exit 2
+  fi
+  if [[ "$CONTENT_TYPE" == "application/json" ]]; then
+    if [[ -n "$BODY_FILE" ]]; then
+      JSON_ERR="$(python3 -m json.tool < "$BODY_FILE" 2>&1 1>/dev/null)"
+    else
+      JSON_ERR="$(printf '%s' "$BODY" | python3 -m json.tool 2>&1 1>/dev/null)"
+    fi
+    if [[ -n "$JSON_ERR" ]]; then
+      err "Invalid JSON in ${BODY_SOURCE}: ${JSON_ERR}"
+      exit 2
+    fi
+  fi
+fi
 
 BASE="${DATASPOKE_API_URL:-}"
 TOKEN="${DATASPOKE_API_TOKEN:-}"
@@ -91,9 +236,27 @@ if [[ -z "$BASE" ]]; then
   exit 3
 fi
 
+# The token is about to be interpolated into a curl config-file directive
+# (below) rather than a header argument, so — unlike a plain -H value — an
+# embedded newline or quote in it could inject a second directive (a proxy,
+# an output-file redirect, …). Constrain it to the token's own charset
+# before it ever reaches that channel. Same reasoning for ORIGIN reaching
+# curl's URL argument: reject anything that isn't a plain http(s) URL,
+# closing off a value curl would otherwise parse as an option (a leading
+# '-') or dispatch through a different scheme entirely.
+if [[ -n "$TOKEN" && ! "$TOKEN" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+  err "Malformed API token (unexpected characters) — re-run /dataspoke:dataspoke-access."
+  exit 3
+fi
+
 # ORIGIN = base with any trailing /api/v1 and trailing slash stripped.
 ORIGIN="${BASE%/}"
 ORIGIN="${ORIGIN%/api/v1}"
+
+if [[ ! "$ORIGIN" =~ ^https?://[^[:space:]]+$ ]]; then
+  err "Invalid DataSpoke API base URL: $ORIGIN"
+  exit 3
+fi
 
 case "$PATH_ARG" in
   /api/v1/*|/ready|/redoc|/health|/openapi.json) URL="${ORIGIN}${PATH_ARG}" ;;
@@ -101,11 +264,47 @@ case "$PATH_ARG" in
   *) err "PATH must start with '/': $PATH_ARG"; exit 2 ;;
 esac
 
-args=(-sS -X "$METHOD" -w $'\n%{http_code}')
-[[ -n "$TOKEN" ]] && args+=(-H "Authorization: Bearer ${TOKEN}")
-[[ "$SEND_BODY" == true ]] && args+=(-H "Content-Type: ${CONTENT_TYPE}" -d "$BODY")
+# Mechanical write gate: any method other than GET requires --confirm.
+# Every "confirm before any write" rule upstream of this script is model
+# discipline with nothing behind it unless this refuses to fire without it.
+if [[ "$METHOD" != "GET" && "$CONFIRM" != true ]]; then
+  err "Not sent (no --confirm). Review, then re-run with --confirm as the FIRST argument to send:"
+  err "  ${METHOD} ${URL}"
+  if [[ "$SEND_BODY" == true ]]; then
+    err "  Content-Type: ${CONTENT_TYPE}"
+    err "  Body:"
+    if [[ -n "$BODY_FILE" ]]; then
+      cat "$BODY_FILE" >&2
+    else
+      printf '%s\n' "$BODY" >&2
+    fi
+  fi
+  exit 2
+fi
 
-RESP="$(curl "${args[@]}" "$URL")" || { err "curl failed for ${METHOD} ${URL}"; exit 4; }
+args=(-sS -X "$METHOD" --max-time 30 -w $'\n%{http_code}')
+if [[ "$SEND_BODY" == true ]]; then
+  args+=(-H "Content-Type: ${CONTENT_TYPE}")
+  if [[ -n "$BODY_FILE" ]]; then
+    args+=(--data-binary "@${BODY_FILE}")
+  else
+    args+=(-d "$BODY")
+  fi
+fi
+
+# The bearer token never reaches curl's argv (and so never the process
+# table / `ps`): it is handed to curl as a config directive on stdin
+# (`-K -`) instead of `-H "Authorization: Bearer …"` on the command line —
+# piped, not a `<<<` here-string, since bash before 5.1 backs a here-string
+# with an unlinked temp file and a pipe never touches disk at all. Neither
+# `--data-binary @file` nor any other flag here consumes stdin, so this is
+# safe to combine with the rest of `args`. (TOKEN was already validated
+# against a safe charset above, so it cannot inject a second config line.)
+if [[ -n "$TOKEN" ]]; then
+  RESP="$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -K - "${args[@]}" "$URL")" || { err "curl failed for ${METHOD} ${URL}"; exit 4; }
+else
+  RESP="$(curl "${args[@]}" "$URL")" || { err "curl failed for ${METHOD} ${URL}"; exit 4; }
+fi
 
 CODE="${RESP##*$'\n'}"
 PAYLOAD="${RESP%$'\n'*}"
@@ -117,7 +316,7 @@ fi
 case "$CODE" in
   2*) exit 0 ;;
   401) err "→ HTTP 401: token missing/expired/revoked. Re-run /dataspoke:dataspoke-access to mint a fresh dsk_ token."; exit 1 ;;
-  403) err "→ HTTP 403: insufficient role. Writes need an Editor/Admin token; a Reader token gets READ_ONLY_ROLE. Check 'dataspoke-api GET /auth/me'."; exit 1 ;;
+  403) err "→ HTTP 403: this token's role was captured when it was minted — promoting the account afterward does NOT upgrade an existing token, so retrying will not help. 'dataspoke-api GET /auth/me' shows the ACCOUNT's current role, not this token's — if it already shows Editor/Admin, the token itself is stale. Mint a fresh Editor/Admin token via /dataspoke:dataspoke-access."; exit 1 ;;
   404) err "→ HTTP 404: not found — check the path or dataset URN."; exit 1 ;;
   409) err "→ HTTP 409: conflict (already exists / run in progress / not applicable) — see body above."; exit 1 ;;
   422) err "→ HTTP 422: request validation failed — see body above (e.g. UNKNOWN_VARIABLE, score out of [0,1])."; exit 1 ;;
