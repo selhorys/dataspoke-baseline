@@ -44,14 +44,43 @@ if [[ -z "$GMS" || -z "$TOKEN" ]]; then
   exit 3
 fi
 
+# The token is about to be interpolated into a curl config-file directive
+# (below) rather than a header argument, so — unlike a plain -H value — an
+# embedded newline or quote in it could inject a second directive (a proxy,
+# an output-file redirect, …). Constrain it to the token's own charset
+# before it ever reaches that channel. Same reasoning for GMS reaching
+# curl's URL argument: reject anything that isn't a plain http(s) URL,
+# closing off a value curl would otherwise parse as an option (a leading
+# '-') or dispatch through a different scheme entirely.
+if [[ ! "$TOKEN" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+  err "Malformed DataHub token (unexpected characters) — re-run /dataspoke:dataspoke-access set."
+  exit 3
+fi
+
+if [[ ! "$GMS" =~ ^https?://[^[:space:]]+$ ]]; then
+  err "Invalid DataHub GMS URL: $GMS"
+  exit 3
+fi
+
 URL="${GMS%/}/api/graphql"
 
-args=(-sS -X POST -w $'\n%{http_code}')
-args+=(-H "Authorization: Bearer ${TOKEN}")
+args=(-sS -X POST --max-time 30 -w $'\n%{http_code}')
 args+=(-H "Content-Type: application/json")
-args+=(-d "$BODY")
+# --data-raw, not -d: -d treats a leading '@' in its value as "read the body
+# from this file", which would turn the caller-supplied BODY into an arbitrary
+# file-read POSTed to the GMS origin. This script's contract is a literal JSON
+# string (see usage header), so the '@' semantics are unwanted.
+args+=(--data-raw "$BODY")
 
-RESP="$(curl "${args[@]}" "$URL")" || { err "curl failed for POST ${URL}"; exit 4; }
+# The bearer token never reaches curl's argv (and so never the process
+# table / `ps`): it is handed to curl as a config directive on stdin
+# (`-K -`) instead of `-H "Authorization: Bearer …"` on the command line —
+# piped, not a `<<<` here-string, since bash before 5.1 backs a here-string
+# with an unlinked temp file and a pipe never touches disk at all.
+# `--data-raw` does not consume stdin, so this is safe to combine with the
+# rest of `args`. (TOKEN was already validated against a safe charset
+# above, so it cannot inject a second config line.)
+RESP="$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -K - "${args[@]}" "$URL")" || { err "curl failed for POST ${URL}"; exit 4; }
 
 CODE="${RESP##*$'\n'}"
 PAYLOAD="${RESP%$'\n'*}"
