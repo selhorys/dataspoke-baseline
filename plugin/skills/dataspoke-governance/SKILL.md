@@ -66,8 +66,10 @@ reserved in this release: do not propose them (`mode: "passive"` is not implemen
 
 The three safe scaffold examples below default to `is_enabled: false`, so creating one does not
 immediately enable its schedule. This excludes the separate enabled UC5 Imazon scenario below.
-`schedule_tier: null` means on-demand only. Descriptor `idx` values are unique positive display
-positions; colors are `#RRGGBB` strings.
+`schedule_tier` is one of `hourly`, `daily`, `weekly`, or `null`; `null` means on-demand only
+(the metric runs only when `method/run` is called). Any other value is `422 INVALID_PARAMETER`
+— confirm the enum against the live contract, since a deployment may narrow it. Descriptor `idx`
+values are unique positive display positions; colors are `#RRGGBB` strings.
 
 ### Ingestion freshness
 
@@ -179,8 +181,11 @@ schedule_tier: daily
 dataset_filter: "origin = 'DEV'"
 ```
 
-For the two windowed types, `time_window_sec: 172800` means two days; do not silently substitute
-a different unit. `dataset_filter` is a SQL `WHERE`-clause string over the dataset registry, not
+For the two windowed types, `metric_conf.time_window_sec` is a positive integer count of seconds
+in `[1, 315360000]` (one second to ten years); `172800` means two days. Out of range, non-integer,
+or boolean is `422 INVALID_PARAMETER`, on `PATCH` against the merged `metric_conf` as well. Do not
+silently substitute a different unit. `doc-health` takes `metric_conf: {}` and rejects any key.
+`dataset_filter` is a SQL `WHERE`-clause string over the dataset registry, not
 arbitrary SQL or DataHub search — use only syntax accepted by the live OpenAPI grammar:
 
 | Column | Kind | Operators |
@@ -336,6 +341,11 @@ Respect pagination and `total_count`; do not describe the first page as the comp
   parallel workaround.
 - `501 NOT_IMPLEMENTED` for passive mode: passive governance metrics are reserved; do not emulate
   them elsewhere.
+- `422 INVALID_PARAMETER`: a definition field is malformed — a `metric_id` that is not a kebab-case
+  slug matching `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$`, an unsupported `metric_type`, a
+  `metrics[].name` that is not one of the type's emitted series, a duplicate `name`/`idx`, or a
+  `time_window_sec` outside `[1, 315360000]`. Fix the YAML against the live schema; do not retry
+  the same body.
 - `422 INVALID_DATASET_FILTER`: show the API detail and reported character position, then help edit
   the YAML guide; do not broaden the scope silently.
 - `422 INVALID_DATASET_URN`: surface the malformed literal and require correction.
