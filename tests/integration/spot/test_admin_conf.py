@@ -7,7 +7,7 @@ Routes under test:
 
 Concerns covered:
 
-1. GET /admin/conf on a fresh (or reset) DB returns all 14 behavioral tunables at factory
+1. GET /admin/conf on a fresh (or reset) DB returns all 15 behavioral tunables at factory
    defaults, includes resp_time and updated_at, and contains NO secret field.
 
 2. PATCH /admin/conf with a partial body returns 200 with updated values;
@@ -19,6 +19,11 @@ Concerns covered:
 
 5. PATCH /internal/admin/conf with valid X-Internal-Token → 200, reflected by
    GET; without / with wrong token → 401 (or 503 if token unset).
+
+6. PATCH /admin/conf (and /internal/admin/conf) with an unrecognised / misspelled
+   field → 422 INVALID_PARAMETER (not a silent no-op); a rejected body writes
+   nothing; the rejected value is never echoed; a bad-shape auth_datahub_corp_group
+   → 422.
 
 IMPORTANT CACHE NOTE: get_runtime_config has a ~30s process cache.  All state
 mutations in this file go through the PATCH endpoint, which calls
@@ -35,7 +40,7 @@ Spec traceability:
   updated_at, partial PATCH, bound-validated numerics (out-of-range → 422),
   llm_api_key masked on GET. Defaults are explicitly left to impl there.
 - spec/feature/BACKEND_LLM.md §Runtime configuration — the Field/Default/Bounds/Owner
-  table whose 14 rows are the behavioral tunables _EXPECTED_DEFAULTS pins.
+  table whose 15 rows are the behavioral tunables _EXPECTED_DEFAULTS pins.
 - spec/API.md §Access Control — Admin role required for /admin/*
 - spec/API.md §Internal Admin (/internal/admin) — X-Internal-Token for /internal/…
 - spec/API.md §Standard Response Envelope — resp_time on every response.
@@ -80,6 +85,10 @@ _EXPECTED_DEFAULTS: dict[str, object] = {
     "metagen_ontology_rag_node_k": 5,
     "metagen_ontology_rag_edge_k": 5,
     "metagen_ontology_rag_triple_k": 5,
+    # spec'd default: BACKEND_LLM.md §Runtime configuration (row 15),
+    # API.md §/admin/conf ("bounded, URN-safe token, default dataspoke-users"),
+    # AUTH.md §Marker corpGroup ("Default name | dataspoke-users").
+    "auth_datahub_corp_group": "dataspoke-users",
 }
 
 
@@ -107,6 +116,7 @@ async def _reset_to_defaults(api_client: httpx.AsyncClient, admin_headers: dict)
             "metagen_ontology_rag_node_k": 5,
             "metagen_ontology_rag_edge_k": 5,
             "metagen_ontology_rag_triple_k": 5,
+            "auth_datahub_corp_group": "dataspoke-users",
         },
     )
     assert resp.status_code == 200, f"Reset-to-defaults PATCH failed: {resp.text}"
@@ -120,7 +130,7 @@ async def test_get_conf_returns_factory_defaults(
     api_client: httpx.AsyncClient,
     admin_headers: dict[str, str],
 ) -> None:
-    """GET /admin/conf returns all 14 behavioral tunables at factory defaults.
+    """GET /admin/conf returns all 15 behavioral tunables at factory defaults.
 
     After reset to factory defaults the response values MUST match the
     documented factory defaults exactly.
@@ -129,7 +139,7 @@ async def test_get_conf_returns_factory_defaults(
     tunables + `updated_at`)"; the surface "is seeded with factory defaults and persisted
     in the `runtime_config` table … defaults live in impl, not here".
     spec: BACKEND_LLM.md §Runtime configuration — the Field/Default/Bounds/Owner table
-    enumerates the behavioral tunables; its 14 rows are the set _EXPECTED_DEFAULTS pins.
+    enumerates the behavioral tunables; its 15 rows are the set _EXPECTED_DEFAULTS pins.
     impl: src/backend/admin/config_service.py RUNTIME_CONFIG_DEFAULTS — the default
     *values*, which API.md explicitly leaves to impl.
     """
@@ -634,3 +644,146 @@ async def test_internal_patch_conf_wrong_token_returns_401(
         f"Wrong X-Internal-Token must return 401 (or 503 if token unset); "
         f"got {resp.status_code}: {resp.text}"
     )
+
+
+# ── 6. Unrecognised / misspelled field → 422 (not a silent no-op) ────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_conf_only_key_unrecognised_returns_422_and_writes_nothing(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PATCH /admin/conf whose ONLY key is unrecognised → 422; nothing is written.
+
+    The rejected body must be a complete no-op — a subsequent GET shows every
+    documented default unchanged.
+
+    spec: spec/API.md §/admin/conf — "A PATCH body carrying an unrecognised field
+    is rejected 422 INVALID_PARAMETER rather than silently ignored, so a
+    misspelled toggle or knob name fails loudly instead of leaving the config
+    unchanged."
+    spec: spec/API_DESIGN_PRINCIPLE_en.md §4 (Unknown Fields in Write Requests) —
+    unknown write-body fields → 422 INVALID_PARAMETER, not a silent no-op.
+    """
+    try:
+        await _reset_to_defaults(api_client, admin_headers)
+
+        resp = await api_client.patch(
+            _ADMIN_CONF,
+            headers=admin_headers,
+            json={"stub_llm_clients": False},  # real field is `stub_llm_client`
+        )
+        assert resp.status_code == 422, (
+            f"an unrecognised key must return 422; got {resp.status_code}: {resp.text}"
+        )
+        assert resp.json()["error_code"] == "INVALID_PARAMETER", (
+            f"422 body must carry error_code INVALID_PARAMETER; got {resp.text}"
+        )
+
+        # Nothing was written — every documented default is still in place.
+        get_resp = await api_client.get(_ADMIN_CONF, headers=admin_headers)
+        assert get_resp.status_code == 200
+        body = get_resp.json()
+        for field, expected in _EXPECTED_DEFAULTS.items():
+            assert body[field] == expected, (
+                f"Field '{field}' changed after a rejected PATCH; expected {expected!r}, "
+                f"got {body[field]!r}. The rejected body must be a no-op. "
+                "spec: spec/API.md §/admin/conf."
+            )
+    finally:
+        await _reset_to_defaults(api_client, admin_headers)
+
+
+@pytest.mark.asyncio
+async def test_internal_patch_conf_unrecognised_field_returns_422(
+    api_client: httpx.AsyncClient,
+    internal_headers: dict[str, str],
+) -> None:
+    """PATCH /internal/admin/conf with an unrecognised key → 422.
+
+    /internal/admin/conf shares _apply_patch_and_respond with the public route,
+    so the extra="forbid" contract holds there too.
+
+    spec: spec/API.md §/admin/conf — an unrecognised field is rejected
+    422 INVALID_PARAMETER rather than silently ignored.
+    spec: spec/API_DESIGN_PRINCIPLE_en.md §4 (Unknown Fields in Write Requests).
+    """
+    resp = await api_client.patch(
+        _INTERNAL_CONF,
+        headers=internal_headers,
+        json={"stub_llm_clients": False},  # real field is `stub_llm_client`
+    )
+    if resp.status_code == 503:
+        # spec: API.md §Application Error Codes — INTERNAL_AUTH_NOT_CONFIGURED when token unset.
+        body = resp.json()
+        assert body.get("detail", {}).get("error_code") == "INTERNAL_AUTH_NOT_CONFIGURED", (
+            "503 response must carry INTERNAL_AUTH_NOT_CONFIGURED when the internal token is unset."
+        )
+        pytest.skip(
+            "DATASPOKE_DEV_INTERNAL_TOKEN not configured in this environment — skipping"
+        )
+
+    assert resp.status_code == 422, (
+        f"an unrecognised key on /internal/admin/conf must return 422; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["error_code"] == "INVALID_PARAMETER", (
+        f"422 body must carry error_code INVALID_PARAMETER; got {resp.text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_conf_misspelled_llm_api_key_returns_422_without_echoing_value(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """A misspelled secret key (`llm_apikey`) → 422, and the submitted value is
+    never echoed anywhere in the response.
+
+    spec: spec/API_DESIGN_PRINCIPLE_en.md §4 (Unknown Fields in Write Requests) —
+    the error envelope "never reproduces the offending value, because
+    write-request bodies routinely carry credentials".
+    spec: spec/API.md §Error Catalogue — "The rejected value is not echoed".
+    """
+    canary = "sk-NOTREAL-leak-canary-123"
+    resp = await api_client.patch(
+        _ADMIN_CONF,
+        headers=admin_headers,
+        json={"llm_apikey": canary},  # real field is `llm_api_key`
+    )
+    assert resp.status_code == 422, (
+        f"misspelled llm_apikey must return 422; got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["error_code"] == "INVALID_PARAMETER"
+    assert canary not in resp.text, (
+        "the rejected value must not appear anywhere in the 422 response "
+        "per spec/API_DESIGN_PRINCIPLE_en.md §4"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_conf_invalid_corp_group_pattern_returns_422(
+    api_client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+) -> None:
+    """PATCH /admin/conf with a non-URN-safe auth_datahub_corp_group → 422.
+
+    spec: spec/API.md §/admin/conf — auth_datahub_corp_group is "a bounded,
+    URN-safe token"; "string fields are length- and shape-bound".
+    spec: spec/feature/AUTH.md §Marker corpGroup — "Length-capped, URN-safe
+    charset … interpolated into the group URN and displayName."
+    """
+    try:
+        resp = await api_client.patch(
+            _ADMIN_CONF,
+            headers=admin_headers,
+            json={"auth_datahub_corp_group": "bad name)"},
+        )
+        assert resp.status_code == 422, (
+            f"a whitespace/paren corpGroup name must return 422; "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        assert resp.json()["error_code"] == "INVALID_PARAMETER"
+    finally:
+        await _reset_to_defaults(api_client, admin_headers)

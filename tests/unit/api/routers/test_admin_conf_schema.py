@@ -330,3 +330,120 @@ def test_llm_api_key_present_in_exclude_unset_dump() -> None:
         "llm_api_key='' must appear in exclude_unset dump so the router can detect a clear op."
     )
     assert dump["llm_api_key"] == ""
+
+
+# ── 6. Unknown / misspelled keys are rejected (extra="forbid") ────────────────
+
+
+class TestUnknownFieldRejected:
+    """An unrecognised key in the PATCH body raises ValidationError — a misspelled
+    field name is a loud 422, not a silent no-op.
+
+    Spec: spec/API_DESIGN_PRINCIPLE_en.md §4 (Unknown Fields in Write Requests) —
+      "Write-request bodies (POST, PUT, PATCH) reject unknown fields with 422
+      INVALID_PARAMETER rather than silently ignoring them".
+    Spec: spec/API.md §/admin/conf — "A PATCH body carrying an unrecognised field
+      is rejected 422 INVALID_PARAMETER rather than silently ignored, so a
+      misspelled toggle or knob name fails loudly instead of leaving the config
+      unchanged".
+    impl: src/api/schemas/admin.py RuntimeConfPatchRequest —
+      model_config = ConfigDict(extra="forbid").
+    """
+
+    def test_arbitrary_unknown_key_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(bogus_key="x")
+
+    def test_issue_164_misspelled_stub_toggle_rejected(self) -> None:
+        # `stub_llm_client` is the real field; the trailing "s" is issue #164's typo.
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(stub_llm_clients=False)
+
+    def test_plural_corp_group_key_rejected(self) -> None:
+        # `auth_datahub_corp_group` (singular) is the real field.
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(auth_datahub_corp_groups="dataspoke-users")
+
+    def test_valid_known_partial_body_still_constructs(self) -> None:
+        req = RuntimeConfPatchRequest(stub_llm_client=False)
+        assert req.model_dump(exclude_unset=True) == {"stub_llm_client": False}
+
+
+# ── 7. auth_datahub_corp_group — bounded, URN-safe token ─────────────────────
+
+
+class TestAuthDatahubCorpGroupBounds:
+    """auth_datahub_corp_group: max_length=128 + pattern CORP_GROUP_NAME_PATTERN.
+
+    Spec: spec/feature/AUTH.md §Marker corpGroup — "Length-capped, URN-safe
+      charset (exact bounds in impl); interpolated into the group URN and
+      displayName".
+    Spec: spec/API.md §/admin/conf — auth_datahub_corp_group is "a bounded,
+      URN-safe token, default dataspoke-users"; "string fields are length- and
+      shape-bound".
+    impl: src/api/schemas/admin.py RuntimeConfPatchRequest / src/backend/datahub/users.py
+      CORP_GROUP_NAME_PATTERN = ^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$.
+    """
+
+    def test_shipped_default_accepted(self) -> None:
+        req = RuntimeConfPatchRequest(auth_datahub_corp_group="dataspoke-users")
+        assert req.auth_datahub_corp_group == "dataspoke-users"
+
+    def test_name_with_space_and_paren_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(auth_datahub_corp_group="bad name)")
+
+    def test_empty_string_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(auth_datahub_corp_group="")
+
+    def test_comma_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(auth_datahub_corp_group="a,b")
+
+    def test_over_128_chars_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(auth_datahub_corp_group="a" * 129)
+
+    def test_exactly_128_chars_accepted(self) -> None:
+        # A pattern-legal 128-char value: leading [A-Za-z0-9] + 127 tail chars.
+        # This exercises the field's own max_length=128 cap (a 129×"a" value is
+        # already barred by the pattern's {0,127} tail, so it does not).
+        # spec: spec/feature/AUTH.md §Marker corpGroup — "Length-capped ...
+        # exact bounds in impl".
+        # impl: src/api/schemas/admin.py RuntimeConfPatchRequest — max_length=128;
+        # src/backend/datahub/users.py CORP_GROUP_NAME_PATTERN.
+        value = "a" + "b" * 127
+        req = RuntimeConfPatchRequest(auth_datahub_corp_group=value)
+        assert req.auth_datahub_corp_group == value
+
+
+# ── 8. String knob length caps (max_length=128) ─────────────────────────────
+
+
+_LENGTH_CAPPED_STRING_FIELDS = [
+    "llm_provider",
+    "llm_model",
+    "ontogen_debate_reviewer_model",
+    "metagen_debate_reviewer_model",
+]
+
+
+class TestStringKnobLengthCaps:
+    """llm_provider / llm_model / {ontogen,metagen}_debate_reviewer_model: max_length=128.
+
+    Spec: spec/API.md §/admin/conf — "string fields are length- and shape-bound".
+    impl: src/api/schemas/admin.py RuntimeConfPatchRequest — max_length=128 on
+      each of these fields.
+    """
+
+    @pytest.mark.parametrize("field", _LENGTH_CAPPED_STRING_FIELDS)
+    def test_over_128_chars_rejected(self, field: str) -> None:
+        with pytest.raises(ValidationError):
+            RuntimeConfPatchRequest(**{field: "x" * 129})
+
+    @pytest.mark.parametrize("field", _LENGTH_CAPPED_STRING_FIELDS)
+    def test_exactly_128_chars_accepted(self, field: str) -> None:
+        value = "x" * 128
+        req = RuntimeConfPatchRequest(**{field: value})
+        assert getattr(req, field) == value

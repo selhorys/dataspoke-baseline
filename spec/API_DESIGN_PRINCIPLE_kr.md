@@ -65,6 +65,16 @@
 }
 ```
 
+### 4. Unknown Fields in Write Requests
+
+쓰기 요청 바디(`POST`, `PUT`, `PATCH`)는 알 수 없는 필드를 조용히 무시하지 않고
+`422 INVALID_PARAMETER`로 거부한다. 그래서 오타가 난 필드 이름은 조용한 무동작이
+아니라 명시적인 실패로 드러난다.
+
+오류 응답 봉투는 거부된 필드를 `detail.errors[].loc`로 식별하며, 위반한 값 자체는
+절대 그대로 담지 않는다. 쓰기 요청 바디에는 자격 증명이 흔히 실리기 때문이다.
+오류 응답 봉투의 전체 형식은 `API.md` §Error Catalogue가 정의한다.
+
 ---
 
 ## 2. Standard URI Structure

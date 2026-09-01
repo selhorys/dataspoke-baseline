@@ -52,6 +52,55 @@ def test_corpgroup_urn_format() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "bad_name",
+    ["", "has space", "a,b", "x\n", "x" * 129],
+)
+def test_corpgroup_urn_rejects_non_urn_safe_names(bad_name: str) -> None:
+    """corpgroup_urn raises ValueError for a name outside the URN-safe, length-capped
+    charset.
+
+    The name is interpolated into ``urn:li:corpGroup:<name>`` and the group's
+    DataHub ``displayName``; whitespace, URN delimiters (``,`` ``(`` ``)``), a
+    trailing newline, or an over-length value would otherwise be emitted as a
+    malformed corpGroup URN.
+
+    spec: spec/feature/AUTH.md §Marker corpGroup — "Length-capped, URN-safe
+      charset (exact bounds in impl); interpolated into the group URN and
+      displayName."
+    impl: src/backend/datahub/users.py corpgroup_urn docstring — "The message
+      does not quote name" (a name written by direct SQL could be anything;
+      keeping it out of the message keeps logs tidy — the corpGroup name is a
+      public URN component, not a credential).
+    """
+    from src.backend.datahub.users import corpgroup_urn
+
+    with pytest.raises(ValueError) as excinfo:
+        corpgroup_urn(bad_name)
+
+    # impl expectation (not a spec rule): the ValueError message does not quote
+    # the offending input. The empty string is trivially a substring of any
+    # message, so the substring guard only applies to non-empty inputs.
+    if bad_name:
+        assert bad_name not in str(excinfo.value), (
+            f"corpgroup_urn ValueError must not quote the offending input {bad_name!r} "
+            "per src/backend/datahub/users.py corpgroup_urn docstring"
+        )
+
+
+def test_corpgroup_urn_rejects_unicode_bidi_control_char() -> None:
+    """A Unicode bidi/control character in the name is rejected.
+
+    spec: spec/feature/AUTH.md §Marker corpGroup — URN-safe charset; the name is
+      interpolated into the group URN and displayName, so a bidi/control
+      character (here U+202E RIGHT-TO-LEFT OVERRIDE) must not pass.
+    """
+    from src.backend.datahub.users import corpgroup_urn
+
+    with pytest.raises(ValueError):
+        corpgroup_urn("\u202eevil")
+
+
 def test_corpuser_urn_lowercases_email() -> None:
     """corpuser_urn lowercases the email before deriving the URN.
 

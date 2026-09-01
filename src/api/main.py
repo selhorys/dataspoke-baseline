@@ -1,7 +1,7 @@
 """DataSpoke API — FastAPI application factory."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -203,8 +203,41 @@ async def _handle_authentication(request: Request, exc: AuthenticationError) -> 
     return _error_json(request, 401, exc.error_code, str(exc))
 
 
+def _sanitized_validation_errors(
+    errors: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Field-error list for the 422 envelope, scrubbed of the rejected value.
+
+    For every entry keeps `loc` and `type`. Keeps pydantic's own `msg` except
+    when `type == "value_error"`, where `msg` is replaced with a fixed
+    `"Invalid value."` — a custom `@field_validator` may interpolate the
+    submitted value into that message, and request bodies routinely carry
+    credentials. `input` (the rejected value verbatim), `ctx` and `url` are
+    dropped for every entry. The built-in constraint messages
+    (`string_too_long`, `greater_than`, `string_pattern_mismatch`,
+    `extra_forbidden`, `missing`, …) are value-free and stay as the useful
+    diagnostics.
+
+    Spec: spec/API.md §Error Catalogue, spec/API_DESIGN_PRINCIPLE_en.md §1.4.
+    """
+    return [
+        {
+            "loc": e.get("loc"),
+            "msg": "Invalid value." if e.get("type") == "value_error" else e.get("msg"),
+            "type": e.get("type"),
+        }
+        for e in errors
+    ]
+
+
 async def _handle_validation(request: Request, exc: PydanticValidationError) -> JSONResponse:
-    return _error_json(request, 422, "INVALID_PARAMETER", str(exc))
+    return _error_json(
+        request,
+        422,
+        "INVALID_PARAMETER",
+        "Request validation failed.",
+        detail={"errors": jsonable_encoder(_sanitized_validation_errors(exc.errors()))},
+    )
 
 
 async def _handle_request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -213,7 +246,7 @@ async def _handle_request_validation(request: Request, exc: RequestValidationErr
         422,
         "INVALID_PARAMETER",
         "Request validation failed.",
-        detail={"errors": jsonable_encoder(exc.errors())},
+        detail={"errors": jsonable_encoder(_sanitized_validation_errors(exc.errors()))},
     )
 
 

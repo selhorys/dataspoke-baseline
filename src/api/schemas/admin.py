@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.schemas.common import (
     SAFE_DISPLAY_URL_MAX_LENGTH,
@@ -19,6 +19,7 @@ from src.api.schemas.common import (
     PaginatedResponse,
     SingleResponse,
 )
+from src.backend.datahub.users import CORP_GROUP_NAME_PATTERN
 from src.shared.datahub.kafka_security import check_kafka_security
 
 
@@ -352,19 +353,26 @@ class RuntimeConfPatchRequest(BaseModel):
     ``llm_api_key`` is routed to the Kubernetes Secret rather than the DB.
     An explicitly provided ``""`` clears the key; ``None`` (or omitting the
     field) means "leave the key unchanged".
+
+    ``extra="forbid"`` — an unrecognised key (a misspelled toggle or knob name)
+    is rejected ``422 INVALID_PARAMETER`` rather than silently dropped, so a
+    typo fails loudly instead of leaving the config unchanged
+    (spec/API_DESIGN_PRINCIPLE_en.md §1.4).
     """
 
-    llm_provider: str | None = None
-    llm_model: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    llm_provider: Annotated[str | None, Field(default=None, max_length=128)] = None
+    llm_model: Annotated[str | None, Field(default=None, max_length=128)] = None
     llm_api_key: Annotated[str | None, Field(default=None, max_length=8192)] = None
     ontogen_llm_max_iterations: Annotated[int | None, Field(default=None, ge=1, le=20)] = None
     ontogen_debate_max_turns: Annotated[int | None, Field(default=None, ge=2, le=10)] = None
     ontogen_debate_rag_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
-    ontogen_debate_reviewer_model: str | None = None
+    ontogen_debate_reviewer_model: Annotated[str | None, Field(default=None, max_length=128)] = None
     metagen_llm_max_iterations: Annotated[int | None, Field(default=None, ge=1, le=20)] = None
     metagen_debate_max_turns: Annotated[int | None, Field(default=None, ge=2, le=10)] = None
     metagen_debate_rag_k: Annotated[int | None, Field(default=None, ge=0, le=20)] = None
-    metagen_debate_reviewer_model: str | None = None
+    metagen_debate_reviewer_model: Annotated[str | None, Field(default=None, max_length=128)] = None
     metagen_confidence_threshold: Annotated[float | None, Field(default=None, ge=0.0, le=1.0)] = (
         None
     )
@@ -375,7 +383,10 @@ class RuntimeConfPatchRequest(BaseModel):
     stub_llm_client: bool | None = None
     stub_pgvector_manager: bool | None = None
     stub_notification_service: bool | None = None
-    auth_datahub_corp_group: str | None = None
+    auth_datahub_corp_group: Annotated[
+        str | None,
+        Field(default=None, max_length=128, pattern=CORP_GROUP_NAME_PATTERN),
+    ] = None
 
 
 # ── User management ────────────────────────────────────────────────────────────

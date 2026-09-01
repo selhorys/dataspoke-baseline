@@ -20,6 +20,7 @@ Spec: spec/feature/AUTH.md §DataHub Projection Semantics.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from datahub.metadata.schema_classes import (
@@ -37,6 +38,17 @@ logger = logging.getLogger(__name__)
 
 # ── URN helpers ───────────────────────────────────────────────────────────────
 
+#: Accepted shape for ``admin/conf.auth_datahub_corp_group`` — the marker
+#: corpGroup name.  It is interpolated into ``urn:li:corpGroup:<name>`` and the
+#: group's DataHub ``displayName``, so it must stay free of whitespace, URN
+#: delimiters (``(`` ``)`` ``,``) and bidi/control characters.  The leading
+#: ``^`` anchors and ``{0,127}$`` bounds the tail (128 chars total, matching the
+#: column and field length cap).  ``src/api/schemas/admin.py`` imports this
+#: string for the ``PATCH /admin/conf`` field constraint so the write boundary
+#: and this emission-side guard cannot drift.
+CORP_GROUP_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$"
+_CORP_GROUP_NAME_RE: re.Pattern[str] = re.compile(CORP_GROUP_NAME_PATTERN)
+
 
 def corpuser_urn(email: str) -> str:
     """Return the DataHub corpuser URN for *email*.
@@ -51,7 +63,21 @@ def corpuser_urn(email: str) -> str:
 
 
 def corpgroup_urn(name: str) -> str:
-    """Return the DataHub corpGroup URN for *name*."""
+    """Return the DataHub corpGroup URN for *name*.
+
+    *name* is the operator-configured ``admin/conf.auth_datahub_corp_group``.
+    It is re-checked here against :data:`CORP_GROUP_NAME_PATTERN` — the same
+    shape the ``PATCH /admin/conf`` field enforces — because a row written
+    before that constraint existed, or by direct SQL (including an empty
+    string), can still reach this call and would otherwise be emitted as a
+    malformed corpGroup URN.
+
+    Raises:
+        ValueError: *name* is not a valid marker corpGroup name.  The message
+            does not quote *name*.
+    """
+    if not _CORP_GROUP_NAME_RE.fullmatch(name):
+        raise ValueError("auth_datahub_corp_group is not a valid corpGroup name")
     return f"urn:li:corpGroup:{name}"
 
 

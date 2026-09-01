@@ -589,6 +589,7 @@ not factor into DataSpoke API authorization, which is method × role.
 |----------|-------|
 | Group URN | `urn:li:corpGroup:<admin/conf.auth_datahub_corp_group>` |
 | Default name | `dataspoke-users` |
+| Constraints | Length-capped, URN-safe charset (exact bounds in impl); interpolated into the group URN and displayName. |
 | Configured via | `PATCH /admin/conf` (`auth_datahub_corp_group` field). |
 | Created via | Self-healing: every reconciliation pass asserts the group once, unconditionally, before its per-user loop. Both `Status(removed=false)` and `corpGroupInfo` are asserted together (idempotent overwrite — defensive against the DataHub indexing race in which a previous failed attempt left only one of the two aspects committed). Ensuring the group **must precede** `addGroupMembers`, which rejects an unresolvable group URN. The `displayName` is reset to the group name and `members`/`admins`/sub-`groups` are reset to empty arrays on every touch — real membership lives on each user's `nativeGroupMembership` aspect — so the marker group **must not be used as a privilege carrier**. Operators wanting a different display name update `auth_datahub_corp_group` via `/admin/conf` instead of editing it on DataHub. |
 | Rename behaviour | Changing `auth_datahub_corp_group` does not migrate existing memberships. The next reconciliation pass creates the new group and adds every provisioned managed user to it; those users also remain in the old group, which becomes orphaned from DataSpoke's perspective but stays valid on DataHub. Operators avoid this by renaming the corpGroup on DataHub first, then updating the conf field. |
@@ -888,7 +889,7 @@ surfaces relevant to user identity:
 | `PATCH /admin/users/{id}/role` | Update `users.role` (Admin / Editor / Reader) and, when the row carries a `google_sub`, propagate to DataHub via `batchAssignRole`. DataSpoke is SSOT; the DataHub-side projection is one-way. |
 | `DELETE /admin/users/{id}` | Hard delete ([projection retraction sequence](#projection-retraction-sequence)). |
 | `DELETE /admin/users/{id}/google` | Release the row's Google binding — see [§Admin unbind](#admin-unbind). |
-| `PATCH /admin/conf` | Includes `auth_datahub_corp_group` (string, default `dataspoke-users`) — names the marker corpGroup; asserted once per reconciliation pass. |
+| `PATCH /admin/conf` | Includes `auth_datahub_corp_group` (bounded, URN-safe token, default `dataspoke-users`) — names the marker corpGroup; asserted once per reconciliation pass. |
 
 `/admin/*` routes require `users.role = 'Admin'` — checked per-request per
 [Privilege Model](#privilege-model). The JWT carries no admin claim.

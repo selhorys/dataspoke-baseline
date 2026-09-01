@@ -60,6 +60,16 @@ control information.
 }
 ```
 
+### 4. Unknown Fields in Write Requests
+
+Write-request bodies (`POST`, `PUT`, `PATCH`) reject unknown fields with
+`422 INVALID_PARAMETER` rather than silently ignoring them, so a misspelled field
+name surfaces as a loud failure instead of a silent no-op.
+
+The error envelope names a rejected field through `detail.errors[].loc` and never
+reproduces the offending value, because write-request bodies routinely carry
+credentials. The full error-envelope format is owned by `API.md` §Error Catalogue.
+
 ---
 
 ## 2. Standard URI Structure

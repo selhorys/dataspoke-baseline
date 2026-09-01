@@ -461,20 +461,21 @@ Secret rather than the DB — see [LLM API key](#llm-api-key) below.
 
 | Field | Default | Bounds | Owner |
 |-------|---------|--------|-------|
-| `llm_provider` | `gemini` | — | shared LLM client |
-| `llm_model` | `gemini-3.5-flash` | — | shared LLM client |
+| `llm_provider` | `gemini` | length-capped | shared LLM client |
+| `llm_model` | `gemini-3.5-flash` | length-capped | shared LLM client |
 | `ontogen_llm_max_iterations` | `3` | [1, 20] | ontogen inference loop |
 | `ontogen_debate_max_turns` | `4` | [2, 10] | ontogen debate |
 | `ontogen_debate_rag_k` | `5` | [0, 20] | ontogen debate |
-| `ontogen_debate_reviewer_model` | null → reuse `llm_model` | — | ontogen debate |
+| `ontogen_debate_reviewer_model` | null → reuse `llm_model` | length-capped | ontogen debate |
 | `metagen_llm_max_iterations` | `3` | [1, 20] | metagen inference loop |
 | `metagen_debate_max_turns` | `4` | [2, 10] | metagen debate |
 | `metagen_debate_rag_k` | `5` | [0, 20] | metagen debate |
-| `metagen_debate_reviewer_model` | null → reuse `llm_model` | — | metagen debate |
+| `metagen_debate_reviewer_model` | null → reuse `llm_model` | length-capped | metagen debate |
 | `metagen_confidence_threshold` | `0.7` | [0.0, 1.0] | metagen persistence gate |
 | `metagen_ontology_rag_node_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
 | `metagen_ontology_rag_edge_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
 | `metagen_ontology_rag_triple_k` | `5` | [0, 20] | metagen Producer-evidence ontology RAG (`0` disables) |
+| `auth_datahub_corp_group` | `dataspoke-users` | length-capped, URN-safe charset | auth mirror (DataSpoke-user provenance corpGroup) |
 
 The ontogen persistence gate uses the fixed `ONTOLOGY_CONFIDENCE_THRESHOLD`
 backend constant (see [`BACKEND.md`](BACKEND.md)), not a runtime tunable.

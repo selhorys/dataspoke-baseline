@@ -813,13 +813,18 @@ creation, so operators unpause the groups they want active here. No `/internal` 
 `/admin/conf` reads and updates the singleton runtime configuration — the behavioral tunables
 that shape LLM inference and generation (`llm_provider`, `llm_model`, the ontogen/metagen debate,
 RAG, and iteration knobs, `metagen_confidence_threshold`) plus the
-auth-mirror knob `auth_datahub_corp_group` (string, default `dataspoke-users`) that names the
-DataHub corpGroup used as the DataSpoke-user provenance marker. The surface also carries four
+auth-mirror knob `auth_datahub_corp_group` (a bounded, URN-safe token, default
+`dataspoke-users`) that names the DataHub corpGroup used as the DataSpoke-user provenance
+marker (see [AUTH §Marker corpGroup](feature/AUTH.md#marker-corpgroup)). The surface also carries four
 boolean dependency toggles — `stub_redis_client`, `stub_llm_client`, `stub_pgvector_manager`,
 `stub_notification_service` — that force the named external dependency into stub or real mode
 at runtime (no restart). It is seeded with factory defaults and persisted in the `runtime_config`
 table (see [`spec/feature/BACKEND_SCHEMA.md`](feature/BACKEND_SCHEMA.md); defaults live in impl,
-not here). `PATCH` is partial; numeric fields are bound-validated (out-of-range → `422`).
+not here). `PATCH` is partial; numeric fields are bound-validated (out-of-range → `422`) and
+string fields are length- and shape-bound. A `PATCH` body carrying an unrecognised field is
+rejected `422 INVALID_PARAMETER` rather than silently ignored, so a misspelled toggle or knob
+name fails loudly instead of leaving the config unchanged (see
+[API_DESIGN_PRINCIPLE §1.4](API_DESIGN_PRINCIPLE_en.md#4-unknown-fields-in-write-requests)).
 
 The conf surface also carries `llm_api_key` for **online** key rotation, but it is stored in the
 `dataspoke-llm-secret` Kubernetes Secret (not the DB): `PATCH` with `llm_api_key` writes the
@@ -1226,7 +1231,7 @@ machine-readable context about the failure. Currently emitted by:
 
 - `UNKNOWN_VARIABLE` → `detail.unknown: string[]` lists offending variable keys.
 - `INVALID_SCORE` → `detail.score` echoes the rejected value (JSON number when finite, otherwise a string like `"nan"` since JSON has no NaN/Inf).
-- `INVALID_PARAMETER` → `detail.errors` carries FastAPI's `.errors()` field-error list (`loc`/`msg`/`type`/`input` per failed field; `input` echoes the rejected value).
+- `INVALID_PARAMETER` → `detail.errors` carries FastAPI's `.errors()` field-error list with `loc`/`msg`/`type` per failed field. The rejected value is not echoed, because request bodies routinely carry credentials.
 
 Clients should treat `detail` as optional; absent for errors that don't need it.
 
