@@ -3,12 +3,18 @@
 #
 # Calls DataHub GMS directly with a user-supplied DataHub token, so the
 # validation skill can search DataHub for candidate dataset URNs without
-# routing through DataSpoke. Touches ONLY DataHub's public GraphQL surface.
+# routing through DataSpoke. Queries run directly; mutations require a
+# first-argument --confirm gate. Touches ONLY DataHub's public GraphQL surface.
 #
 # Usage:
-#   datahub-graphql '<GRAPHQL_JSON_BODY>'
+#   datahub-graphql [--confirm] <GRAPHQL_JSON_BODY>
 #
-#   GRAPHQL_JSON_BODY  a JSON string {"query":"…","variables":{…}}
+#   --confirm          required only for a GraphQL mutation, and must be the
+#                      FIRST argument. Without it a mutation is not sent.
+#   GRAPHQL_JSON_BODY  a JSON object with a string "query" member and optional
+#                      variables, either literally or as @PATH. @PATH is a
+#                      confined regular file reference; use it for multi-line
+#                      documents rather than shell-quoting them.
 #
 # Config resolution (first match wins):
 #   1. env: DATAHUB_GMS_URL + DATAHUB_TOKEN
@@ -19,14 +25,419 @@
 set -uo pipefail
 
 CONFIG="${HOME}/.dataspoke/config.json"
+MAX_BODY_BYTES=131072
 err() { printf '%s\n' "$*" >&2; }
 
-if [[ $# -lt 1 ]]; then
-  err "usage: datahub-graphql '<GRAPHQL_JSON_BODY>'"
+CONFIRM=false
+if [[ "${1:-}" == "--confirm" ]]; then
+  CONFIRM=true
+  shift
+fi
+
+if [[ $# -ne 1 ]]; then
+  err "usage: datahub-graphql [--confirm] '<GRAPHQL_JSON_BODY>'"
   exit 2
 fi
 
 BODY="$1"
+
+# A GraphQL request body has to be a single JSON object. Keep @PATH confined
+# rather than restoring curl's implicit arbitrary leading-@ file read.
+BODY_FILE=""
+TEMP_BODY_FILE=""
+cleanup_body_file() {
+  [[ -n "$TEMP_BODY_FILE" ]] && rm -f -- "$TEMP_BODY_FILE"
+}
+trap cleanup_body_file EXIT
+if [[ "$BODY" == @* ]]; then
+  BODY_FILE="${BODY#@}"
+  if [[ -z "$BODY_FILE" ]]; then
+    err "Empty '@PATH' — expected a file path after '@'."
+    exit 2
+  fi
+  if [[ -L "$BODY_FILE" ]]; then
+    err "Refusing a symlink as body file: $BODY_FILE"
+    exit 2
+  fi
+  BODY_DIR="$(cd "$(dirname -- "$BODY_FILE")" 2>/dev/null && pwd -P)" || {
+    err "Cannot resolve body file path: $BODY_FILE"
+    exit 2
+  }
+  REAL_BODY_FILE="${BODY_DIR}/$(basename -- "$BODY_FILE")"
+  if [[ ! -f "$REAL_BODY_FILE" || ! -r "$REAL_BODY_FILE" ]]; then
+    err "Cannot read body file (must be a plain, readable file): $BODY_FILE"
+    exit 2
+  fi
+  HOME_REAL="$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)" || {
+    err "Cannot resolve HOME; refusing @PATH body as a precaution."
+    exit 2
+  }
+  case "$REAL_BODY_FILE" in
+    "${HOME_REAL}/.dataspoke"/*|"${HOME_REAL}/.ssh"/*|"${HOME_REAL}/.aws"/*|"${HOME_REAL}/.config"/*|\
+    "${HOME_REAL}/.netrc"|"${HOME_REAL}/.git-credentials"|"${HOME_REAL}/.kube"/*|\
+    "${HOME_REAL}/.gnupg"/*|"${HOME_REAL}/.docker"/*|"${HOME_REAL}/.npmrc"|"${HOME_REAL}/.pypirc")
+      err "Refusing to send $BODY_FILE as a request body — it is under a credential directory."
+      exit 2
+      ;;
+  esac
+  BODY_FILE="$REAL_BODY_FILE"
+  # Open the checked file without following a final symlink, verify that the
+  # path still names that same regular inode, then copy its bytes into a 0600
+  # private file. Validation and curl both consume that immutable copy: curl
+  # never reopens a caller-controlled pathname after the safety checks.
+  TEMP_BODY_FILE="$(python3 -c '
+import os
+import stat
+import re
+import sys
+import tempfile
+
+path = sys.argv[1]
+limit = int(sys.argv[2])
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+out_path = None
+try:
+    fd = os.open(path, flags)
+    opened = os.fstat(fd)
+    current = os.lstat(path)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+        raise ValueError("body file changed while it was being opened")
+    out_fd, out_path = tempfile.mkstemp(prefix="dataspoke-graphql-", suffix=".json")
+    os.fchmod(out_fd, 0o600)
+    total = 0
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise ValueError("body file exceeds client-side guard")
+        os.write(out_fd, chunk)
+    os.close(out_fd)
+    out_fd = None
+finally:
+    try:
+        os.close(fd)
+    except (NameError, OSError):
+        pass
+    try:
+        if "out_fd" in locals() and out_fd is not None:
+            os.close(out_fd)
+    except OSError:
+        pass
+    if sys.exc_info()[0] is not None and out_path is not None:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+print(out_path)
+' "$BODY_FILE" "$MAX_BODY_BYTES")" || {
+    err "Cannot safely materialize body file: $BODY_FILE"
+    exit 2
+  }
+  BODY_FILE="$TEMP_BODY_FILE"
+fi
+
+if [[ -n "$BODY_FILE" ]]; then
+  BODY_BYTES="$(wc -c < "$BODY_FILE" 2>/dev/null | tr -d ' ')"
+  BODY_SOURCE="$BODY_FILE"
+else
+  BODY_BYTES="$(printf '%s' "$BODY" | wc -c | tr -d ' ')"
+  BODY_SOURCE="<inline body>"
+fi
+if [[ ! "$BODY_BYTES" =~ ^[0-9]+$ ]]; then
+  err "Could not determine body size for ${BODY_SOURCE}; refusing to send."
+  exit 2
+fi
+if [[ "$BODY_BYTES" -gt "$MAX_BODY_BYTES" ]]; then
+  err "Body too large: ${BODY_SOURCE} is ${BODY_BYTES} bytes, client-side guard is ${MAX_BODY_BYTES} bytes."
+  exit 2
+fi
+
+# Parse the JSON and scan GraphQL tokens before credentials are resolved or a
+# request is built. The scanner deliberately ignores comments and quoted
+# strings, tracks only top-level operation keywords, and fails closed on an
+# unterminated string or brace. A shell regex is insufficient: Bash does not
+# treat \b as a portable word boundary, and it cannot distinguish literals.
+CLASSIFIER='import json
+import re
+import sys
+
+
+def fail(message):
+    print("Invalid GraphQL JSON body: " + message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def no_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail("duplicate JSON object key: " + key)
+        result[key] = value
+    return result
+
+
+try:
+    body = json.load(sys.stdin, object_pairs_hook=no_duplicate_keys)
+except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+    fail(str(exc))
+
+if not isinstance(body, dict):
+    fail("top-level value must be an object; send one operation per call")
+query = body.get("query")
+if not isinstance(query, str):
+    fail("top-level object must contain a string query member")
+
+tokens = []
+i = 0
+triple_quote = chr(34) * 3
+quote = chr(34)
+backslash = chr(92)
+name_start = lambda char: char == "_" or "A" <= char <= "Z" or "a" <= char <= "z"
+name_part = lambda char: name_start(char) or "0" <= char <= "9"
+while i < len(query):
+    char = query[i]
+    if char in " \t\r\n," or char == "\ufeff":
+        i += 1
+    elif char == "#":
+        newline = query.find("\n", i + 1)
+        i = len(query) if newline == -1 else newline + 1
+    elif query.startswith(triple_quote, i):
+        i += 3
+        while i < len(query):
+            if query[i] == backslash:
+                i += 2
+            elif query.startswith(triple_quote, i):
+                i += 3
+                break
+            else:
+                i += 1
+        else:
+            fail("unterminated GraphQL block string")
+        tokens.append(("STRING", ""))
+    elif char == quote:
+        i += 1
+        while i < len(query) and query[i] != quote:
+            if query[i] in "\r\n" or ord(query[i]) < 0x20:
+                fail("unescaped control character in GraphQL string")
+            if query[i] == backslash:
+                if i + 1 >= len(query):
+                    fail("unterminated GraphQL string escape")
+                escape = query[i + 1]
+                if escape in "\"\\/bfnrt":
+                    i += 2
+                elif escape == "u" and i + 5 < len(query) and all(character in "0123456789abcdefABCDEF" for character in query[i + 2:i + 6]):
+                    i += 6
+                else:
+                    fail("invalid GraphQL string escape")
+            else:
+                i += 1
+        if i == len(query):
+            fail("unterminated GraphQL string")
+        i += 1
+        tokens.append(("STRING", ""))
+    elif name_start(char):
+        start = i
+        i += 1
+        while i < len(query) and name_part(query[i]):
+            i += 1
+        tokens.append(("NAME", query[start:i]))
+    elif char.isdigit() or char == "-":
+        start = i
+        i += 1
+        while i < len(query) and (query[i].isdigit() or query[i] in ".eE+-"):
+            i += 1
+        tokens.append(("NUMBER", query[start:i]))
+    elif query.startswith("...", i):
+        tokens.append(("PUNCT", "..."))
+        i += 3
+    elif char in "!$():=@[]{|}&":
+        tokens.append(("PUNCT", char))
+        i += 1
+    else:
+        fail("unexpected GraphQL character: " + repr(char))
+
+
+def value(index):
+    return tokens[index][1] if index < len(tokens) else None
+
+
+def consume_value(index, allow_variable=True):
+    if index >= len(tokens):
+        fail("value missing")
+    kind, token = tokens[index]
+    if kind == "STRING":
+        return index + 1
+    if kind == "NUMBER":
+        if not re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?", token):
+            fail("invalid number literal")
+        return index + 1
+    if token == "$":
+        if not allow_variable:
+            fail("constant value cannot contain a variable")
+        if index + 1 < len(tokens) and tokens[index + 1][0] == "NAME":
+            return index + 2
+        fail("variable value missing name")
+    if token == "[":
+        index += 1
+        while value(index) != "]":
+            index = consume_value(index, allow_variable)
+        return index + 1
+    if token == "{":
+        index += 1
+        while value(index) != "}":
+            if index + 1 >= len(tokens) or tokens[index][0] != "NAME" or value(index + 1) != ":":
+                fail("object value requires name and colon")
+            index = consume_value(index + 2, allow_variable)
+        return index + 1
+    if kind == "NAME":
+        return index + 1
+    fail("invalid GraphQL value")
+
+
+def consume_const_value(index):
+    return consume_value(index, allow_variable=False)
+
+
+def consume_arguments(index):
+    if value(index) != "(":
+        return index
+    index += 1
+    while value(index) != ")":
+        if index + 1 >= len(tokens) or tokens[index][0] != "NAME" or value(index + 1) != ":":
+            fail("argument requires name and colon")
+        index = consume_value(index + 2)
+    return index + 1
+
+
+def consume_type(index):
+    if value(index) == "[":
+        index = consume_type(index + 1)
+        if value(index) != "]":
+            fail("list type missing closing bracket")
+        index += 1
+    elif index < len(tokens) and tokens[index][0] == "NAME":
+        index += 1
+    else:
+        fail("variable type missing")
+    return index + 1 if value(index) == "!" else index
+
+
+def consume_variable_definitions(index):
+    if value(index) != "(":
+        return index
+    index += 1
+    while value(index) != ")":
+        if value(index) != "$" or index + 2 >= len(tokens) or tokens[index + 1][0] != "NAME" or value(index + 2) != ":":
+            fail("variable definition requires $name: Type")
+        index = consume_type(index + 3)
+        if value(index) == "=":
+            index = consume_const_value(index + 1)
+        index = consume_directives(index)
+    return index + 1
+
+
+def consume_directives(index):
+    while value(index) == "@":
+        if tokens[index + 1:index + 2] and tokens[index + 1][0] == "NAME":
+            index += 2
+        else:
+            fail("directive missing name")
+        index = consume_arguments(index)
+    return index
+
+
+def consume_selection_set(index):
+    if value(index) != "{":
+        fail("expected selection set")
+    index += 1
+    selections = 0
+    while value(index) != "}":
+        if index >= len(tokens):
+            fail("unclosed GraphQL selection set")
+        if value(index) == "...":
+            index += 1
+            if value(index) == "on":
+                if index + 1 >= len(tokens) or tokens[index + 1][0] != "NAME":
+                    fail("inline fragment missing type condition")
+                index = consume_directives(index + 2)
+                index = consume_selection_set(index)
+            elif value(index) == "@" or value(index) == "{":
+                index = consume_directives(index)
+                index = consume_selection_set(index)
+            elif index < len(tokens) and tokens[index][0] == "NAME":
+                index = consume_directives(index + 1)
+            else:
+                fail("fragment spread missing name")
+        elif tokens[index][0] == "NAME":
+            index += 1
+            if value(index) == ":":
+                if index + 1 >= len(tokens) or tokens[index + 1][0] != "NAME":
+                    fail("field alias missing field name")
+                index += 2
+            if value(index) == "(":
+                index = consume_arguments(index)
+            index = consume_directives(index)
+            if value(index) == "{":
+                index = consume_selection_set(index)
+        else:
+            fail("selection must begin with a field or fragment spread")
+        selections += 1
+    if not selections:
+        fail("selection set cannot be empty")
+    return index + 1
+
+
+operations = []
+i = 0
+while i < len(tokens):
+    token_kind, token = tokens[i]
+    if token == "{":
+        operations.append("query")
+        i = consume_selection_set(i)
+    elif token_kind == "NAME" and token in {"query", "mutation", "subscription"}:
+        operation = token
+        i += 1
+        if i < len(tokens) and tokens[i][0] == "NAME":
+            i += 1
+        i = consume_variable_definitions(i)
+        i = consume_directives(i)
+        if value(i) != "{":
+            fail(operation + " operation missing selection set")
+        operations.append(operation)
+        i = consume_selection_set(i)
+    elif token_kind == "NAME" and token == "fragment":
+        if i + 3 >= len(tokens) or tokens[i + 1][0] != "NAME" or value(i + 2) != "on" or tokens[i + 3][0] != "NAME":
+            fail("malformed fragment definition")
+        i = consume_directives(i + 4)
+        if value(i) != "{":
+            fail("fragment missing selection set")
+        i = consume_selection_set(i)
+    else:
+        fail("expected an executable operation or fragment definition")
+
+if not operations:
+    fail("document contains no executable operation")
+print("mutation" if "mutation" in operations else "query")'
+
+if [[ -n "$BODY_FILE" ]]; then
+  OPERATION="$(python3 -c "$CLASSIFIER" < "$BODY_FILE")" || exit $?
+else
+  OPERATION="$(printf '%s' "$BODY" | python3 -c "$CLASSIFIER")" || exit $?
+fi
+
+if [[ "$OPERATION" == "mutation" && "$CONFIRM" != true ]]; then
+  err "Not sent (no --confirm). Review, then re-run with --confirm as the FIRST argument to send:"
+  err "  POST <DATAHUB_GMS_URL>/api/graphql (GraphQL mutation)"
+  err "  Body:"
+  if [[ -n "$BODY_FILE" ]]; then
+    cat "$BODY_FILE" >&2
+  else
+    printf '%s\n' "$BODY" >&2
+  fi
+  exit 2
+fi
 
 GMS="${DATAHUB_GMS_URL:-}"
 TOKEN="${DATAHUB_TOKEN:-}"
@@ -66,11 +477,14 @@ URL="${GMS%/}/api/graphql"
 
 args=(-sS -X POST --max-time 30 -w $'\n%{http_code}')
 args+=(-H "Content-Type: application/json")
-# --data-raw, not -d: -d treats a leading '@' in its value as "read the body
-# from this file", which would turn the caller-supplied BODY into an arbitrary
-# file-read POSTed to the GMS origin. This script's contract is a literal JSON
-# string (see usage header), so the '@' semantics are unwanted.
-args+=(--data-raw "$BODY")
+if [[ -n "$BODY_FILE" ]]; then
+  args+=(--data-binary "@${BODY_FILE}")
+else
+  # --data-raw, not -d: -d treats a leading '@' in its value as "read the body
+  # from this file", which would turn the caller-supplied BODY into an arbitrary
+  # file-read POSTed to the GMS origin.
+  args+=(--data-raw "$BODY")
+fi
 
 # The bearer token never reaches curl's argv (and so never the process
 # table / `ps`): it is handed to curl as a config directive on stdin

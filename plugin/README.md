@@ -65,6 +65,17 @@ refused and the method/URL/body are printed for review instead — a mechanical 
 convention. A body may be a literal JSON string or `@PATH` to read it from a file (required for
 anything multi-line, e.g. a Markdown seed body).
 
+The validation skill may also use `bin/datahub-graphql` to search DataHub for dataset URNs. It
+accepts one JSON object with a string `query` member. Queries run normally; a GraphQL mutation is
+refused unless `--confirm` is its first argument. Its `@PATH` form is confined to readable,
+non-symlink regular files outside known credential locations, and is preferred for multi-line
+documents:
+
+```text
+datahub-graphql @/tmp/dataset-search.json
+datahub-graphql --confirm @/tmp/approved-mutation.json
+```
+
 ## Reading the API contract
 
 The deployment is the authority on its own API. `bin/dataspoke-schema` reads its `/openapi.json`
