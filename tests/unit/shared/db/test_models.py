@@ -648,6 +648,7 @@ def test_validation_result_columns() -> None:
     assert "data_time" in col_names, "ValidationResult missing data_time"
     assert "score" in col_names, "ValidationResult missing score"
     assert "variables" in col_names, "ValidationResult missing variables"
+    assert "score_note" in col_names, "ValidationResult missing score_note"
     assert "ingestion_time" in col_names, "ValidationResult missing ingestion_time"
     # Old columns must be gone
     assert "partition" not in col_names, "ValidationResult has stale partition column"

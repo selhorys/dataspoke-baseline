@@ -787,6 +787,91 @@ async def test_post_result_201(client, mock_svc: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_result_with_score_note_threads_it_to_the_service_and_response(
+    client, mock_svc: AsyncMock
+) -> None:
+    """POST with score_note threads it to record_result and the response body reflects
+    the SERVICE's returned record, not the request body echoed back verbatim.
+
+    The mocked record deliberately returns a DIFFERENT score_note string than the one
+    the request sent: if the route read `body.score_note` straight into the response
+    instead of `record.score_note`, this test would still fail on the wrong value (a
+    swapped-source regression stays visible instead of passing on a same-string
+    coincidence).
+
+    spec: API.md §POST .../attr/validation/result — optional score_note field.
+    spec: VALIDATION.md §Validation Result — score_note field table.
+    """
+    from src.backend.validation.service import ValidationResultRecord
+
+    mock_svc.record_result = AsyncMock(
+        return_value=ValidationResultRecord(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="from-service",
+        )
+    )
+
+    resp = await client.post(
+        _RESULT_URL,
+        json={
+            "data_time": "2026-05-01T00:00:00Z",
+            "score": 0.8,
+            "variables": {"row_cnt": 48.0},
+            "score_note": "breached 1/5: var_03",
+        },
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["score_note"] == "from-service", (
+        "the response must carry the service's returned record, not the request body "
+        f"echoed back verbatim; got {data['score_note']!r}"
+    )
+
+    call_kwargs = mock_svc.record_result.await_args.kwargs
+    assert call_kwargs.get("score_note") == "breached 1/5: var_03", (
+        f"score_note must reach ValidationService.record_result; got {call_kwargs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_result_without_score_note_response_has_null_score_note(
+    client, mock_svc: AsyncMock
+) -> None:
+    """POST without score_note — the response body has score_note: null.
+
+    spec: VALIDATION.md §Validation Result — "Omitted or empty stores as absent."
+    """
+    from src.backend.validation.service import ValidationResultRecord
+
+    mock_svc.record_result = AsyncMock(
+        return_value=ValidationResultRecord(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.0,
+            variables={"row_cnt": 50.0},
+        )
+    )
+
+    resp = await client.post(
+        _RESULT_URL,
+        json={
+            "data_time": "2026-05-01T00:00:00Z",
+            "score": 1.0,
+            "variables": {"row_cnt": 50.0},
+        },
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["score_note"] is None
+
+    call_kwargs = mock_svc.record_result.await_args.kwargs
+    assert call_kwargs.get("score_note") is None
+
+
+@pytest.mark.asyncio
 async def test_post_result_unknown_variable_returns_422_with_code(
     client, mock_svc: AsyncMock
 ) -> None:
@@ -899,6 +984,43 @@ async def test_get_result_honors_from_until_limit_params(
     assert call_kwargs.get("limit") == 10
     assert call_kwargs.get("from_dt") is not None
     assert call_kwargs.get("until_dt") is not None
+
+
+@pytest.mark.asyncio
+async def test_get_result_row_includes_score_note(client, mock_svc: AsyncMock) -> None:
+    """GET result rows surface score_note in the response JSON.
+
+    spec: API.md §GET .../attr/validation/result — "Each row returns score_note
+    (null when the POST omitted the note or supplied an empty string)".
+    """
+    from src.backend.validation.service import ValidationResultRecord
+
+    mock_svc.get_results = AsyncMock(
+        return_value=(
+            [
+                ValidationResultRecord(
+                    data_time=datetime(2026, 5, 1, tzinfo=UTC),
+                    score=0.8,
+                    variables={"row_cnt": 48.0},
+                    score_note="breached 1/5: var_03",
+                ),
+                ValidationResultRecord(
+                    data_time=datetime(2026, 5, 2, tzinfo=UTC),
+                    score=1.0,
+                    variables={"row_cnt": 50.0},
+                ),
+            ],
+            2,
+        )
+    )
+
+    resp = await client.get(_RESULT_URL, headers=auth_headers())
+    assert resp.status_code == 200
+    rows = resp.json()["results"]
+    assert len(rows) == 2
+    by_score = {r["score"]: r["score_note"] for r in rows}
+    assert by_score[0.8] == "breached 1/5: var_03"
+    assert by_score[1.0] is None
 
 
 # ── GET /spoke/validation ─────────────────────────────────────────────

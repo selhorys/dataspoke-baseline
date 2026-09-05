@@ -79,12 +79,12 @@ const METRIC_VALIDATION = {
   // validation config, `valid_in_time` how many of those pass their cadence-anchored
   // window test. Mirrors tests/integration/api_wired/test_uc5_01_governance.py.
   // spec: feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
-  //   unconfigured set" — "All three are counts; none is a score sum".
+  //   unconfigured set" — "the measurer emits two counts — `valid_confd` … and
+  //   `valid_in_time` …. Both are counts; neither is a score sum".
   description: "Daily count of DEV datasets validated inside their own cadence-anchored window",
   metrics: [
-    { name: "total", color: "#64748B", idx: 1 },
-    { name: "valid_confd", color: "#3B82F6", idx: 2 },
-    { name: "valid_in_time", color: "#22C55E", idx: 3 },
+    { name: "valid_confd", color: "#3B82F6", idx: 1 },
+    { name: "valid_in_time", color: "#22C55E", idx: 2 },
   ],
   metric_conf: { time_window_sec: 172800 },
 } as const;

@@ -83,6 +83,7 @@ export interface ValidationResultRow {
   data_time: string;
   score: number;
   variables: Record<string, number>;
+  score_note: string | null;
 }
 
 export interface ValidationResultListResponse {

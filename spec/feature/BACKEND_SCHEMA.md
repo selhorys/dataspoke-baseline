@@ -207,6 +207,7 @@ Also emitted to DataHub as `assertionRunEvent`. Append-only.
 | `data_time` | `TIMESTAMPTZ` | Time the underlying data is for (typically the partition timestamp). Maps to `assertionRunEvent.timestampMillis` and is the timeseries axis for `GET ?from=&until=` |
 | `score` | `DOUBLE PRECISION` | `0.0 ≤ score ≤ 1.0` (CHECK constraint). `1.0` = pass, `0.0` = fail; intermediate values reserved for partial-success semantics |
 | `variables` | `JSONB` | Map of variable name → numeric value. Keys must be a subset of the `validation_configs.variables` **names** (validated at the service layer; `422 UNKNOWN_VARIABLE` on violation) |
+| `score_note` | `TEXT` NULL | Optional free-text explanation of the score (e.g. `"breached 1/5: var_03"`), mostly populated when `score < 1.0`. ≤ 200 chars |
 | `ingestion_time` | `TIMESTAMPTZ` | Server-side `now()` when the row was accepted (audit trail; preserved separately from `data_time`) |
 
 `validation_results` rows are deleted by the conf `DELETE` cascade: deleting a dataset's

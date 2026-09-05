@@ -24,7 +24,7 @@ _ScheduleTier = Literal["hourly", "daily", "weekly"]
 # Keys emitted by each built-in metric type
 _EMITTED_KEYS: dict[str, set[str]] = {
     "ingestion-freshness": {"total", "ingested_in_time"},
-    "validation-score": {"total", "valid_confd", "valid_in_time"},
+    "validation-score": {"valid_confd", "valid_in_time"},
     "doc-health": {"total", "doc_health"},
 }
 

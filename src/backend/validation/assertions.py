@@ -73,12 +73,22 @@ def build_run_event(
     data_time: datetime,
     score: float,
     variables: dict[str, float],
+    score_note: str | None = None,
 ) -> AssertionRunEventClass:
     """Build an AssertionRunEventClass for a pipeline-emitted result.
 
     ``timestampMillis`` is derived from ``data_time`` (the time the underlying
     data is for), not from server-side now().  This aligns DataHub's chart axis
     with the user's mental model.
+
+    ``score_note`` lands in ``nativeResults["score_note"]`` alongside the
+    variables and ``"score"`` — the existing DataHub slot for "other results of
+    evaluation" — but only when it is non-empty; an omitted or empty note emits
+    no such key, so existing pipelines see no behavior change. Uses the same
+    truthiness test as the schema layer's ``v or None`` normalization
+    (``PostValidationResultRequest._check_score_note`` in
+    ``src/api/schemas/validation.py``), so the stored row and the emitted
+    DataHub event never disagree about whether a note exists.
     """
     epoch_ms = int(data_time.timestamp() * 1000)
 
@@ -90,6 +100,8 @@ def build_run_event(
 
     native_results: dict[str, str] = {k: repr(float(v)) for k, v in variables.items()}
     native_results["score"] = repr(float(score))
+    if score_note:
+        native_results["score_note"] = score_note
 
     return AssertionRunEventClass(
         assertionUrn=assertion_urn,

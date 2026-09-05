@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Keys emitted by each built-in metric type (mirrors the schema-layer constant).
 _EMITTED_KEYS: dict[str, set[str]] = {
     "ingestion-freshness": {"total", "ingested_in_time"},
-    "validation-score": {"total", "valid_confd", "valid_in_time"},
+    "validation-score": {"valid_confd", "valid_in_time"},
     "doc-health": {"total", "doc_health"},
 }
 

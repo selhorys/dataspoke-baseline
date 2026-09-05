@@ -143,6 +143,7 @@ async def post_data_validation_result(
         data_time=body.data_time,
         score=body.score,
         variables=body.variables,
+        score_note=body.score_note,
     )
     return ValidationResultRow.model_validate(record)
 

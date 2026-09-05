@@ -44,9 +44,15 @@ export function grainTooltipLabel(grain: ChartGrain): string {
 /**
  * A collapsed chart point. The x key is always `date` (the bucket label),
  * whatever the grain; the remaining keys carry that window's measured values.
- * The index signature admits `string` so the `date` label itself conforms — a
- * value key colliding with `date` is overwritten by the label, so a chart must
- * not plot a series named `date`.
+ * The index signature admits `string` for two reasons: the `date` label itself
+ * must conform, and `valuesOf` may also attach display-only string
+ * annotations (e.g. `score_note`) alongside the numeric series. Neither kind
+ * of string key may be used as a plotted dataKey — a value key colliding with
+ * `date` is overwritten by the label, and a string annotation plotted as a
+ * series would poison the Y-axis domain the same way; a chart that
+ * auto-derives its plotted keys from point keys (as
+ * `metric-timeseries-chart.tsx` does) must filter out every such key, not
+ * just `date`.
  */
 export interface GrainPoint {
   date: string;
@@ -112,7 +118,7 @@ export function toGrainPoints<T>(
     grain: ChartGrain;
     tz: TzMode;
     timeOf: (row: T) => string;
-    valuesOf: (row: T) => Record<string, number>;
+    valuesOf: (row: T) => Record<string, number | string>;
   },
 ): GrainPoint[] {
   const { grain, tz, timeOf, valuesOf } = opts;

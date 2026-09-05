@@ -16,7 +16,7 @@ export const METRIC_TYPES: readonly MetricType[] = [
 /** Keys emitted by each built-in metric type (mirrors _EMITTED_KEYS in the backend). */
 export const METRIC_EMITTED_KEYS: Record<MetricType, string[]> = {
   "ingestion-freshness": ["total", "ingested_in_time"],
-  "validation-score": ["total", "valid_confd", "valid_in_time"],
+  "validation-score": ["valid_confd", "valid_in_time"],
   "doc-health": ["total", "doc_health"],
 };
 
@@ -55,9 +55,8 @@ export interface MetricSeries {
 /**
  * Default series colors, mirroring the backend's factory defaults
  * (src/backend/metrics/bootstrap.py): the shared `total` baseline is slate and
- * each type's own keys take distinct hues — `validation-score` emits two of
- * them (`valid_confd` of `total`, `valid_in_time` of `valid_confd`), so its
- * pair sits on adjacent blue/teal hues to read as one nested progression.
+ * each type's own keys take distinct hues — validation-score's own pair sits
+ * on adjacent blue/teal hues to read as one progression.
  */
 export const METRIC_SERIES_DEFAULT_COLORS: Record<string, string> = {
   total: "#64748B",

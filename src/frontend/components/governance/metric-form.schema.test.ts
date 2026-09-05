@@ -222,7 +222,7 @@ describe("F2 invariant — time_window_sec required for ingestion-freshness", ()
     const result = baseSchema.safeParse(
       withTimeWindow({
         metric_type: "validation-score",
-        metrics: [{ name: "total", selected: true, color: "#64748B", idx: 1 }],
+        metrics: [{ name: "valid_confd", selected: true, color: "#3B82F6", idx: 1 }],
         time_window_sec: undefined,
       }),
     );
@@ -356,10 +356,10 @@ describe("seriesRowsForType — one row per emitted key, reseeded on type change
   });
 
   it("seeds unchecked rows with the backend's factory default color", () => {
-    // validation-score emits three keys (spec/USE_CASE_en.md §UC5), each with a
+    // validation-score emits two keys (spec/USE_CASE_en.md §UC5), each with a
     // factory default color in src/backend/metrics/bootstrap.py.
     const rows = seriesRowsForType("validation-score", []);
-    expect(rows.map((r) => r.name)).toEqual(["total", "valid_confd", "valid_in_time"]);
+    expect(rows.map((r) => r.name)).toEqual(["valid_confd", "valid_in_time"]);
     expect(rows.find((r) => r.name === "valid_confd")?.color).toBe("#3B82F6");
     expect(rows.find((r) => r.name === "valid_in_time")?.color).toBe("#14B8A6");
   });
@@ -375,6 +375,17 @@ describe("seriesRowsForType — one row per emitted key, reseeded on type change
       idx: 1,
     });
     expect(rows.find((r) => r.name === "total")?.selected).toBe(false);
+  });
+
+  it("drops a stale descriptor whose name is outside the type's emitted keys", () => {
+    // A validation-score metric persisted before `total` was dropped from
+    // METRIC_EMITTED_KEYS still carries a `total` descriptor from the API;
+    // reseeding the control for that type must not surface it as a row.
+    const rows = seriesRowsForType("validation-score", [
+      { name: "total", color: "#64748B", idx: 1 },
+    ]);
+    expect(rows.map((r) => r.name)).toEqual(["valid_confd", "valid_in_time"]);
+    expect(rows.every((r) => !r.selected)).toBe(true);
   });
 });
 
@@ -533,7 +544,7 @@ describe("fromInternal — validation-score serializes metric_conf as { time_win
       metric_type: "validation-score",
       title: "Validation Score",
       description: "Tracks validation pass rate",
-      metrics: [{ name: "total", selected: true, color: "#64748B", idx: 1 }],
+      metrics: [{ name: "valid_confd", selected: true, color: "#3B82F6", idx: 1 }],
       time_window_sec: 604800,
       schedule_tier: "weekly",
       is_enabled: true,
@@ -595,9 +606,8 @@ describe("round-trip toInternal → fromInternal (API payload field preservation
       title: "Val Score",
       description: "Validation score metric",
       metrics: [
-        { name: "total", color: "#64748B", idx: 1 },
-        { name: "valid_confd", color: "#3B82F6", idx: 2 },
-        { name: "valid_in_time", color: "#14B8A6", idx: 3 },
+        { name: "valid_confd", color: "#3B82F6", idx: 1 },
+        { name: "valid_in_time", color: "#14B8A6", idx: 2 },
       ],
       metric_conf: { time_window_sec: 3600 },
       schedule_tier: "hourly",

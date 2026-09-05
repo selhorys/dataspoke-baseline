@@ -784,12 +784,14 @@ ingest/query — surfaced through the routes below.
   Missing declared keys are accepted silently — partial coverage is a legitimate signal.
   On success the service:
   1. inserts the row in `validation_results` (`dataset_urn`, `data_time`, `score`,
-     `variables` JSONB, `ingestion_time = now()`),
+     `variables` JSONB, `score_note`, `ingestion_time = now()`),
   2. emits `assertionRunEvent` to DataHub with `timestampMillis = data_time` (epoch ms,
      UTC), `runId = uuid4()`, `result.type = SUCCESS` if `score == 1.0` else `FAILURE`,
      `result.actualAggValue = score`, `result.nativeResults` populated as
-     `Map<string,string>` with `repr(float)` of each variable plus `"score"` itself,
-     `runtimeContext.ingestion_time = now()`. The acting corpuser URN is the DataHub
+     `Map<string,string>` with `repr(float)` of each variable plus `"score"` itself, and
+     `"score_note"` when the POST supplied a non-empty note (see
+     [VALIDATION §Validation Result](VALIDATION.md#validation-result) for the field's own
+     rules), `runtimeContext.ingestion_time = now()`. The acting corpuser URN is the DataHub
      peripheral's configured `service_corpuser_urn` (default `urn:li:corpuser:dataspoke`),
      not a hardcoded constant.
 - `GET` filters `validation_results` by `data_time ∈ [from, until)` (server cap
@@ -1332,12 +1334,14 @@ column constraint, a row carrying an out-of-range window (written by something o
 API) makes every run of that metric fail rather than being silently clamped; it is repaired by
 `PATCH`ing a valid window — the patched value wins the merge — not by a migration.
 
-**`validation-score` counts and the unconfigured set**: the measurer emits three counts —
-`total` (datasets matched by `dataset_filter`), `valid_confd` (of those, the ones carrying a
-`validation_configs` row), and `valid_in_time` (of `valid_confd`, the ones that pass the
-per-dataset test defined above). All three are counts; none is a score sum, so
-`valid_in_time / valid_confd` reads as a pass rate over the configured estate and
-`valid_confd / total` as validation coverage of the scope.
+**`validation-score` counts and the unconfigured set**: the measurer emits two counts —
+`valid_confd` (of the datasets matched by `dataset_filter`, the ones carrying a
+`validation_configs` row) and `valid_in_time` (of `valid_confd`, the ones that pass the
+per-dataset test defined above). Both are counts; neither is a score sum, so
+`valid_in_time / valid_confd` reads as a pass rate over the configured estate. The
+scanned-dataset count (every dataset matched by `dataset_filter`, configured or not) is not
+carried in `values` for this metric type — it is available independently via
+`breakdown.dataset_count` (below).
 
 A dataset with **no** validation config gets **no verdict row** — it is neither `met = true`
 nor `met = false`. It has declared no arrival cadence and promised no result, so counting it
@@ -1349,8 +1353,8 @@ unconfigured set is visible as an `unknown` bucket rather than silently dropped 
 `valid_confd` is what makes that bucket's size a first-class value on the result row.
 
 Because of this, `validation-score`'s verdict list is a **subset** of its scan. `breakdown`'s
-`dataset_count` remains the total scanned (`= total`) and is derived from the scan, never from
-`len(verdicts)`; only `ingestion-freshness` and `doc-health` have the two coincide.
+`dataset_count` is the total scanned, derived from the scan and independent of `values` —
+never from `len(verdicts)`; only `ingestion-freshness` and `doc-health` have the two coincide.
 
 Both windowed measurers stay pure-aggregation and DataSpoke-DB-side: they read `events`,
 `validation_results`, `validation_configs`, `ingestion_source`, and `ingestion_source_dataset`
@@ -1546,8 +1550,8 @@ different claims, so without it a stale verdict is not diagnosable. Tier 2's lab
 *grain*, not a producer: it is the newest `COMPLETE` on the owning source whatever wrote it. `dataset_count` is the total scanned
 (matching `dataset_filter`),
 not the number of failed entries and not the number of verdicts; it is derived from the scan,
-so `validation-score`'s unconfigured datasets count toward it exactly as they count toward
-`total`. `len(datasets) == failed count` is implied. The
+so `validation-score`'s unconfigured datasets count toward it even though they carry no
+verdict and no `values` entry. `len(datasets) == failed count` is implied. The
 breakdown lets time-range queries on `attr/result` answer per-dataset historical
 questions without re-running the metric.
 

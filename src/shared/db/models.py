@@ -349,6 +349,7 @@ class ValidationResult(Base):
     data_time: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     variables: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    score_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     ingestion_time: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

@@ -190,12 +190,13 @@ The pipeline POSTs results as it produces partitions. The body is small.
 ```json
 {
   "data_time": "2026-05-08T00:00:00Z",
-  "score": 1.0,
+  "score": 0.8,
   "variables": {
     "row_cnt": 50.0,
     "col1_mean": 31.1,
     "col2_null_cnt": 15.0
-  }
+  },
+  "score_note": "breached 1/5: var_03"
 }
 ```
 
@@ -204,6 +205,7 @@ The pipeline POSTs results as it produces partitions. The body is small.
 | `data_time` | RFC 3339 timestamp (UTC) | yes | The time the underlying data is for — typically the partition timestamp, **not** the time the validation ran. Becomes the timeseries axis (§6). |
 | `score` | `double` | yes | `0.0 ≤ score ≤ 1.0`. `1.0` = pass; `0.0` = fail; intermediate values reserved for partial-success semantics — currently treated as fail at the DataHub enum boundary, but the raw value is preserved. |
 | `variables` | `map[string, double]` | yes | Measured values keyed by variable name. Subset of the declared `variables` is allowed (missing keys are recorded as absent); keys not declared in conf are **rejected** (`422 UNKNOWN_VARIABLE`). |
+| `score_note` | `string` | no | Optional free-text explanation of the score, mostly used when `score < 1.0` (e.g. `"breached 1/5: var_03"`). ≤ 200 chars. No ASCII control characters except `\t` (0x09) and `\n` (0x0a); the empty string is allowed. Omitted or empty stores as absent. |
 
 ### Validation rules on POST
 
@@ -246,7 +248,8 @@ GET .../attr/validation/result?from=2026-05-01T00:00:00Z&until=2026-05-08T00:00:
     "offset": 0, "limit": 1000, "total_count": 7,
     "results": [
       { "data_time": "2026-05-07T00:00:00Z", "score": 1.0,
-        "variables": {"row_cnt": 51.0, "col1_mean": 31.1, "col2_null_cnt": 9.0} },
+        "variables": {"row_cnt": 51.0, "col1_mean": 31.1, "col2_null_cnt": 9.0},
+        "score_note": null },
       { "data_time": "2026-05-06T00:00:00Z", ... },
       ...
       { "data_time": "2026-05-01T00:00:00Z", ... }
@@ -358,7 +361,8 @@ assertionRunEvent:
       row_cnt:       "50.0"
       col1_mean:     "31.1"
       col2_null_cnt: "15.0"
-      score:         "1.0"                        # raw score also kept here for fidelity
+      score:         "0.8"                        # raw score also kept here for fidelity
+      score_note:    "breached 1/5: var_03"        # only when the POST supplied a non-empty note
   runtimeContext:
     ingestion_time: <server-side now() epoch ms>  # for audit
 ```
@@ -370,7 +374,7 @@ Key choices, with rationale:
 | `timestampMillis` | `data_time` (not ingest time) | Aligns DataHub's UI chart axis and `from`/`until` filters with the user mental model — "when the data is for", not "when we wrote it". |
 | `result.type` | `SUCCESS` if `score == 1.0` else `FAILURE` | Maps the 0..1 `score` onto the `AssertionResultType` enum (`INIT / SUCCESS / FAILURE / ERROR`), using only `SUCCESS` and `FAILURE`. The raw `score` is preserved in `actualAggValue` and `nativeResults["score"]` so partial-success semantics are not lost when introduced. |
 | `result.actualAggValue` | `score` | Single float per run; DataHub UI plots it as a timeseries chart for free. |
-| `result.nativeResults` | `Map<string,string>` of variables | The DataHub-native slot for "other results of evaluation". Variables serialized via `repr(float)` (round-trip safe under IEEE 754) and parsed back on read. |
+| `result.nativeResults` | `Map<string,string>` of variables | The DataHub-native slot for "other results of evaluation". Variables serialized via `repr(float)` (round-trip safe under IEEE 754) and parsed back on read. When the POST supplies a non-empty `score_note`, it is added under `nativeResults["score_note"]` alongside `score` and each variable; an omitted or empty note emits no such key. |
 | `partitionSpec` | omitted (DataHub default) | DataHub's `PartitionType` enum is `@deprecated` ("Unused!" — see `PartitionSpec.pdl`) and the assertion / Quality tab UI does not consume `partitionSpec`. Partition identity already lives in `timestampMillis` (= `data_time`); setting `partitionSpec` would be decoration with no consumer. |
 | `runtimeContext.ingestion_time` | server now() | Preserves the audit trail of when the result was actually accepted by DataSpoke. |
 

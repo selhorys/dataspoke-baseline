@@ -92,7 +92,9 @@ The `Quality Score` section renders a `score` line chart; the `Variables`
 section renders **small multiples** — one auto-scaled, full-width line chart per declared
 variable stacked in a single column (one chart per row), each captioned with the variable's
 name and description so differing value scales do not flatten each other. Both draw straight
-lines (linear interpolation, no smoothing) with a visible point per plotted value.
+lines (linear interpolation, no smoothing) with a visible point per plotted value. Hovering a
+point on the `Quality Score` chart shows `score_note` in the tooltip when the underlying
+(grain-collapsed) result carries one.
 A single [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) sits in the
 `Quality Score` heading row and governs the `Quality Score` chart and every `Variables`
 chart together — the `Variables` section carries no picker of its own. Each chart plots one

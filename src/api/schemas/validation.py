@@ -367,6 +367,14 @@ class PostValidationResultRequest(BaseModel):
             "(a result may report partial coverage, including none)."
         )
     )
+    score_note: str | None = Field(
+        default=None,
+        description=(
+            "Optional free-text explanation of the score, mostly used when "
+            "score < 1.0 (≤ 200 chars; empty string allowed). Omitted or empty "
+            "stores as absent"
+        ),
+    )
 
     @field_validator("variables", mode="after")
     @classmethod
@@ -382,6 +390,19 @@ class PostValidationResultRequest(BaseModel):
                 )
         return v
 
+    @field_validator("score_note", mode="after")
+    @classmethod
+    def _check_score_note(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if len(v) > 200:
+            raise ValueError("score_note must not exceed 200 characters")
+        if _DESC_CTRL_RE.search(v):
+            raise ValueError("score_note contains control characters")
+        # Empty string is a valid input but normalizes to absent, matching
+        # every other optional free-text field's "omitted or empty" contract.
+        return v or None
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
@@ -392,6 +413,7 @@ class PostValidationResultRequest(BaseModel):
                     "col1_mean": 31.1,
                     "col2_null_cnt": 15.0,
                 },
+                "score_note": "breached 1/5: var_03",
             }
         }
     )
@@ -435,6 +457,13 @@ class ValidationResultRow(BaseModel):
     data_time: datetime = Field(description="Time the data is for (partition timestamp)")
     score: float = Field(description="Pass/fail score in [0.0, 1.0]")
     variables: dict[str, Any] = Field(description="Measured variable values")
+    score_note: str | None = Field(
+        default=None,
+        description=(
+            "Free-text explanation of the score. null when the POST omitted the "
+            "note or supplied an empty string"
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -288,6 +288,7 @@ def upgrade() -> None:
         sa.Column("data_time", TIMESTAMPTZ, nullable=False),
         sa.Column("score", sa.Float(), nullable=False),
         sa.Column("variables", JSONB, nullable=False),
+        sa.Column("score_note", sa.Text(), nullable=True),
         sa.Column("ingestion_time", TIMESTAMPTZ, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(
             "score BETWEEN 0.0 AND 1.0",

@@ -79,6 +79,7 @@ class ValidationResultRecord(BaseModel):
     data_time: datetime
     score: float
     variables: dict[str, Any]
+    score_note: str | None = None
 
 
 class ValidationListItem(BaseModel):
@@ -324,6 +325,7 @@ class ValidationService:
         data_time: datetime,
         score: float,
         variables: dict[str, float],
+        score_note: str | None = None,
     ) -> ValidationResultRecord:
         """Validate and persist a pipeline-emitted result, then emit to DataHub.
 
@@ -365,6 +367,7 @@ class ValidationService:
             data_time=data_time,
             score=score,
             variables=variables,
+            score_note=score_note,
             ingestion_time=datetime.now(tz=UTC),
         )
         self._db.add(row)
@@ -378,6 +381,7 @@ class ValidationService:
             data_time=data_time,
             score=score,
             variables=variables,
+            score_note=score_note,
         )
 
         emitted = await report_result(self._datahub, assertion_urn, run_event)
@@ -401,6 +405,7 @@ class ValidationService:
             data_time=row.data_time,
             score=row.score,
             variables=dict(row.variables) if row.variables else {},
+            score_note=row.score_note,
         )
 
     async def get_results(
@@ -432,6 +437,7 @@ class ValidationService:
                 ValidationResult.data_time,
                 ValidationResult.score,
                 ValidationResult.variables,
+                ValidationResult.score_note,
                 func.row_number()
                 .over(
                     partition_by=ValidationResult.data_time,
@@ -450,7 +456,7 @@ class ValidationService:
         sub = sub.subquery()  # type: ignore[assignment]  # SQLAlchemy Select -> Subquery rebind.
 
         rows_q = (
-            select(sub.c.data_time, sub.c.score, sub.c.variables)
+            select(sub.c.data_time, sub.c.score, sub.c.variables, sub.c.score_note)
             .where(sub.c.rn == 1)
             .order_by(sub.c.data_time.desc())
             .limit(effective_limit)
@@ -464,6 +470,7 @@ class ValidationService:
                 data_time=r.data_time,
                 score=r.score,
                 variables=dict(r.variables) if r.variables else {},
+                score_note=r.score_note,
             )
             for r in rows
         ]

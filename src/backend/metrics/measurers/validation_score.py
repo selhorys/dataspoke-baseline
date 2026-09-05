@@ -1,10 +1,11 @@
 """Measurer: validation-score — counts datasets whose current validation state is passing.
 
-Three counts, each a strict subset of the one before it: ``total`` (the datasets
-``dataset_filter`` matched), ``valid_confd`` (of those, the ones carrying a
+Two counts: ``valid_confd`` (of the datasets ``dataset_filter`` matched, the ones carrying a
 ``validation_configs`` row) and ``valid_in_time`` (of *those*, the ones that pass the
-per-dataset test below). None is a score sum, so ``valid_in_time / valid_confd`` reads as a
-pass rate over the configured estate and ``valid_confd / total`` as validation coverage.
+per-dataset test below). Neither is a score sum, so ``valid_in_time / valid_confd`` reads as a
+pass rate over the configured estate. The scanned-dataset count (every dataset matched by
+``dataset_filter``, configured or not) is not carried in ``values`` for this metric type — it
+is available independently via ``breakdown.dataset_count``.
 
 **The per-dataset test**: take the dataset's single latest validation result overall — the
 newest row by ``data_time`` (ties broken by ``ingestion_time`` descending, so a re-posted
@@ -118,8 +119,8 @@ async def measure(
     Returns
     -------
     tuple[dict[str, float], list[DatasetVerdict]]
-        ``(values, verdicts)`` where values has keys ``total``, ``valid_confd``
-        and ``valid_in_time``. Verdicts cover the **configured** subset only — a
+        ``(values, verdicts)`` where values has keys ``valid_confd`` and
+        ``valid_in_time``. Verdicts cover the **configured** subset only — a
         dataset with no ``validation_configs`` row is left verdict-less so it
         reads ``unknown`` rather than failing. ``evidence_at`` is the **counted**
         result's ``data_time`` and ``None`` when nothing was counted (no result at
@@ -128,9 +129,8 @@ async def measure(
         checked the dataset just now and found nothing inside its window. The
         stale validation date stays available in ``detail.latest_data_time``.
     """
-    total = len(datasets)
     if not datasets:
-        return ({"total": 0.0, "valid_confd": 0.0, "valid_in_time": 0.0}, [])
+        return ({"valid_confd": 0.0, "valid_in_time": 0.0}, [])
 
     window_sec = int(metric_conf["time_window_sec"])
 
@@ -147,7 +147,7 @@ async def measure(
     # Iterate the scope, not the map, so verdict order follows the scan order.
     configured = [urn for urn in datasets if urn in attribute_by_urn]
     if not configured:
-        return ({"total": float(total), "valid_confd": 0.0, "valid_in_time": 0.0}, [])
+        return ({"valid_confd": 0.0, "valid_in_time": 0.0}, [])
 
     # ── 2. Fetch the latest ValidationResult row per configured dataset ───────
     # No window predicate here on purpose: the test is about the dataset's newest
@@ -241,7 +241,6 @@ async def measure(
         )
 
     values: dict[str, float] = {
-        "total": float(total),
         "valid_confd": float(len(configured)),
         "valid_in_time": float(valid_in_time),
     }

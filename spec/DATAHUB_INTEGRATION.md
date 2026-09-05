@@ -327,7 +327,9 @@ Mandatory conventions for the DataSpoke emission path:
    The raw `score` is preserved in `actualAggValue` and `nativeResults["score"]`
    so partial-success semantics can be introduced later without losing fidelity.
 7. **`nativeResults` carries variables.** `Map<string,string>` of variable name →
-   `repr(float)` (round-trip safe under IEEE 754); parsed back as float on read.
+   `repr(float)` (round-trip safe under IEEE 754); every variable entry is `repr(float)`
+   and parsed back as float on read; the reserved `score` and (when supplied) `score_note`
+   entries are excluded from that parse.
 8. **Append-only timeseries.** Multiple POSTs with the same `data_time` become
    distinct `assertionRunEvent` rows; the GET endpoint returns
    last-write-wins per distinct `data_time`. This matches DataHub's

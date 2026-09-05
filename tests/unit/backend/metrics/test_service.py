@@ -988,6 +988,79 @@ async def test_create_metric_config_rejects_a_key_the_type_does_not_emit(service
     assert exc_info.value.error_code == "INVALID_PARAMETER"
 
 
+async def test_create_metric_config_rejects_total_for_validation_score(service, db):
+    """`"total"` is not one of `validation-score`'s emitted keys and is rejected.
+
+    This is the service-layer sibling of
+    `tests/unit/api/schemas/test_metrics_schedule_tier.py::test_metrics_validation_score_rejects_total`
+    — `_validate_series` (`src/backend/metrics/service.py`) carries its own copy of
+    `_EMITTED_KEYS`, separate from the schema layer's, so the narrowed set has to be
+    pinned here too or a stale reintroduction of `"total"` at this copy would leave
+    the whole unit suite green.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
+          unconfigured set" — the measurer emits `valid_confd` / `valid_in_time` only;
+          `total` is not an emitted key for this metric type.
+    Spec: spec/API.md §Metric — Definition body — "`name` is one of the type's emitted
+          keys […]; unknown keys return `422 INVALID_PARAMETER`".
+    """
+    mock_scalar_query(db, None)
+    mock_db_refresh(db)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.create_metric_config(
+            metric_id="test-validation-score",
+            mode="active",
+            metric_type="validation-score",
+            title="t",
+            description="d",
+            metrics=[{"name": "total", "color": "#64748B", "idx": 1}],
+            metric_conf={"time_window_sec": 86400},
+            dataset_filter="",
+        )
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+    # Backstop: rejection must come from the emitted-keys rule, not some other
+    # branch of _validate_series (bad color, bad idx, duplicate name/idx).
+    assert "keys not emitted by 'validation-score'" in str(exc_info.value)
+
+
+async def test_patch_metric_config_rejects_total_merged_onto_validation_score(service, db):
+    """A PATCH merging a `total` series onto an existing validation-score row is rejected.
+
+    This is the actual gap the schema layer cannot cover: `ReplaceMetricConfigRequest`
+    only runs on create/replace bodies, so a PATCH that changes only `metrics` reaches
+    `_validate_series` with no schema-layer check ever having seen the merged state.
+    Reintroducing `"total"` at the service's own `_EMITTED_KEYS` copy would otherwise
+    let a PATCH through where a POST/PUT with the identical body would already 422.
+
+    Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
+          unconfigured set".
+    Spec: spec/API.md §Metric — Definition body "(`POST /spoke/governance/metric`,
+          PUT/PATCH `.../attr/conf`)" — "`name` is one of the type's emitted keys
+          (see USE_CASE §UC5); unknown keys return `422 INVALID_PARAMETER`".
+    """
+    row = _make_definition_row(
+        metric_type="validation-score",
+        metrics=[
+            {"name": "valid_confd", "color": "#3B82F6", "idx": 1},
+            {"name": "valid_in_time", "color": "#14B8A6", "idx": 2},
+        ],
+        metric_conf={"time_window_sec": 172800},
+    )
+    mock_scalar_query(db, row)
+    mock_db_refresh(db)
+
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        await service.patch_metric_config(
+            row.id,
+            {"metrics": [{"name": "total", "color": "#64748B", "idx": 1}]},
+        )
+    assert exc_info.value.error_code == "INVALID_PARAMETER"
+    # Backstop: rejection must come from the emitted-keys rule, not some other
+    # branch of _validate_series (bad color, bad idx, duplicate name/idx).
+    assert "keys not emitted by 'validation-score'" in str(exc_info.value)
+
+
 async def test_create_metric_config_rejects_a_duplicate_series_name(service, db):
     """Spec: spec/API.md §Metric — Definition body — "`name` and `idx` are each unique
     within the metric"."""
@@ -1531,9 +1604,10 @@ async def test_breakdown_dataset_count_is_the_scanned_scope_not_the_verdict_coun
     count reports as 2.
 
     Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score`'s verdict list
-          is a **subset** of its scan. `breakdown`'s `dataset_count` remains the total
-          scanned (`= total`) and is derived from the scan, never from `len(verdicts)`;
-          only `ingestion-freshness` and `doc-health` have the two coincide."
+          is a **subset** of its scan. `breakdown`'s `dataset_count` is the total
+          scanned, derived from the scan and independent of `values` — never from
+          `len(verdicts)`; only `ingestion-freshness` and `doc-health` have the two
+          coincide."
     """
     from src.backend.metrics.measurers import DatasetVerdict
 
@@ -1546,9 +1620,8 @@ async def test_breakdown_dataset_count_is_the_scanned_scope_not_the_verdict_coun
         metric_type="validation-score",
         is_enabled=True,
         metrics=[
-            {"name": "total", "color": "#64748B", "idx": 1},
-            {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
-            {"name": "valid_in_time", "color": "#14B8A6", "idx": 3},
+            {"name": "valid_confd", "color": "#3B82F6", "idx": 1},
+            {"name": "valid_in_time", "color": "#14B8A6", "idx": 2},
         ],
     )
     _run_session(db, row, scope_urns=[confd_pass, confd_fail, unconfigured])
@@ -1556,7 +1629,7 @@ async def test_breakdown_dataset_count_is_the_scanned_scope_not_the_verdict_coun
     db.add = MagicMock(side_effect=added.append)
     _stub_measurer(
         monkeypatch,
-        {"total": 3.0, "valid_confd": 2.0, "valid_in_time": 1.0},
+        {"valid_confd": 2.0, "valid_in_time": 1.0},
         [
             DatasetVerdict(urn=confd_pass, met=True, evidence_at=None, detail={}),
             DatasetVerdict(urn=confd_fail, met=False, evidence_at=None, detail={"why": "stale"}),

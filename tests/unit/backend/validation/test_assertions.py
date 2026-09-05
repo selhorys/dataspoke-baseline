@@ -273,3 +273,75 @@ class TestBuildRunEvent:
         data_time = datetime(2026, 5, 1, tzinfo=UTC)
         event = self._build(score=1.0, data_time=data_time)
         assert event.status == AssertionRunStatusClass.COMPLETE
+
+    def test_non_empty_score_note_is_added_to_native_results(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — nativeResults["score_note"] is set
+        # alongside "score" and each variable when the POST supplies a non-empty note.
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = build_run_event(
+            assertion_urn=self._ASSERTION_URN,
+            dataset_urn=_DATASET_URN,
+            data_time=data_time,
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="breached 1/5: var_03",
+        )
+        native = event.result.nativeResults
+        assert native["score_note"] == "breached 1/5: var_03"
+        # Alongside, not instead of, the existing entries.
+        assert native["row_cnt"] == repr(48.0)
+        assert native["score"] == repr(0.8)
+
+    def test_score_note_omitted_adds_no_native_results_key(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — "an omitted or empty note emits no
+        # such key". score_note defaults to None (the default parameter is never passed).
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = self._build(score=1.0, data_time=data_time)
+        assert "score_note" not in event.result.nativeResults
+
+    def test_whitespace_only_score_note_is_still_added_build_run_event_does_not_strip(
+        self,
+    ) -> None:
+        """A whitespace-only note reaching build_run_event directly IS added.
+
+        ``build_run_event``'s guard is ``if score_note:`` — plain Python truthiness,
+        under which a non-empty whitespace string (``"   "``) is truthy (only the
+        empty string ``""`` is falsy). Reading the impl rules out the tempting
+        assumption that "whitespace-only" is treated like "empty" here: that
+        normalization — turning a whitespace-only note into ``None`` — is not part of
+        this function's contract at all. It happens one layer up, in
+        ``PostValidationResultRequest._check_score_note`` (``src/api/schemas/validation.py``),
+        whose own ``return v or None`` only maps the *empty* string to ``None`` and
+        passes a whitespace-only string through unchanged (its ``len(v) > 200`` /
+        control-character checks don't touch whitespace either) — so a caller that
+        goes through the schema first never hands ``build_run_event`` a whitespace-only
+        note in practice, but the function itself does not enforce that.
+
+        spec: VALIDATION.md §assertionRunEvent — "an omitted or empty note emits no
+        such key" (empty, not whitespace).
+        """
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = build_run_event(
+            assertion_urn=self._ASSERTION_URN,
+            dataset_urn=_DATASET_URN,
+            data_time=data_time,
+            score=1.0,
+            variables={"row_cnt": 50.0},
+            score_note="   ",
+        )
+        assert event.result.nativeResults["score_note"] == "   "
+
+    def test_empty_string_score_note_adds_no_native_results_key(self) -> None:
+        # spec: VALIDATION.md §assertionRunEvent — "an omitted or empty note emits no
+        # such key". The empty string is the one falsy non-None input to the
+        # `if score_note:` guard.
+        data_time = datetime(2026, 5, 1, tzinfo=UTC)
+        event = build_run_event(
+            assertion_urn=self._ASSERTION_URN,
+            dataset_urn=_DATASET_URN,
+            data_time=data_time,
+            score=1.0,
+            variables={"row_cnt": 50.0},
+            score_note="",
+        )
+        assert "score_note" not in event.result.nativeResults

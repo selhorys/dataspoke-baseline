@@ -97,7 +97,7 @@ dataset_filter: "origin = 'PROD' AND is_primary = true"
 
 ### Validation score
 
-Valid series names are `total`, `valid_confd`, and `valid_in_time`; all are dataset counts.
+Valid series names are `valid_confd` and `valid_in_time`; both are dataset counts.
 The window is anchored per dataset on its validation configuration cadence, as defined by the live
 contract, rather than being a client-calculated score window. That cadence — the `attribute`
 section of the dataset's validation conf (`cadence_unit`/`cadence_offset`) — is registered by
@@ -116,15 +116,12 @@ metric_type: validation-score
 title: Production validation coverage
 description: Counts primary production datasets configured and validated within their two-day window.
 metrics:
-  - name: total
-    color: "#64748B"
-    idx: 1
   - name: valid_confd
     color: "#3B82F6"
-    idx: 2
+    idx: 1
   - name: valid_in_time
     color: "#22C55E"
-    idx: 3
+    idx: 2
 metric_conf:
   time_window_sec: 172800
 schedule_tier: daily
@@ -215,12 +212,13 @@ the named values and handle a zero denominator.
   `ingested_in_time` is those whose latest ingestion evidence is inside `time_window_sec` before
   the measurement. Evidence is the owning source's per-dataset observation when DataHub reports
   one, otherwise its newest non-dry-run `INGESTION.COMPLETE`.
-- **Validation score:** `total` is the resolved scope; `valid_confd` is datasets with a validation
+- **Validation score:** `valid_confd` is datasets (within the resolved scope) with a validation
   configuration; `valid_in_time` is configured datasets whose latest result overall (not merely a
   result selected from the window) has score `1.0` and is on time. Timeliness is anchored to each
   dataset's validation-configuration arrival cadence and declared lag, with
   `time_window_sec` as its width. Datasets without a configuration are not failures: they are
-  unevaluated and read `met: "unknown"` from `/dataset`.
+  unevaluated and read `met: "unknown"` from `/dataset`. The resolved-scope count itself is not an
+  emitted value — read it from `breakdown.dataset_count` instead.
 - **Doc health:** `total` is the resolved scope; `doc_health` counts datasets with both a non-empty
   table description and a non-empty description on every column. Other datasets fail and appear in
   the result breakdown. In that breakdown, a failing dataset's `missing_column_descriptions: []` is

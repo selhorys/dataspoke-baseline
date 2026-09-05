@@ -5,7 +5,8 @@ measurer module so that ``get_measurer`` can resolve any registered name.
 
 Built-in metric types:
 - ``ingestion-freshness``: counts datasets ingested within the time window.
-- ``validation-score``: sums per-dataset validation scores within the time window.
+- ``validation-score``: counts configured datasets whose latest validation result is
+  inside their cadence-anchored window and passing.
 - ``doc-health``: counts datasets with complete table and column documentation.
 """
 

@@ -13,6 +13,7 @@ spec: BACKEND.md §Event Catalogue — VALIDATION.RESULT_RECORDED
 """
 
 import re
+from collections import namedtuple
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,6 +36,15 @@ _REPORT = "src.backend.validation.service.report_result"
 _BUILD_EVENT = "src.backend.validation.service.build_run_event"
 _BUILD_URN = "src.backend.validation.service.build_assertion_urn"
 _FAKE_URN = "urn:li:assertion:abc123"
+
+#: The exact column set `get_results`'s collapse subquery selects
+#: (``sub.c.data_time, sub.c.score, sub.c.variables, sub.c.score_note``). A namedtuple
+#: rather than a bare ``MagicMock`` so an attribute the SELECT does not carry raises
+#: ``AttributeError`` instead of silently returning an auto-mock — a bare MagicMock
+#: would stay green even if the code dropped a column from the SELECT while still
+#: reading it off the row. Verifying the *actual* SELECT column list against real
+#: PostgreSQL is the api-wired layer's job, not this unit test's.
+_ResultRow = namedtuple("_ResultRow", ["data_time", "score", "variables", "score_note"])
 
 
 # ── record_result ─────────────────────────────────────────────────────────────
@@ -377,20 +387,23 @@ async def test_get_results_returns_rows_and_total_count(
     count_mock = _scalar_count(3)
     rows_mock = MagicMock()
     rows_mock.all.return_value = [
-        MagicMock(
+        _ResultRow(
             data_time=datetime(2026, 5, 1, tzinfo=UTC),
             score=1.0,
             variables={"row_cnt": 50.0},
+            score_note=None,
         ),
-        MagicMock(
+        _ResultRow(
             data_time=datetime(2026, 5, 2, tzinfo=UTC),
             score=0.8,
             variables={"row_cnt": 48.0},
+            score_note=None,
         ),
-        MagicMock(
+        _ResultRow(
             data_time=datetime(2026, 5, 3, tzinfo=UTC),
             score=0.5,
             variables={"row_cnt": 10.0},
+            score_note=None,
         ),
     ]
     route_db_execute(db, [("count(", count_mock)], default=rows_mock)
@@ -446,9 +459,9 @@ async def test_get_results_returned_in_descending_data_time_order(
     count_mock = _scalar_count(3)
     rows_mock = MagicMock()
     rows_mock.all.return_value = [
-        MagicMock(data_time=dt_newest, score=0.9, variables={"row_cnt": 51.0}),
-        MagicMock(data_time=dt_mid, score=0.7, variables={"row_cnt": 42.0}),
-        MagicMock(data_time=dt_oldest, score=1.0, variables={"row_cnt": 50.0}),
+        _ResultRow(data_time=dt_newest, score=0.9, variables={"row_cnt": 51.0}, score_note=None),
+        _ResultRow(data_time=dt_mid, score=0.7, variables={"row_cnt": 42.0}, score_note=None),
+        _ResultRow(data_time=dt_oldest, score=1.0, variables={"row_cnt": 50.0}, score_note=None),
     ]
     route_db_execute(db, [("count(", count_mock)], default=rows_mock)
 
@@ -539,3 +552,171 @@ async def test_record_result_duplicate_data_time_both_calls_succeed_and_emit_eve
         f"Expected 2 RESULT_RECORDED events (one per POST), got "
         f"{result_recorded_count}; all event_types: {event_types}"
     )
+
+
+# ── score_note ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_result_score_note_persisted_on_row_and_returned(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """record_result(score_note=...) persists it on the ValidationResult row added to
+    the session and returns it on the ValidationResultRecord.
+
+    spec: BACKEND_SCHEMA.md §validation_results — score_note column.
+    spec: VALIDATION.md §Validation Result — score_note field.
+    """
+    from src.shared.db.models import ValidationResult
+
+    config = _make_config_row(variables=[_var("row_cnt")])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+    db.commit = AsyncMock()
+
+    added_objects: list = []
+
+    def capture_add(obj):
+        added_objects.append(obj)
+
+    db.add = MagicMock(side_effect=capture_add)
+
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=True),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+
+        record = await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="breached 1/5: var_03",
+        )
+
+    result_rows = [o for o in added_objects if isinstance(o, ValidationResult)]
+    assert result_rows, "ValidationResult row must be added to db"
+    assert result_rows[0].score_note == "breached 1/5: var_03"
+    assert record.score_note == "breached 1/5: var_03"
+
+
+@pytest.mark.asyncio
+async def test_record_result_score_note_omitted_persists_none(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """record_result without score_note persists None on the row and the record.
+
+    spec: VALIDATION.md §Validation Result — "Omitted or empty stores as absent."
+    """
+    from src.shared.db.models import ValidationResult
+
+    config = _make_config_row(variables=[_var("row_cnt")])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+    db.commit = AsyncMock()
+
+    added_objects: list = []
+
+    def capture_add(obj):
+        added_objects.append(obj)
+
+    db.add = MagicMock(side_effect=capture_add)
+
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=True),
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+
+        record = await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=1.0,
+            variables={"row_cnt": 50.0},
+        )
+
+    result_rows = [o for o in added_objects if isinstance(o, ValidationResult)]
+    assert result_rows, "ValidationResult row must be added to db"
+    assert result_rows[0].score_note is None
+    assert record.score_note is None
+
+
+@pytest.mark.asyncio
+async def test_record_result_forwards_score_note_to_build_run_event(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """record_result passes score_note through to build_run_event, which feeds
+    report_result (the DataHub emit).
+
+    spec: VALIDATION.md §DataHub Aspect Mapping §assertionRunEvent — score_note lands
+    in nativeResults["score_note"] via build_run_event.
+    """
+    config = _make_config_row(variables=[_var("row_cnt")])
+    db.execute = AsyncMock(return_value=_scalar_result(config))
+    db.commit = AsyncMock()
+    db.add = MagicMock()
+
+    with (
+        patch(_REPORT, new_callable=AsyncMock, return_value=True),
+        patch(_BUILD_EVENT) as mock_build_event,
+        patch(_BUILD_URN, return_value=_FAKE_URN),
+    ):
+        mock_db_refresh(db)
+
+        await svc.record_result(
+            dataset_urn=_DATASET_URN,
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="breached 1/5: var_03",
+        )
+
+    assert mock_build_event.called, "build_run_event must be called"
+    call_kwargs = mock_build_event.call_args.kwargs
+    assert call_kwargs.get("score_note") == "breached 1/5: var_03", (
+        f"build_run_event must receive score_note; got kwargs: {call_kwargs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_results_returns_score_note_per_collapsed_row(
+    svc: ValidationService, db: AsyncMock
+) -> None:
+    """get_results returns score_note per collapsed row, sourced from the row-number/
+    collapse subquery.
+
+    The row stand-ins are ``_ResultRow`` namedtuples carrying exactly the four fields
+    the collapse subquery selects, not a bare ``MagicMock`` — if the SELECT ever
+    dropped ``score_note`` while ``get_results`` still read ``r.score_note`` off the
+    row, a bare ``MagicMock`` would silently auto-create the attribute and this test
+    would stay green. This test does not verify the actual SELECT column list against
+    real PostgreSQL — that is the api-wired layer's job.
+
+    spec: VALIDATION.md §GET result — each row returns score_note (null when the POST
+    omitted the note or supplied an empty string).
+    """
+    count_mock = _scalar_count(2)
+    rows_mock = MagicMock()
+    rows_mock.all.return_value = [
+        _ResultRow(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="breached 1/5: var_03",
+        ),
+        _ResultRow(
+            data_time=datetime(2026, 5, 2, tzinfo=UTC),
+            score=1.0,
+            variables={"row_cnt": 50.0},
+            score_note=None,
+        ),
+    ]
+    route_db_execute(db, [("count(", count_mock)], default=rows_mock)
+
+    rows, total_count = await svc.get_results(dataset_urn=_DATASET_URN)
+
+    assert total_count == 2
+    by_data_time = {r.data_time: r for r in rows}
+    assert by_data_time[datetime(2026, 5, 1, tzinfo=UTC)].score_note == (
+        "breached 1/5: var_03"
+    )
+    assert by_data_time[datetime(2026, 5, 2, tzinfo=UTC)].score_note is None

@@ -44,10 +44,15 @@ _FACTORY_DEFAULTS: list[dict[str, Any]] = [
             "Daily count of datasets whose latest validation result is inside their "
             "cadence-anchored window and passing, against the configured estate"
         ),
+        # seed_factory_defaults() only inserts this row when absent — an existing
+        # dev/prod row predating the total-drop change keeps its old 3-series
+        # `metrics` list (including "total"). Delete that row (letting bootstrap
+        # re-insert this two-series default) or PATCH it to drop "total" from its
+        # stored metrics, or a later PATCH to that row will 422 against the
+        # narrower _EMITTED_KEYS allow-list.
         "metrics": [
-            {"name": "total", "color": _TOTAL_COLOR, "idx": 1},
-            {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
-            {"name": "valid_in_time", "color": "#14B8A6", "idx": 3},
+            {"name": "valid_confd", "color": "#3B82F6", "idx": 1},
+            {"name": "valid_in_time", "color": "#14B8A6", "idx": 2},
         ],
         "metric_conf": {"time_window_sec": 172800},
         "dataset_filter": "",

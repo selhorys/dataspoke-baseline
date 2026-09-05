@@ -14,7 +14,7 @@
  *     start on Monday and are labelled by that Monday's date".
  *   - "A row whose timestamp does not parse contributes to no window and is
  *     dropped rather than grouped under a placeholder label."
- * spec: spec/feature/FRONTEND_VALIDATION.md §Detail — the Quality Score
+ * spec: spec/feature/FRONTEND_VALIDATION.md §Page contracts — the Quality Score
  *   timeseries over `GET .../attr/validation/result` rows (`data_time`, `score`).
  *
  * recharts is stubbed (ResponsiveContainer measures the DOM; jsdom has no
@@ -26,12 +26,21 @@
  * The display timezone is pinned to UTC so window boundaries are host-independent.
  */
 
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, within } from "@testing-library/react";
 import { ValidationScoreChart } from "./validation-score-chart";
 import type { ValidationResultRow } from "@/types/validation";
+import type { TooltipContentProps } from "recharts";
 
 vi.mock("@/lib/preferences/timezone", () => ({ useDisplayTz: () => "utc" }));
+
+// Captures the `content` render-function recharts' real <Tooltip> is given, so
+// the tests below can invoke it directly with hand-built payload props — the
+// stub can't surface a function value via a data-* attribute the way it does
+// for the other plain-data props, so this module-scoped variable stands in.
+// Must be prefixed "mock" — Vitest's `vi.mock` factory hoisting only allows
+// referencing outer bindings whose name starts with "mock".
+let mockTooltipContent: ((props: TooltipContentProps) => React.ReactNode) | null = null;
 
 vi.mock("recharts", () => {
   const Passthrough = ({ children }: { children?: React.ReactNode }) => (
@@ -75,14 +84,29 @@ vi.mock("recharts", () => {
       <div data-testid="x-axis" data-key={String(dataKey)} />
     ),
     YAxis: () => null,
-    Tooltip: () => null,
+    Tooltip: ({
+      content,
+    }: {
+      content?: (props: TooltipContentProps) => React.ReactNode;
+    }) => {
+      mockTooltipContent = content ?? null;
+      return null;
+    },
   };
+});
+
+beforeEach(() => {
+  mockTooltipContent = null;
 });
 
 // ── Fixtures (inline, readable) ─────────────────────────────────────────────────
 
-function row(dataTime: string, score: number): ValidationResultRow {
-  return { data_time: dataTime, score, variables: { row_cnt: 1 } };
+function row(
+  dataTime: string,
+  score: number,
+  scoreNote: string | null = null,
+): ValidationResultRow {
+  return { data_time: dataTime, score, variables: { row_cnt: 1 }, score_note: scoreNote };
 }
 
 function categories(): string[] {
@@ -91,10 +115,10 @@ function categories(): string[] {
   ) as string[];
 }
 
-function plotted(): { date: string; score?: number }[] {
+function plotted(): { date: string; score?: number; score_note?: string }[] {
   return JSON.parse(
     screen.getByTestId("line-chart").getAttribute("data-points") as string,
-  ) as { date: string; score?: number }[];
+  ) as { date: string; score?: number; score_note?: string }[];
 }
 
 const EMPTY_MESSAGE = /no score data/i;
@@ -111,7 +135,10 @@ describe("ValidationScoreChart — one point per grain window", () => {
     );
 
     expect(categories()).toEqual(["2026-05-04"]);
-    expect(plotted()).toEqual([{ date: "2026-05-04", score: 0.9 }]);
+    // score_note's null-to-empty-string normalization is asserted deliberately,
+    // once, in the tooltip describe block below — this test is about grain
+    // collapse, so it only pins date/score.
+    expect(plotted()).toMatchObject([{ date: "2026-05-04", score: 0.9 }]);
   });
 
   it("emits one point per window, ascending", () => {
@@ -162,7 +189,10 @@ describe("ValidationScoreChart — a single grain window renders a visible point
     render(<ValidationScoreChart results={[row("2026-05-04T09:00:00Z", 0.82)]} />);
 
     expect(screen.getByTestId("line-chart")).toBeInTheDocument();
-    expect(plotted()).toEqual([{ date: "2026-05-04", score: 0.82 }]);
+    // score_note's null-to-empty-string normalization is asserted deliberately,
+    // once, in the tooltip describe block below — this test is about the
+    // single-window plot, so it only pins date/score.
+    expect(plotted()).toMatchObject([{ date: "2026-05-04", score: 0.82 }]);
     expect(screen.getByTestId("line")).toHaveAttribute("data-key", "score");
     expect(screen.queryByText(EMPTY_MESSAGE)).not.toBeInTheDocument();
   });
@@ -216,8 +246,179 @@ describe("ValidationScoreChart — nothing plottable", () => {
       />,
     );
 
-    expect(plotted()).toEqual([{ date: "2026-05-04", score: 0.82 }]);
+    // score_note's null-to-empty-string normalization is asserted deliberately,
+    // once, in the tooltip describe block below — this test is about dropping
+    // unparseable rows, so it only pins date/score.
+    expect(plotted()).toMatchObject([{ date: "2026-05-04", score: 0.82 }]);
     expect(categories()).not.toContain("—");
     expect(screen.queryByText(EMPTY_MESSAGE)).not.toBeInTheDocument();
+  });
+});
+
+// ── Quality Score tooltip ────────────────────────────────────────────────────────
+// spec: spec/feature/FRONTEND_VALIDATION.md §Page contracts — "Hovering a point
+//   on the Quality Score chart shows score_note in the tooltip when the
+//   underlying (grain-collapsed) result carries one."
+// The accessibility-attribute cases below are not spec-anchored: they pin the
+// tooltip's parity with Recharts' own `DefaultTooltipContent` (announcing its
+// content via `role="status"`/`aria-live` when Recharts' `accessibilityLayer`
+// is enabled), a requirement established during this change's backend+frontend
+// review rather than a distinct spec line.
+
+describe("ValidationScoreChart — quality score tooltip", () => {
+  it("shows the note text when the hovered point carries a score_note", () => {
+    render(
+      <ValidationScoreChart
+        results={[row("2026-05-04T09:00:00Z", 0.4, "breached 1/5: var_03")]}
+      />,
+    );
+    const point = plotted()[0];
+    expect(mockTooltipContent).not.toBeNull();
+
+    const { container } = render(
+      mockTooltipContent!({
+        active: true,
+        payload: [{ payload: point }],
+        label: point.date,
+      } as unknown as TooltipContentProps) as React.ReactElement,
+    );
+
+    expect(within(container).getByText("breached 1/5: var_03")).toBeInTheDocument();
+    expect(within(container).getByText(/Date: 2026-05-04/)).toBeInTheDocument();
+    expect(within(container).getByText(/score: 0\.4000/)).toBeInTheDocument();
+  });
+
+  it("wires the tooltip's grain label to the chart's own grain prop, not a hardcoded default", () => {
+    // At the default `daily` grain the label is always "Date: …", so a
+    // hardcoded "Date" literal (or a call reading DEFAULT_CHART_GRAIN instead
+    // of the `grain` prop) would pass every other case here undetected. Only a
+    // non-default grain, exercised end-to-end (chart prop → tooltip label),
+    // proves the wiring is real.
+    render(
+      <ValidationScoreChart
+        results={[row("2026-05-04T09:00:00Z", 0.4)]}
+        grain="hourly"
+      />,
+    );
+    const point = plotted()[0];
+    expect(mockTooltipContent).not.toBeNull();
+
+    const { container } = render(
+      mockTooltipContent!({
+        active: true,
+        payload: [{ payload: point }],
+        label: point.date,
+      } as unknown as TooltipContentProps) as React.ReactElement,
+    );
+
+    expect(within(container).getByText("Hour: 2026-05-04 09:00")).toBeInTheDocument();
+  });
+
+  it("renders the grain label and score with no note paragraph when score_note is null", () => {
+    render(<ValidationScoreChart results={[row("2026-05-04T09:00:00Z", 0.4)]} />);
+    const point = plotted()[0];
+    expect(mockTooltipContent).not.toBeNull();
+    // Deliberate, single assertion of the null-to-empty-string normalization
+    // `valuesOf` applies (chart-grain.ts's own doc comment on display-only
+    // string annotations) — the three grain/plotting tests above only pin
+    // date/score and leave this detail to this test.
+    expect(point.score_note).toBe("");
+
+    const { container } = render(
+      mockTooltipContent!({
+        active: true,
+        payload: [{ payload: point }],
+        label: point.date,
+      } as unknown as TooltipContentProps) as React.ReactElement,
+    );
+
+    expect(within(container).getByText(/Date: 2026-05-04/)).toBeInTheDocument();
+    expect(within(container).getByText(/score: 0\.4000/)).toBeInTheDocument();
+    // Exactly two lines (label + score) — no third, note paragraph.
+    expect(container.querySelectorAll("p")).toHaveLength(2);
+  });
+
+  it("renders nothing when inactive or when Recharts supplies no payload entry", () => {
+    render(<ValidationScoreChart results={[row("2026-05-04T09:00:00Z", 0.4)]} />);
+    const point = plotted()[0];
+    expect(mockTooltipContent).not.toBeNull();
+
+    expect(
+      mockTooltipContent!({
+        active: false,
+        payload: [{ payload: point }],
+        label: point.date,
+      } as unknown as TooltipContentProps),
+    ).toBeNull();
+    expect(
+      mockTooltipContent!({
+        active: true,
+        payload: undefined,
+        label: point.date,
+      } as unknown as TooltipContentProps),
+    ).toBeNull();
+    // Recharts genuinely calls `content` with `active: true` and an EMPTY
+    // `payload` array during hover transitions — the impl's third guard
+    // clause (`payload.length === 0`) is what stops `payload[0].payload` from
+    // being read off `undefined` and crashing the chart on hover.
+    expect(
+      mockTooltipContent!({
+        active: true,
+        payload: [],
+        label: point.date,
+      } as unknown as TooltipContentProps),
+    ).toBeNull();
+  });
+
+  it("carries role=status and aria-live=assertive only when accessibilityLayer is set", () => {
+    render(<ValidationScoreChart results={[row("2026-05-04T09:00:00Z", 0.4)]} />);
+    const point = plotted()[0];
+    expect(mockTooltipContent).not.toBeNull();
+
+    const accessible = render(
+      mockTooltipContent!({
+        active: true,
+        payload: [{ payload: point }],
+        label: point.date,
+        accessibilityLayer: true,
+      } as unknown as TooltipContentProps) as React.ReactElement,
+    );
+    const accessibleWrapper = accessible.container.firstElementChild as HTMLElement;
+    expect(accessibleWrapper).toHaveAttribute("role", "status");
+    expect(accessibleWrapper).toHaveAttribute("aria-live", "assertive");
+
+    const plain = render(
+      mockTooltipContent!({
+        active: true,
+        payload: [{ payload: point }],
+        label: point.date,
+      } as unknown as TooltipContentProps) as React.ReactElement,
+    );
+    const plainWrapper = plain.container.firstElementChild as HTMLElement;
+    expect(plainWrapper).not.toHaveAttribute("role");
+    expect(plainWrapper).not.toHaveAttribute("aria-live");
+  });
+
+  it("memoizes the tooltip content function by grain — stable across an unrelated rerender, recomputed when grain changes", () => {
+    // The component's own comment: a fresh inline arrow every render would
+    // make React unmount/remount the tooltip subtree on every render
+    // (this page polls every 15s), including mid-hover. Passing every one of
+    // the tooltip tests above requires only that SOME content function be
+    // supplied each render — none of them compare identity across renders, so
+    // none would catch a regression to an unmemoized inline arrow.
+    const results = [row("2026-05-04T09:00:00Z", 0.4)];
+    const { rerender } = render(<ValidationScoreChart results={results} grain="daily" />);
+    const first = mockTooltipContent;
+    expect(first).not.toBeNull();
+
+    // Same grain, same props — the memoized function must be the identical
+    // reference.
+    rerender(<ValidationScoreChart results={results} grain="daily" />);
+    expect(mockTooltipContent).toBe(first);
+
+    // Changed grain — the `[grain]` dependency must invalidate the memo, or
+    // grainTooltipLabel(grain) inside the closure would go stale.
+    rerender(<ValidationScoreChart results={results} grain="hourly" />);
+    expect(mockTooltipContent).not.toBe(first);
   });
 });

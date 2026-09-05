@@ -60,9 +60,8 @@ _VALID_VALIDATION_BODY = {
     "title": "Validation score",
     "description": "Count of datasets whose latest validation result is in window and passing",
     "metrics": [
-        {"name": "total", "color": "#64748B", "idx": 1},
-        {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
-        {"name": "valid_in_time", "color": "#14B8A6", "idx": 3},
+        {"name": "valid_confd", "color": "#3B82F6", "idx": 1},
+        {"name": "valid_in_time", "color": "#14B8A6", "idx": 2},
     ],
     "metric_conf": {"time_window_sec": 86400},
     "dataset_filter": "",
@@ -323,6 +322,32 @@ class TestReplaceMetricConfigRequest:
             "metrics": [{"name": "total", "color": "#64748B", "idx": 1}],
         })
         assert [s.name for s in req.metrics] == ["total"]
+
+    def test_metrics_validation_score_rejects_total(self) -> None:
+        """`"total"` is not an emitted key for `validation-score` and raises 422.
+
+        Unlike `ingestion-freshness` and `doc-health` (which do emit `total`),
+        `validation-score`'s measurer no longer emits `total` in its `values` dict — the
+        scanned-dataset count is exposed only via `breakdown.dataset_count`. A series
+        naming `total` for this metric_type must be rejected the same way any other
+        unknown key is.
+
+        Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score` counts and
+              the unconfigured set": "the measurer emits two counts — `valid_confd` […]
+              and `valid_in_time` […]. […] The scanned-dataset count […] is not carried
+              in `values` for this metric type".
+        Spec: spec/API.md §Metric — Definition body — "`name` is one of the type's
+              emitted keys […]; unknown keys return `422 INVALID_PARAMETER`".
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            ReplaceMetricConfigRequest(**{
+                **_VALID_VALIDATION_BODY,
+                "metrics": [{"name": "total", "color": "#64748B", "idx": 1}],
+            })
+        assert "keys not emitted by 'validation-score'" in str(exc_info.value), (
+            "backstop: rejection must come from the emitted-keys rule, not from some "
+            "other validator on the series entry."
+        )
 
     def test_metrics_duplicate_name_raises(self) -> None:
         """Spec: spec/API.md §Metric — Definition body — "`name` and `idx` are each

@@ -18,6 +18,7 @@ from src.api.schemas.validation import (
     PutValidationConfRequest,
     ValidationAttribute,
     ValidationParameter,
+    ValidationResultRow,
     ValidationVariable,
 )
 from src.shared.metric_conf import MAX_TIME_WINDOW_SEC
@@ -962,3 +963,105 @@ class TestPostValidationResultRequestDataTime:
                     "variables": {"row_cnt": 50.0},
                 }
             )
+
+
+class TestPostValidationResultRequestScoreNote:
+    """spec: VALIDATION.md §Validation Result — the `score_note` field table row."""
+
+    def test_score_note_at_200_chars_accepted(self) -> None:
+        # spec: VALIDATION.md §Validation Result — score_note ≤ 200 chars
+        req = PostValidationResultRequest(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="x" * 200,
+        )
+        assert req.score_note == "x" * 200
+
+    def test_score_note_at_201_chars_rejected(self) -> None:
+        # spec: VALIDATION.md §Validation Result — score_note ≤ 200 chars
+        with pytest.raises(ValidationError, match=r"200|exceed|max"):
+            PostValidationResultRequest(
+                data_time=datetime(2026, 5, 1, tzinfo=UTC),
+                score=0.8,
+                variables={"row_cnt": 48.0},
+                score_note="x" * 201,
+            )
+
+    def test_score_note_with_control_byte_rejected(self) -> None:
+        # spec: VALIDATION.md §Validation Result — score_note disallows ASCII control
+        # chars except \t (0x09) and \n (0x0a). 0x01 (SOH) is rejected.
+        with pytest.raises(ValidationError):
+            PostValidationResultRequest(
+                data_time=datetime(2026, 5, 1, tzinfo=UTC),
+                score=0.8,
+                variables={"row_cnt": 48.0},
+                score_note="bad\x01note",
+            )
+
+    def test_score_note_with_tab_accepted(self) -> None:
+        # spec: VALIDATION.md §Validation Result — \t (0x09) is in the carve-out set.
+        req = PostValidationResultRequest(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="col1\tcol2",
+        )
+        assert "\t" in req.score_note
+
+    def test_score_note_with_newline_accepted(self) -> None:
+        # spec: VALIDATION.md §Validation Result — \n (0x0a) is in the carve-out set.
+        req = PostValidationResultRequest(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="line1\nline2",
+        )
+        assert "\n" in req.score_note
+
+    def test_empty_string_score_note_normalizes_to_none(self) -> None:
+        # spec: VALIDATION.md §Validation Result — "Omitted or empty stores as absent."
+        # Empty string is a valid input but normalizes to None, matching every other
+        # optional free-text field's "omitted or empty" contract.
+        req = PostValidationResultRequest(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+            score_note="",
+        )
+        assert req.score_note is None
+
+    def test_omitted_score_note_defaults_to_none(self) -> None:
+        # spec: VALIDATION.md §Validation Result — score_note is optional.
+        req = PostValidationResultRequest(
+            data_time=datetime(2026, 5, 1, tzinfo=UTC),
+            score=0.8,
+            variables={"row_cnt": 48.0},
+        )
+        assert req.score_note is None
+
+
+class TestValidationResultRow:
+    """spec: API.md §GET .../attr/validation/result — row shape includes score_note."""
+
+    def test_non_null_score_note_round_trips(self) -> None:
+        row = ValidationResultRow.model_validate(
+            {
+                "data_time": datetime(2026, 5, 1, tzinfo=UTC),
+                "score": 0.8,
+                "variables": {"row_cnt": 48.0},
+                "score_note": "breached 1/5: var_03",
+            }
+        )
+        assert row.score_note == "breached 1/5: var_03"
+
+    def test_null_score_note_round_trips(self) -> None:
+        row = ValidationResultRow.model_validate(
+            {
+                "data_time": datetime(2026, 5, 1, tzinfo=UTC),
+                "score": 1.0,
+                "variables": {"row_cnt": 50.0},
+                "score_note": None,
+            }
+        )
+        assert row.score_note is None

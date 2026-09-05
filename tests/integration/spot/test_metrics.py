@@ -33,14 +33,17 @@ Concerns covered (each test targets one spec contract):
 
 - validation-score anchors the declared window on each dataset's own cadence: two
   datasets with identical evidence land on opposite verdicts, and deleting one's
-  validation conf turns its failure into no verdict at all (counted by total, dropped
-  from valid_confd, absent from the breakdown, `unknown` on the dataset view)
+  validation conf still counts in breakdown.dataset_count (the scan is unaffected) but
+  drops from valid_confd, is absent from the breakdown, and reads `unknown` on the
+  dataset view
 - POST method/run dry_run=true → no persisted result, no RUN_COMPLETE event
 - POST method/run dry_run=false → values is dict[str, float]
 - POST method/run concurrent → 409 METRIC_RUNNING
 - breakdown.datasets[] has no 'category' field
 - breakdown counts derive from seeded state and reconcile with the RUN_COMPLETE event's
-  breakdown_summary (bound by run_id): dataset_count == values.total, affected_count == failed count
+  breakdown_summary (bound by run_id): dataset_count == values.total for
+  ingestion-freshness/doc-health (independent of values for validation-score, which does
+  not emit total), affected_count == failed count
 - metric_id kebab regex acceptance and rejection
 
 Spot is the right layer for the windowing tests (ingestion-freshness and
@@ -2146,7 +2149,8 @@ async def test_ingestion_freshness_reads_source_keyed_events_not_dataset_keyed(
 #       upper bound is shifted back by the dataset's own declared arrival lag, read from
 #       validation_configs.attribute.
 # Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts and the
-#       unconfigured set — total / valid_confd / valid_in_time are all counts, and a
+#       unconfigured set — valid_confd / valid_in_time are both counts (this metric
+#       type does not emit total; the scanned count is breakdown.dataset_count), and a
 #       dataset with no validation config gets no verdict row at all.
 
 
@@ -2170,9 +2174,10 @@ async def test_validation_score_anchors_each_datasets_window_on_its_declared_cad
         and not a low score.
 
     The run then repeats with urn_prompt's validation conf deleted, which is the
-    unconfigured case: ``total`` still counts it, ``valid_confd`` drops, and the dataset
-    that was failing a moment ago carries no verdict at all rather than a ``met=false``
-    one — it reads ``unknown`` on ``GET .../dataset`` and is absent from the breakdown.
+    unconfigured case: the scan (breakdown.dataset_count) still counts it, ``valid_confd``
+    drops, and the dataset that was failing a moment ago carries no verdict at all rather
+    than a ``met=false`` one — it reads ``unknown`` on ``GET .../dataset`` and is absent
+    from the breakdown.
 
     Real PostgreSQL is required: the latest-per-dataset row is picked by a row_number()
     window function the unit tier's fake session cannot execute — which is also why this
@@ -2184,10 +2189,10 @@ async def test_validation_score_anchors_each_datasets_window_on_its_declared_cad
           (cadence_offset * cadence_unit)``; ``lower_bound = upper_bound -
           time_window_sec``".
     Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts and the
-          unconfigured set — "the measurer emits three counts — ``total`` …,
-          ``valid_confd`` …, and ``valid_in_time`` …. All three are counts, none is a
-          score sum"; "A dataset with **no** validation config gets **no verdict row** —
-          it is neither ``met = true`` nor ``met = false``".
+          unconfigured set — "the measurer emits two counts — ``valid_confd`` …
+          and ``valid_in_time`` …. Both are counts; neither is a score sum"; "A dataset
+          with **no** validation config gets **no verdict row** — it is neither
+          ``met = true`` nor ``met = false``".
     Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format — a
           ``validation-score`` dataset is failed when it "**has** a validation config and
           fails the **``validation-score`` per-dataset test**"; "A dataset with no
@@ -2278,9 +2283,8 @@ async def test_validation_score_anchors_each_datasets_window_on_its_declared_cad
                 "title": "Cadence-Anchored Window Spot Test",
                 "description": "Each dataset's declared cadence anchors its own window",
                 "metrics": [
-                    {"name": "total", "color": "#64748B", "idx": 1},
-                    {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
-                    {"name": "valid_in_time", "color": "#22C55E", "idx": 3},
+                    {"name": "valid_confd", "color": "#3B82F6", "idx": 1},
+                    {"name": "valid_in_time", "color": "#22C55E", "idx": 2},
                 ],
                 "metric_conf": {"time_window_sec": 86400},
                 "schedule_tier": None,
@@ -2302,10 +2306,6 @@ async def test_validation_score_anchors_each_datasets_window_on_its_declared_cad
         row = results[0]
         values = row["values"]
 
-        assert values["total"] == 2.0, (
-            f"total counts the datasets dataset_filter matched; got {values['total']}. "
-            "If 0, the URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS."
-        )
         assert values["valid_confd"] == 2.0, (
             "both datasets carry a validation_configs row, so valid_confd counts both; "
             f"got {values['valid_confd']}. "
@@ -2329,8 +2329,9 @@ async def test_validation_score_anchors_each_datasets_window_on_its_declared_cad
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
         assert breakdown["dataset_count"] == 2, (
-            "dataset_count is the total scanned, not the number of failures; got "
-            f"{breakdown.get('dataset_count')}. "
+            "dataset_count is the total scanned (both URNs dataset_filter matched), not "
+            f"the number of failures; got {breakdown.get('dataset_count')}. If 0, the "
+            "URN was not registered in DataHub — check DUMMY_DATA_DATAHUB_SCHEMAS. "
             "Spec: spec/feature/BACKEND.md §Metrics Service §Breakdown format."
         )
 
@@ -2408,11 +2409,6 @@ async def test_validation_score_anchors_each_datasets_window_on_its_declared_cad
         ), (
             "backstop: the row read below must be the *second* run's; got "
             f"{rerun['measured_at']!r} against the first run's {row['measured_at']!r}."
-        )
-        assert rerun["values"]["total"] == 2.0, (
-            "an unconfigured dataset is still matched by dataset_filter, so total is "
-            f"unchanged; got {rerun['values']['total']}. "
-            "Spec: spec/feature/BACKEND.md §Metrics Service §`validation-score` counts."
         )
         assert rerun["values"]["valid_confd"] == 1.0, (
             "valid_confd counts only the datasets carrying a validation_configs row, so "

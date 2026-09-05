@@ -4,10 +4,12 @@ Spec sources (quoted text is verbatim; ``…`` marks an elision):
 
   spec/feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
   unconfigured set":
-    - "the measurer emits three counts — `total` (datasets matched by `dataset_filter`),
-      `valid_confd` (of those, the ones carrying a `validation_configs` row), and
+    - "the measurer emits two counts — `valid_confd` (of the datasets matched by
+      `dataset_filter`, the ones carrying a `validation_configs` row) and
       `valid_in_time` (of `valid_confd`, the ones that pass the per-dataset test defined
-      above). All three are counts; none is a score sum".
+      above). Both are counts; neither is a score sum". The scanned-dataset count (every
+      dataset matched by `dataset_filter`, configured or not) is not carried in `values`
+      for this metric type — it is available independently via `breakdown.dataset_count`.
     - "A dataset with **no** validation config gets **no verdict row** — it is neither
       `met = true` nor `met = false`."
     - "`validation-score`'s verdict list is a **subset** of its scan."
@@ -173,15 +175,15 @@ def test_registered_under_correct_key() -> None:
 
 @pytest.mark.asyncio
 async def test_empty_datasets_returns_zero_counts_without_querying() -> None:
-    """measure([]) returns all three counts at 0.0 and issues no query.
+    """measure([]) returns both counts at 0.0 and issues no query.
 
-    ``total`` is the count of datasets matched by ``dataset_filter``, which is zero here,
-    so there is nothing to look up — the ``db.execute`` assertion is what makes "no
-    dataset in scope" distinguishable from "every dataset failed".
+    An empty scope means there is nothing matched by ``dataset_filter``, so there is
+    nothing to look up — the ``db.execute`` assertion is what makes "no dataset in
+    scope" distinguishable from "every dataset failed".
 
     Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
-          unconfigured set": the three emitted counts are ``total``, ``valid_confd``
-          and ``valid_in_time``.
+          unconfigured set": the two emitted counts are ``valid_confd`` and
+          ``valid_in_time``.
     """
     measure = _get_measurer()
     db = _db()
@@ -194,31 +196,32 @@ async def test_empty_datasets_returns_zero_counts_without_querying() -> None:
         now=_NOW,
     )
 
-    assert values == {"total": 0.0, "valid_confd": 0.0, "valid_in_time": 0.0}
+    assert values == {"valid_confd": 0.0, "valid_in_time": 0.0}
     assert verdicts == []
     db.execute.assert_not_awaited()
 
 
-# ── The three counts over a mixed scope ───────────────────────────────────────
+# ── The two counts over a mixed scope ────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_the_three_counts_are_nested_dataset_counts_over_a_mixed_scope() -> None:
-    """total / valid_confd / valid_in_time are counts of datasets, not a score sum.
+async def test_the_two_counts_are_nested_dataset_counts_over_a_mixed_scope() -> None:
+    """valid_confd / valid_in_time are counts of datasets, not a score sum.
 
     The scope mixes every state the spec distinguishes, so no single wrong rule survives
-    it: an unconfigured dataset (in ``total`` only, and *verdict-less*), a configured
-    dataset whose latest result is in window and passing, one in window but scoring
-    ``0.7``, one whose only result predates the window, and one that has never reported.
+    it: an unconfigured dataset (scanned, but *verdict-less* and outside ``valid_confd``),
+    a configured dataset whose latest result is in window and passing, one in window but
+    scoring ``0.7``, one whose only result predates the window, and one that has never
+    reported.
 
     The 0.7 dataset is the discriminator against the old score-sum reading: a sum would
     make ``valid_in_time`` 1.7, while the count is 1.
 
     Spec: spec/feature/BACKEND.md §Metrics Service — "`validation-score` counts and the
-          unconfigured set": "`total` (datasets matched by `dataset_filter`),
-          `valid_confd` (of those, the ones carrying a `validation_configs` row), and
-          `valid_in_time` (of `valid_confd`, the ones that pass the per-dataset test
-          defined above). All three are counts; none is a score sum".
+          unconfigured set": "the measurer emits two counts — `valid_confd` (of the
+          datasets matched by `dataset_filter`, the ones carrying a `validation_configs`
+          row) and `valid_in_time` (of `valid_confd`, the ones that pass the per-dataset
+          test defined above). Both are counts; neither is a score sum".
     Spec: §"The `validation-score` per-dataset test" — a dataset fails when its latest
           result "falls outside the window, or falls inside it but scored `< 1.0`, or it
           has no validation result at all".
@@ -229,9 +232,10 @@ async def test_the_three_counts_are_nested_dataset_counts_over_a_mixed_scope() -
     low_score = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.low_score,DEV)"
     stale = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.stale,DEV)"
     never_reported = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.never_reported,DEV)"
+    datasets = [unconfigured, passing, low_score, stale, never_reported]
 
     values, verdicts = await measure(
-        datasets=[unconfigured, passing, low_score, stale, never_reported],
+        datasets=datasets,
         metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
         db=_db(
@@ -251,9 +255,15 @@ async def test_the_three_counts_are_nested_dataset_counts_over_a_mixed_scope() -
         now=_NOW,
     )
 
-    assert values == {"total": 5.0, "valid_confd": 4.0, "valid_in_time": 1.0}, (
-        "five datasets scanned, four configured, one passing the per-dataset test. "
+    assert values == {"valid_confd": 4.0, "valid_in_time": 1.0}, (
+        "four configured, one passing the per-dataset test. "
         "Spec: spec/feature/BACKEND.md §Metrics Service — `validation-score` counts."
+    )
+    assert "total" not in values, (
+        "the scanned-dataset count (five here) is not carried in `values` for this "
+        "metric type; it is available independently via `breakdown.dataset_count`. "
+        "Spec: spec/feature/BACKEND.md §Metrics Service — `validation-score` counts "
+        "and the unconfigured set."
     )
     # Membership, not order: the spec fixes which datasets carry a verdict, not the
     # sequence they come back in. len() alongside the set rules out a duplicate URN
@@ -272,8 +282,8 @@ async def test_the_three_counts_are_nested_dataset_counts_over_a_mixed_scope() -
 async def test_an_unconfigured_dataset_gets_no_verdict_at_all() -> None:
     """A dataset with no validation config is neither met nor failed — it has no verdict.
 
-    Both halves are asserted: it counts toward ``total`` (so it was genuinely scanned and
-    not dropped from scope) yet contributes no verdict row, which is what makes it read
+    Both halves are asserted: it is still scanned (and so still reaches
+    ``breakdown.dataset_count``) yet contributes no verdict row, which is what makes it read
     ``met = "unknown"`` on ``GET .../dataset`` rather than failing for a cadence it never
     declared. The configured sibling is the backstop: it proves the measurer does emit
     verdicts on this call, so the absence above is about the unconfigured dataset and not
@@ -286,9 +296,10 @@ async def test_an_unconfigured_dataset_gets_no_verdict_at_all() -> None:
     measure = _get_measurer()
     unconfigured = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.no_conf,DEV)"
     configured = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.has_conf,DEV)"
+    datasets = [unconfigured, configured]
 
     values, verdicts = await measure(
-        datasets=[unconfigured, configured],
+        datasets=datasets,
         metric_conf={"time_window_sec": 172800},
         datahub=_datahub(),
         db=_db(
@@ -298,7 +309,11 @@ async def test_an_unconfigured_dataset_gets_no_verdict_at_all() -> None:
         now=_NOW,
     )
 
-    assert values["total"] == 2.0, "the unconfigured dataset is still in scope"
+    assert "total" not in values, (
+        "the unconfigured dataset is still in scope (scanned), but the scanned count "
+        "is not carried in `values` for this metric type — it is available "
+        "independently via `breakdown.dataset_count`."
+    )
     assert values["valid_confd"] == 1.0, "…but not in the configured subset"
     assert [v.urn for v in verdicts] == [configured], (
         "backstop + assertion: the configured dataset carries a verdict and the "
@@ -307,10 +322,12 @@ async def test_an_unconfigured_dataset_gets_no_verdict_at_all() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_scope_with_no_configured_dataset_reports_total_only() -> None:
-    """With nothing configured, `total` still counts the scan and no verdict is emitted.
+async def test_a_scope_with_no_configured_dataset_reports_zero_valid_confd() -> None:
+    """With nothing configured, `valid_confd` is 0 (and so is `valid_in_time`) though
+    the scan itself was non-empty (two datasets, tracked independently via
+    `breakdown.dataset_count`, not via `values`).
 
-    The count that matters is ``valid_confd = 0`` against a non-zero ``total``: that pair
+    The count that matters is ``valid_confd = 0`` against a non-empty scan: that pair
     is what surfaces "the estate has zero validation coverage" rather than "the estate is
     empty".
 
@@ -331,7 +348,7 @@ async def test_a_scope_with_no_configured_dataset_reports_total_only() -> None:
         now=_NOW,
     )
 
-    assert values == {"total": 2.0, "valid_confd": 0.0, "valid_in_time": 0.0}
+    assert values == {"valid_confd": 0.0, "valid_in_time": 0.0}
     assert verdicts == []
 
 
@@ -361,7 +378,7 @@ async def test_a_configured_dataset_with_no_result_is_evaluated_and_failing() ->
         now=_NOW,
     )
 
-    assert values == {"total": 1.0, "valid_confd": 1.0, "valid_in_time": 0.0}
+    assert values == {"valid_confd": 1.0, "valid_in_time": 0.0}
     verdict = _verdict(verdicts, urn)
     assert verdict.met is False
     assert verdict.detail["latest_data_time"] is None
@@ -474,9 +491,10 @@ async def test_one_declared_width_splits_two_datasets_in_the_same_run() -> None:
     measure = _get_measurer()
     outside_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.window.outside,DEV)"
     inside_urn = "urn:li:dataset:(urn:li:dataPlatform:postgres,db.window.inside,DEV)"
+    datasets = [outside_urn, inside_urn]
 
     values, verdicts = await measure(
-        datasets=[outside_urn, inside_urn],
+        datasets=datasets,
         metric_conf={"time_window_sec": 86400},
         datahub=_datahub(),
         db=_db(
@@ -492,7 +510,11 @@ async def test_one_declared_width_splits_two_datasets_in_the_same_run() -> None:
         now=_NOW,
     )
 
-    assert values["total"] == 2.0
+    assert values["valid_confd"] == 2.0
+    assert "total" not in values, (
+        "the scanned-dataset count is not carried in `values` for this metric type; "
+        "it is available independently via `breakdown.dataset_count`."
+    )
     assert values["valid_in_time"] == 1.0, (
         "only the dataset whose latest result is inside the declared 86400s window "
         "counts. Spec: spec/feature/BACKEND.md §Metrics Service §Measurement window."

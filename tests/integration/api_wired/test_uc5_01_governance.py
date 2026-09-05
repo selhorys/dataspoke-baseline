@@ -196,9 +196,8 @@ async def test_uc5_governance_imazon_example(
             "description": "Daily count of validated DEV datasets inside their own "
             "cadence-anchored window",
             "metrics": [
-                {"name": "total", "color": "#64748B", "idx": 1},
-                {"name": "valid_confd", "color": "#3B82F6", "idx": 2},
-                {"name": "valid_in_time", "color": "#22C55E", "idx": 3},
+                {"name": "valid_confd", "color": "#3B82F6", "idx": 1},
+                {"name": "valid_in_time", "color": "#22C55E", "idx": 2},
             ],
             "metric_conf": {"time_window_sec": 172800},
         },

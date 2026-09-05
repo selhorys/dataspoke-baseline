@@ -75,7 +75,7 @@ vi.mock("recharts", () => {
 });
 
 function row(dataTime: string, variables: Record<string, number>): ValidationResultRow {
-  return { data_time: dataTime, score: 1, variables };
+  return { data_time: dataTime, score: 1, variables, score_note: null };
 }
 
 describe("ValidationVariablesChart — small multiples (FRONTEND_VALIDATION.md §Page contracts)", () => {
