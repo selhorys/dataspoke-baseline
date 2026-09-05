@@ -144,6 +144,14 @@ acryl-datahub-actions:
   # Annotation-only eviction guard — acryl-datahub-actions subchart has no PDB template.
   podAnnotations:
     cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+  # Managed-ingestion runs shell out to the `datahub` CLI in a dynamic venv, which pings
+  # track.datahubproject.io for telemetry. This cluster's egress can't reach that host, so
+  # each attempt burns ~10s x 4 retries before giving up — multiplied across every telemetry
+  # call in a pipeline run, this pushes managed-ingestion wall time well past API-wired test
+  # poll budgets. Disabling telemetry removes the blocking retries entirely.
+  extraEnvs:
+    - name: DATAHUB_TELEMETRY_ENABLED
+      value: "false"
   resources:
     requests:
       cpu: "500m"
