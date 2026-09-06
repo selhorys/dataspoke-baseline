@@ -14,10 +14,12 @@ export const meta = {
 
 // args contract (supplied by the main agent from the approved plan):
 //   plan:     string                  — the approved implementation plan, verbatim
-//   stages:   (string | string[])[]   — generator stages in plan order; an inner array runs
-//                                       concurrently (e.g. ["spec", ["backend","airflow-dag"],
-//                                       "test", "frontend", "k8s-helm"]). The `spec` stage, when
-//                                       present, leads so later stages read the updated spec.
+//   stages:   (string | string[])[]   — generator stages in plan order; inner arrays are accepted
+//                                       as grouping metadata but their stages are executed serially
+//                                       because generators commit in the shared worktree (e.g.
+//                                       ["spec", ["backend","airflow-dag"], "test", "frontend",
+//                                       "k8s-helm"]). The `spec` stage, when present, leads so later
+//                                       stages read the updated spec.
 //   security: string[]                — stages whose diff touches the sensitive paths listed in
 //                                       scaffold/roles/security-reviewer.md (decided at plan time).
 //                                       Applies to NO_REVIEW stages too — `k8s-helm` writes
@@ -189,19 +191,22 @@ async function runStage(stage) {
   }
 }
 
-// Stage groups run in order; an inner array runs concurrently (the barrier between
-// groups is required — later stages build on earlier ones). An ESCALATE finishes its
-// group, then halts the run so later stages don't build on a broken base.
+// Stage groups run in order. Inner arrays remain valid plan metadata, but generators are always
+// serialized because every generator commits through the shared worktree/index. Reviewers within
+// one stage may still run in parallel. An ESCALATE halts the run so later stages don't build on a
+// broken base.
 const results = []
 let haltedAt = null
-for (const group of ARGS.stages) {
+outer: for (const group of ARGS.stages) {
   const stages = Array.isArray(group) ? group : [group]
-  log(`stage group: ${stages.join(' + ')}`)
-  const groupResults = (await parallel(stages.map(s => () => runStage(s)))).filter(Boolean)
-  results.push(...groupResults)
-  if (groupResults.some(r => r.outcome === 'ESCALATE')) {
-    haltedAt = stages.join('+')
-    break
+  for (const stage of stages) {
+    log(`stage: ${stage} (serialized)`)
+    const result = await runStage(stage)
+    results.push(result)
+    if (result.outcome === 'ESCALATE') {
+      haltedAt = stage
+      break outer
+    }
   }
 }
 

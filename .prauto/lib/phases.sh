@@ -509,6 +509,16 @@ implementation_escalated() {
   [[ "$last_sentinel" =~ ^PRAUTO_WORKFLOW_OUTCOME:[[:space:]]*ESCALATED ]]
 }
 
+# implementation_complete <impl_output>
+# A successful implementation must explicitly end with COMPLETE. Exit code 0
+# alone is insufficient: an agent can return empty, partial, or otherwise
+# malformed text after making no usable workflow progress.
+implementation_complete() {
+  local impl_output="$1" last_line
+  last_line=$(printf '%s' "$impl_output" | sed '/^[[:space:]]*$/d' | tail -1) || true
+  [[ "$last_line" == "PRAUTO_WORKFLOW_OUTCOME: COMPLETE" ]]
+}
+
 # abandon_workflow_escalation <issue_number> <impl_output>
 # A wf-minimal ESCALATE halts the run at the escalating stage group, leaving a
 # partial uncommitted implementation that must not reach tests or a PR.
@@ -556,7 +566,7 @@ implement_and_finalize() {
     ACTIVE_AGENT="$PAUSED_AGENT"
     post_quota_resumed_comment "$issue_number"
     resume_agent \
-      "Continue your implementation from where you left off. Complete the workflow, commit (do NOT push), and end with exactly: PRAUTO_WORKFLOW_OUTCOME: COMPLETE|ESCALATED" \
+      "Continue your implementation from where you left off. Complete the workflow, commit (do NOT push), and end with exactly one of these lines: PRAUTO_WORKFLOW_OUTCOME: COMPLETE or PRAUTO_WORKFLOW_OUTCOME: ESCALATED" \
       "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" \
       "$PAUSED_SESSION_ID" "${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}"
     IMPL_SESSION_ID="$PAUSED_SESSION_ID"
@@ -599,6 +609,20 @@ implement_and_finalize() {
     gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — workflow escalated" 2>/dev/null || true
     abandon_workflow_escalation "$issue_number" "$IMPL_OUTPUT"
+    return 0
+  fi
+
+  if ! implementation_complete "$IMPL_OUTPUT"; then
+    warn "Issue #${issue_number}: implementation returned no valid COMPLETE outcome. Will retry next heartbeat."
+    return 0
+  fi
+
+  # Every generator owns its commit now. A clean worktree is the parent-side
+  # invariant that catches a failed or over-broad stage commit before pushing.
+  local dirty_worktree
+  dirty_worktree=$(git status --porcelain --untracked-files=all 2>/dev/null || true)
+  if [[ -n "$dirty_worktree" ]]; then
+    warn "Issue #${issue_number}: implementation completed with uncommitted changes. Will retry next heartbeat."
     return 0
   fi
 

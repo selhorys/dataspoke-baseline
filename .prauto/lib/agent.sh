@@ -101,15 +101,19 @@ prepare_system_prompt() {
   printf '%s' "$rendered_file"
 }
 
-# classify_exit <output_file> <exit_code> [agent]
+# classify_exit <output_file> <exit_code> [agent] [stderr_file]
 # Set AGENT_STATUS from a completed claude/codex run: ok, quota, or error.
 # Claude retains its established textual classification. Codex quota is more
 # strict: only codex_jsonl_has_quota_signal's vetted protocol fields may create
 # a resumable pause; arbitrary messages and agent text are ordinary errors.
 classify_exit() {
-  local output_file="$1" exit_code="$2" agent="${3:-claude}"
+  local output_file="$1" exit_code="$2" agent="${3:-claude}" stderr_file="${4:-}"
   local raw
   raw=$(cat "$output_file" 2>/dev/null || printf '')
+  if [[ -n "$stderr_file" ]] && [[ -s "$stderr_file" ]]; then
+    raw="${raw}
+$(cat "$stderr_file" 2>/dev/null || printf '')"
+  fi
   if [[ "$agent" == "codex" ]]; then
     if codex_jsonl_has_quota_signal "$output_file"; then
       AGENT_STATUS=quota
@@ -178,7 +182,8 @@ invoke_agent() {
   fi
 
   info "Invoking ${ACTIVE_AGENT} (session=${session_id:-native-pending}, max_turns=${max_turns})..."
-  # claude -p stdout is unreliable through $(...); redirect to a file and read it.
+  # claude -p stdout is unreliable through $(...); redirect stdout to a file and
+  # retain stderr separately so diagnostics cannot corrupt the JSON result.
   # Codex JSONL must remain stdout-only: stderr can contain non-JSON runtime
   # diagnostics, which would otherwise make thread.started unparsable. Retain
   # that raw stderr sidecar for postmortem diagnosis.
@@ -195,7 +200,7 @@ invoke_agent() {
       code=$?
     fi
   else
-    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2>&1; then
+    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
       code=0
     else
       code=$?
@@ -233,7 +238,13 @@ invoke_agent() {
     if [[ "$subtype" == error_* ]] || [[ -z "$AGENT_OUTPUT" ]]; then
       [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
     fi
-    classify_exit "$output_file" "$code" claude
+    if [[ -s "$stderr_file" ]]; then
+      local claude_stderr
+      claude_stderr=$(cat "$stderr_file" 2>/dev/null || printf '')
+      [[ -n "$AGENT_OUTPUT" ]] && AGENT_OUTPUT="${AGENT_OUTPUT}
+${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
+    fi
+    classify_exit "$output_file" "$code" claude "$stderr_file"
   fi
 }
 
@@ -288,7 +299,7 @@ resume_agent() {
       code=$?
     fi
   else
-    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2>&1; then
+    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
       code=0
     else
       code=$?
@@ -305,7 +316,13 @@ resume_agent() {
   else
     AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
     [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
-    classify_exit "$output_file" "$code" claude
+    if [[ -s "$stderr_file" ]]; then
+      local claude_stderr
+      claude_stderr=$(cat "$stderr_file" 2>/dev/null || printf '')
+      [[ -n "$AGENT_OUTPUT" ]] && AGENT_OUTPUT="${AGENT_OUTPUT}
+${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
+    fi
+    classify_exit "$output_file" "$code" claude "$stderr_file"
   fi
 }
 

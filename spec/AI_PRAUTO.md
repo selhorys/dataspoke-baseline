@@ -364,19 +364,23 @@ steps 4–9: it drives the generator → adversarial-reviewer → one-fix-pass l
 `stages` (with `security` flagging stages that need `security-reviewer` in parallel). In the
 Claude binding this is `.claude/workflows/wf-minimal.js`; in the Codex binding it is the
 equivalent orchestration expressed in the Codex worker prompt. The analysis phase emits
-`stages` (in plan order, inner arrays for concurrent stages) and `security` alongside its plan.
+`stages` (in plan order, with inner arrays retained as grouping metadata; generator stages execute
+serially because they commit in one shared worktree) and `security` alongside its plan.
 
 Review is therefore **per-stage and adversarial** — each generator is evaluated by a separate
 context before later stages build on its output, upholding the generator ≠ reviewer rule that
 exists to prevent the self-praise failure mode.
 
 Each generator commits its own stage to the branch as its final action — the workflow's
-commit-per-stage contract — and a REVISE fix pass produces a follow-up commit. Reviewers stay
-read-only and evaluate the committed changes. Commits land on the private `prauto/I-*` worktree
-branch only, never `master`, and are attributed to the worker via `--author`. Progress is therefore
-durable per stage: a run that dies mid-workflow loses only the stage in flight, and a quota-pause
-resume re-enters a branch whose committed state matches the session's memory (the branch is never
-pushed until the final review gate and PR open, so intermediate commits are unreviewed-but-unpublished).
+commit-per-stage contract — and a REVISE fix pass produces a follow-up commit. Generator stages
+execute serially because they share one worktree and Git index; reviewer passes within a stage may
+still run concurrently. Reviewers stay read-only and evaluate the committed changes. Commits land
+on the private `prauto/I-*` worktree branch only, never `master`, and are attributed to the worker
+via `--author`. Before integration or PR finalization, the parent requires the exact
+`PRAUTO_WORKFLOW_OUTCOME: COMPLETE` sentinel and a clean worktree. Progress is therefore durable
+per stage: a run that dies mid-workflow loses only the stage in flight, and a quota-pause resume
+re-enters a branch whose committed state matches the session's memory (the branch is never pushed
+until the final review gate and PR open, so intermediate commits are unreviewed-but-unpublished).
 
 An ESCALATE outcome halts the workflow at the escalating stage group, so later stages never run and
 the branch holds a partial implementation. Prauto must not carry that forward to tests or a PR: it

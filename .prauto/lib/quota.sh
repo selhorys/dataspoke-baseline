@@ -10,23 +10,56 @@
 #      the session id so a later wake can resume the SAME session.
 
 # run_with_timeout <seconds> <command> [args...]
-# Run a command, killing it after <seconds>. Returns the command's exit code,
+# Run a command, stopping it after <seconds>. Returns the command's exit code,
 # or 124 on timeout. macOS-compatible — no GNU coreutils `timeout` assumed.
 run_with_timeout() {
   local timeout_secs="$1"; shift
-  "$@" &
-  local cmd_pid=$!
-  ( sleep "$timeout_secs" && kill "$cmd_pid" 2>/dev/null ) &
-  local timer_pid=$!
-  wait "$cmd_pid" 2>/dev/null
-  local exit_code=$?
-  kill "$timer_pid" 2>/dev/null
-  wait "$timer_pid" 2>/dev/null || true
-  # A process our timer killed reports 137 (SIGKILL) or 143 (SIGTERM); normalize
-  # both to 124, the convention GNU timeout uses.
-  if [[ "$exit_code" -eq 137 ]] || [[ "$exit_code" -eq 143 ]]; then
-    return 124
+  [[ "$timeout_secs" =~ ^[0-9]+$ ]] || return 2
+
+  # Use a separate session when setsid is available so descendants are stopped
+  # with the agent. macOS does not guarantee setsid, so the direct-child path
+  # still receives the TERM-then-KILL backstop below.
+  local use_group=0
+  if command -v setsid >/dev/null 2>&1; then
+    use_group=1
+    setsid "$@" &
+  else
+    "$@" &
   fi
+  local cmd_pid=$!
+  local deadline=$(( $(date +%s) + timeout_secs ))
+  local timed_out=0
+
+  while kill -0 "$cmd_pid" 2>/dev/null; do
+    if (( $(date +%s) >= deadline )); then
+      timed_out=1
+      if (( use_group )); then
+        kill -TERM -"$cmd_pid" 2>/dev/null || true
+      else
+        kill -TERM "$cmd_pid" 2>/dev/null || true
+      fi
+
+      # Give a cooperative CLI a short cleanup window, then force-stop a
+      # process that traps or ignores TERM so the heartbeat cannot wedge.
+      local grace_deadline=$(( $(date +%s) + 2 ))
+      while kill -0 "$cmd_pid" 2>/dev/null && (( $(date +%s) < grace_deadline )); do
+        sleep 0.1
+      done
+      if kill -0 "$cmd_pid" 2>/dev/null; then
+        if (( use_group )); then
+          kill -KILL -"$cmd_pid" 2>/dev/null || true
+        else
+          kill -KILL "$cmd_pid" 2>/dev/null || true
+        fi
+      fi
+      break
+    fi
+    sleep 1
+  done
+
+  local exit_code=0
+  wait "$cmd_pid" 2>/dev/null || exit_code=$?
+  (( timed_out )) && return 124
   return "$exit_code"
 }
 

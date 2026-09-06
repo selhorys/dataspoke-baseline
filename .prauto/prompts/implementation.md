@@ -17,7 +17,8 @@ Either way, **each generator commits its own stage** before returning its report
 ## Steps
 
 1. Read the approved plan below. It ends with a `## PRauto Execution Metadata` block naming the
-   generator `Stages` (in execution order, inner arrays for concurrency) and the `Security` subset.
+   generator `Stages` (in execution order; inner arrays are preserved as grouping metadata but are
+   executed serially because generators commit in one shared worktree) and the `Security` subset.
    Extract those two JSON arrays verbatim.
 
 2. Capture the **pinned evaluator authority** for every reviewer type this run will use, BEFORE
@@ -49,7 +50,8 @@ Either way, **each generator commits its own stage** before returning its report
    and passes `--author="{author_name} <{author_email}>"` to every generator's commit.
 
    Prior committed work may exist on the branch from an earlier heartbeat. A fresh workflow run
-   begins from the branch's current committed state and continues from there.
+   begins from the branch's current committed state and continues from there. The parent verifies
+   that a COMPLETE workflow leaves no uncommitted changes before any integration or PR step.
 
 4. When the loop returns, read its `outcome`:
 

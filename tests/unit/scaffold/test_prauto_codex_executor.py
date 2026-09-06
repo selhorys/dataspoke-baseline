@@ -52,6 +52,10 @@ def _source_libraries(tmp_path: Path) -> str:
     )
 
 
+def _source_phase_libraries(tmp_path: Path) -> str:
+    return _source_libraries(tmp_path) + f"\nsource {shlex.quote(str(PRAUTO / 'lib/phases.sh'))}"
+
+
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
@@ -333,3 +337,64 @@ def test_codex_quota_exit_without_thread_started_is_nonresumable(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.splitlines()[-1]) == {"session": "", "status": "error"}
+
+
+def test_run_with_timeout_force_kills_term_ignoring_child(tmp_path: Path) -> None:
+    """The agent backstop must terminate a child that ignores SIGTERM."""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _source_libraries(tmp_path)
+            + "\nrun_with_timeout 1 bash -c 'trap \"\" TERM; while :; do sleep 0.1; done'",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=6,
+    )
+
+    assert result.returncode == 124, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("PRAUTO_WORKFLOW_OUTCOME: COMPLETE\n", True),
+        ("report\nPRAUTO_WORKFLOW_OUTCOME: COMPLETE\n", True),
+        ("PRAUTO_WORKFLOW_OUTCOME: COMPLETE\ntrailing text\n", False),
+        ("PRAUTO_WORKFLOW_OUTCOME: ESCALATED\n", False),
+        ("PRAUTO_WORKFLOW_OUTCOME: COMPLETE|ESCALATED\n", False),
+        ("", False),
+    ],
+)
+def test_implementation_requires_exact_complete_sentinel(
+    tmp_path: Path, output: str, expected: bool
+) -> None:
+    """A successful exit is not enough to authorize integration or PR creation."""
+    result = _run_bash(
+        _source_phase_libraries(tmp_path)
+        + f"\nimplementation_complete {shlex.quote(output)}",
+    )
+
+    assert (result.returncode == 0) is expected, result.stderr
+
+
+def test_claude_is_error_detection_survives_separate_stderr(tmp_path: Path) -> None:
+    """Claude diagnostics must not corrupt the JSON object used for classification."""
+    output_file = tmp_path / "claude.json"
+    stderr_file = tmp_path / "claude.stderr"
+    output_file.write_text(json.dumps({"is_error": True, "terminal_reason": "api_error"}))
+    stderr_file.write_text("transient diagnostic\n")
+    result = _run_bash(
+        "\n".join(
+            [
+                _source_libraries(tmp_path),
+                f"classify_exit {shlex.quote(str(output_file))} 0 claude {shlex.quote(str(stderr_file))}",
+                'printf "%s" "$AGENT_STATUS"',
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "error"
