@@ -121,6 +121,18 @@ classify_exit() {
     return
   fi
 
+  # Claude emits auth/api/budget failures as an is_error result object while
+  # still exiting 0. Check that before the exit-code fast path below, so a
+  # "successful" exit that actually errored is never marked ok.
+  if claude_result_is_error "$output_file"; then
+    if printf '%s' "$raw" | grep -qi "rate limit\|quota\|session limit"; then
+      AGENT_STATUS=quota
+    else
+      AGENT_STATUS=error
+    fi
+    return
+  fi
+
   if [[ "$exit_code" -eq 0 ]]; then
     AGENT_STATUS=ok
   elif printf '%s' "$raw" | grep -qi "rate limit\|quota\|session limit\|api_error\|API error"; then
@@ -170,14 +182,20 @@ invoke_agent() {
   # Codex JSONL must remain stdout-only: stderr can contain non-JSON runtime
   # diagnostics, which would otherwise make thread.started unparsable. Retain
   # that raw stderr sidecar for postmortem diagnosis.
+  #
+  # The invocation runs under a wall-clock backstop (PRAUTO_AGENT_TIMEOUT_SECS,
+  # default 24h): a hung/stalled agent (network wait, token-reset wait) is killed
+  # rather than wedging the heartbeat forever. A kill normalizes to exit 124,
+  # which classify_exit treats as an ordinary error (retry), never a resume.
+  local agent_timeout="${PRAUTO_AGENT_TIMEOUT_SECS:-86400}"
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
-    if "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
+    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
       code=0
     else
       code=$?
     fi
   else
-    if "${cmd[@]}" > "$output_file" 2>&1; then
+    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2>&1; then
       code=0
     else
       code=$?
@@ -260,14 +278,17 @@ resume_agent() {
   fi
 
   info "Resuming ${ACTIVE_AGENT} session ${session_id}..."
+  # Same wall-clock backstop as the fresh invocation (see invoke_agent): a resume
+  # that hangs waiting for token reset must not wedge the heartbeat.
+  local agent_timeout="${PRAUTO_AGENT_TIMEOUT_SECS:-86400}"
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
-    if "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
+    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
       code=0
     else
       code=$?
     fi
   else
-    if "${cmd[@]}" > "$output_file" 2>&1; then
+    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2>&1; then
       code=0
     else
       code=$?

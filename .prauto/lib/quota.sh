@@ -65,6 +65,18 @@ codex_jsonl_has_quota_signal() {
   ' "$output_file" >/dev/null 2>&1
 }
 
+# claude_result_is_error <json_file>
+# Claude Code emits auth/api/budget failures as a `--output-format json` result
+# object with `is_error:true` (and often `terminal_reason:"api_error"`) while
+# still exiting 0. The process exit code is therefore not a success signal; this
+# is the authoritative check, used by both the availability probe and mid-run
+# classification.
+claude_result_is_error() {
+  local f="$1"
+  jq -e '(.is_error // false) == true or ((.terminal_reason // "") | test("^(api_)?error"))' \
+    "$f" >/dev/null 2>&1
+}
+
 # check_quota [agent]
 # Probe whether an agent's quota is available. Returns 0 if available, 1 if
 # exhausted/auth-invalid. A dry-run TIMEOUT is not exhaustion — returns 0.
@@ -77,14 +89,24 @@ check_quota() {
 
   if [[ "$agent" == "claude" ]]; then
     claude auth status >/dev/null 2>&1 || { warn "Claude auth check failed."; return 1; }
+    local out_file="${STATE_DIR}/.quota-check-$$.out"
     local stderr_file="${STATE_DIR}/.quota-check-$$.stderr"
+    # Budget must clear the project's system-prompt cache-creation cost (~$0.08)
+    # or the probe always reports budget_exhausted; 0.25 leaves headroom.
     if run_with_timeout "$quota_timeout" \
         claude -p "Reply with exactly: OK" \
-          --output-format json --max-turns 1 --max-budget-usd 0.01 --allowedTools "" \
-          2>"$stderr_file" >/dev/null; then
-      rm -f "$stderr_file"; return 0
+          --output-format json --max-turns 1 --max-budget-usd 0.25 --allowedTools "" \
+          >"$out_file" 2>"$stderr_file"; then
+      # Claude emits auth/api/budget failures as an is_error result object while
+      # still exiting 0, so the exit code is not a success signal. Inspect the
+      # JSON before declaring the agent available.
+      if claude_result_is_error "$out_file"; then
+        warn "Claude dry-run reported an error: $(jq -r '.result // .terminal_reason // "unknown"' "$out_file" 2>/dev/null | head -c 200)"
+        rm -f "$out_file" "$stderr_file"; return 1
+      fi
+      rm -f "$out_file" "$stderr_file"; return 0
     fi
-    local code=$?; local stderr; stderr=$(cat "$stderr_file" 2>/dev/null || printf ''); rm -f "$stderr_file"
+    local code=$?; local stderr; stderr=$(cat "$stderr_file" 2>/dev/null || printf ''); rm -f "$out_file" "$stderr_file"
     if [[ "$code" -eq 124 ]]; then
       warn "Claude dry-run timed out after ${quota_timeout}s — proceeding anyway."
       return 0

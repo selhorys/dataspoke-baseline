@@ -548,10 +548,13 @@ implement_and_finalize() {
   if has_quota_paused_comment "$issue_number"; then
     # RESUME path: continue the same session on the same agent. A resume is a
     # continuation, not a new attempt, so no heartbeat is posted (the retry
-    # counter does not advance). "Resumed" is posted only AFTER a successful
-    # resume; if the resume dies on quota again, a fresh pause marker replaces it.
+    # counter does not advance). "Resumed" is posted when the resume begins —
+    # quota is confirmed reset, so announce it before the (potentially long)
+    # resume run; if the resume dies on quota again, the fresh pause marker
+    # that follows supersedes it.
     read_pause_marker "$issue_number"
     ACTIVE_AGENT="$PAUSED_AGENT"
+    post_quota_resumed_comment "$issue_number"
     resume_agent \
       "Continue your implementation from where you left off. Complete the workflow, commit (do NOT push), and end with exactly: PRAUTO_WORKFLOW_OUTCOME: COMPLETE|ESCALATED" \
       "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" \
@@ -568,7 +571,6 @@ implement_and_finalize() {
       post_resume_failure_restart_comment "$issue_number" "$ACTIVE_AGENT"
       return 0
     fi
-    post_quota_resumed_comment "$issue_number"
   else
     # FRESH dispatch.
     gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -580,6 +582,14 @@ implement_and_finalize() {
     if [[ "$AGENT_STATUS" == "quota" ]]; then
       warn "Issue #${issue_number}: worker died on a quota/session limit (${ACTIVE_AGENT}). Pausing."
       post_quota_paused_comment "$issue_number" "$ACTIVE_AGENT" "$AGENT_SESSION_ID"
+      return 0
+    fi
+
+    # A non-ok, non-quota result (auth expired, api_error, timeout, empty/wrong
+    # answer) must not flow into finalize: there is no committed work to push.
+    # Retry on a later wake; the heartbeat-comment retry counter governs abandon.
+    if [[ "$AGENT_STATUS" != "ok" ]]; then
+      warn "Issue #${issue_number}: implementation failed (${ACTIVE_AGENT}, status=${AGENT_STATUS}). Will retry next heartbeat."
       return 0
     fi
   fi
@@ -611,6 +621,7 @@ handle_phase_analysis() {
     # Resume a paused analysis session (same agent), then capture its plan.md.
     read_pause_marker "$issue_number"
     ACTIVE_AGENT="$PAUSED_AGENT"
+    post_quota_resumed_comment "$issue_number"
     resume_agent \
       "Continue your analysis and write the complete plan (including the metadata block) to the plan_file path named in your instructions." \
       "$ANALYSIS_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_ANALYSIS:-100}" \
@@ -626,7 +637,6 @@ handle_phase_analysis() {
       post_resume_failure_restart_comment "$issue_number" "$ACTIVE_AGENT"
       return 0
     fi
-    post_quota_resumed_comment "$issue_number"
     if [[ -f "$plan_file" ]] && [[ -s "$plan_file" ]]; then
       ANALYSIS_OUTPUT=$(cat "$plan_file")
     else
