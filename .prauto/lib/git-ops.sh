@@ -73,3 +73,43 @@ push_branch() {
   git push -u origin "$branch" 2>/dev/null || error "Failed to push ${branch} to origin."
   info "Pushed ${branch}."
 }
+
+# push_checkpoint_branch <branch>
+# Best-effort checkpoint push used before a paused or failed worker is cleaned
+# up. Unlike push_branch, this must not abort the whole heartbeat: a local commit
+# remains useful for a later retry even when GitHub/SSH is temporarily down.
+push_checkpoint_branch() {
+  local branch="$1"
+  info "Pushing checkpoint ${branch} to origin..."
+  if git push -u origin "$branch" 2>/dev/null; then
+    info "Checkpoint pushed for ${branch}."
+    return 0
+  fi
+  warn "Failed to push checkpoint for ${branch}; local commits remain available for retry."
+  return 1
+}
+
+# link_branch_to_issue <issue_number> <branch>
+# Link an already-pushed branch in the issue's Development section. GitHub's
+# issue-branch endpoint is not present in every gh version, so this is
+# idempotent and best-effort; commit comments remain the durable fallback.
+link_branch_to_issue() {
+  local issue_number="$1" branch="$2"
+  local linked_branches
+
+  linked_branches=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${issue_number}/branches" \
+    --jq '.[].name' 2>/dev/null || printf '')
+  if printf '%s\n' "$linked_branches" | grep -Fxq "$branch"; then
+    info "Branch ${branch} is already linked to issue #${issue_number}."
+    return 0
+  fi
+
+  if gh api --method POST "repos/${PRAUTO_GITHUB_REPO}/issues/${issue_number}/branches" \
+      -f "branch=${branch}" >/dev/null 2>&1; then
+    info "Linked branch ${branch} to issue #${issue_number}."
+    return 0
+  fi
+
+  warn "Could not link branch ${branch} to issue #${issue_number}; continuing."
+  return 1
+}

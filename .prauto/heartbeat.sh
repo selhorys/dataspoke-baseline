@@ -263,8 +263,11 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
             checkout_branch_worktree "$REVIEW_PR_BRANCH"
             cd "$WORKTREE_DIR"
             run_pr_review "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" "$ACTIONABLE_COMMENTS" "$APPROVED_PLAN_TEXT"
+            checkpoint_branch "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH"
             run_integration_test_fix "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH"
             push_branch "$REVIEW_PR_BRANCH"
+            link_branch_to_issue "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" || true
+            publish_commit_checkpoints "$CUR_ISSUE_NUMBER" "$REVIEW_PR_BRANCH" || true
             create_or_update_pr "$CUR_ISSUE_NUMBER" "" "$REVIEW_PR_BRANCH"
             run_and_post_test_results "$REVIEW_PR_BRANCH"
             post_review_response_comment "$REVIEW_PR_NUMBER" "$REVIEW_RESPONSE"

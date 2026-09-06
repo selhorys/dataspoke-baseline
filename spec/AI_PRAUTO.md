@@ -63,10 +63,12 @@ Two layers, with different lifespans and owners:
   long-lived bash worker: a scheduler tick is a fresh process with no in-memory carryover, so
   "derive everything from GitHub, keep nothing in memory" is the only thing that makes the loop
   resumable across ticks.
-- **No resume, by default**: Each worker session starts fresh. The implementation prompt
-  instructs the agent to check the branch for existing committed work and continue from there.
-  Uncommitted work from a session that died mid-run is invisible to this mechanism and is
-  restarted, not resumed.
+- **No uncommitted resume**: Each worker session starts fresh unless the agent-native quota
+  resume path is active. The implementation prompt instructs the agent to check the branch for
+  existing committed work and continue from there. When the harness regains control, it
+  best-effort pushes committed checkpoints, links the branch to the issue, and posts idempotent
+  issue comments containing commit links. Uncommitted work from a session that died mid-run is
+  discarded with the worktree and is not resumed.
 - **Ready-label timestamp as lifecycle anchor**: When `prauto:ready` is set (or re-set), the
   timestamp of that label event marks the start of the current lifecycle. All comment-scanning
   ignores comments before it, enabling clean restarts without manual cleanup.
@@ -379,8 +381,9 @@ on the private `prauto/I-*` worktree branch only, never `master`, and are attrib
 via `--author`. Before integration or PR finalization, the parent requires the exact
 `PRAUTO_WORKFLOW_OUTCOME: COMPLETE` sentinel and a clean worktree. Progress is therefore durable
 per stage: a run that dies mid-workflow loses only the stage in flight, and a quota-pause resume
-re-enters a branch whose committed state matches the session's memory (the branch is never pushed
-until the final review gate and PR open, so intermediate commits are unreviewed-but-unpublished).
+re-enters a branch whose committed state matches the session's memory. The harness publishes
+checkpoint commits as soon as it regains control; these commits are unreviewed intermediate
+progress, and each published commit is recorded as an idempotent issue comment.
 
 An ESCALATE outcome halts the workflow at the escalating stage group, so later stages never run and
 the branch holds a partial implementation. Prauto must not carry that forward to tests or a PR: it
@@ -486,8 +489,12 @@ run would only re-prove it at far higher cost.
 
 ### Push and PR creation
 
-After implementation, the loop master (not the worker) pushes the branch, checks for an existing
-PR, and creates one if none exists (with `prauto:review` label, assignee, optional reviewer).
+After implementation, the loop master (not the worker) pushes the branch, links it to the issue's
+Development section, posts commit-link comments for any unpublished commits, checks for an
+existing PR, and creates one if none exists (with `prauto:review` label, assignee, optional
+reviewer). The same checkpoint publication runs after worker-led review and integration-fix
+stages. A strict push remains the finalization gate; checkpoint pushes are best-effort so a
+temporary GitHub outage does not erase local committed progress.
 
 ### PR review handling
 
@@ -575,8 +582,9 @@ against real LLM, Redis, or notification backends.
 APPROVED.
 
 **Steps**: Rebase on base -> generate squash commit message (1-turn worker, no tools) ->
-`git reset --soft` + commit -> force-push with lease -> update PR title -> labels to
-`prauto:done` on issue + PR. Does **not** merge or close -- left to the human.
+`git reset --soft` + commit -> force-push with lease -> post the squashed commit link on the
+issue -> update PR title -> labels to `prauto:done` on issue + PR. Does **not** merge or close --
+left to the human.
 
 **Commit format**: Conventional commit with max 5-line body, issue/PR reference,
 `Co-Authored-By` trailers.

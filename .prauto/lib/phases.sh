@@ -4,12 +4,28 @@
 #           all sourced, config loaded.
 # All handlers accept (issue_number, issue_title, branch).
 
+# checkpoint_branch <issue_number> <branch>
+# Persist committed progress before a worker worktree is removed, then expose
+# the branch and commit links on GitHub. Every operation is best-effort so a
+# transient GitHub/SSH failure does not turn a resumable worker pause into a
+# terminal heartbeat failure.
+checkpoint_branch() {
+  local issue_number="$1" branch="$2"
+  if ! push_checkpoint_branch "$branch"; then
+    return 0
+  fi
+  link_branch_to_issue "$issue_number" "$branch" || true
+  publish_commit_checkpoints "$issue_number" "$branch" || true
+}
+
 # finalize_issue_pr <branch> <issue_number> <issue_title>
 # Push, create/update PR, run+post tests, swap labels to prauto:review, complete.
 # The worker never pushes — this is the harness-owned finalize step.
 finalize_issue_pr() {
   local branch="$1" issue_number="$2" issue_title="$3"
   push_branch "$branch"
+  link_branch_to_issue "$issue_number" "$branch" || true
+  publish_commit_checkpoints "$issue_number" "$branch" || true
   create_or_update_pr "$issue_number" "$issue_title" "$branch"
   run_and_post_test_results "$branch"
   gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -362,6 +378,7 @@ run_integration_test_fix() {
     info "Integration tests failed (spot: ${INTEG_SPOT_EXIT}, api-wired: ${INTEG_API_WIRED_EXIT})."
     if [[ "$attempt" -lt "$max_retries" ]]; then
       run_integration_fix_session "$issue_number" "$branch" "$INTEG_OUTPUT"
+      checkpoint_branch "$issue_number" "$branch"
     else
       info "Max integration fix retries reached. Proceeding with current state."
     fi
@@ -487,6 +504,7 @@ run_e2e_test_fix() {
     info "E2E tests failed (exit ${e2e_exit})."
     if [[ "$attempt" -lt "$max_retries" ]]; then
       run_e2e_fix_session "$issue_number" "$branch" "$(tail_chars "$e2e_output" 28000)"
+      checkpoint_branch "$issue_number" "$branch"
     else
       info "Max E2E fix retries reached."
     fi
@@ -573,11 +591,13 @@ implement_and_finalize() {
     IMPL_OUTPUT="$AGENT_OUTPUT"
     if [[ "$AGENT_STATUS" == "quota" ]]; then
       warn "Issue #${issue_number}: resumed ${ACTIVE_AGENT} died on quota again. Re-pausing."
+      checkpoint_branch "$issue_number" "$branch"
       post_quota_paused_comment "$issue_number" "$ACTIVE_AGENT" "$PAUSED_SESSION_ID"
       return 0
     fi
     if [[ "$AGENT_STATUS" != "ok" ]]; then
       warn "Issue #${issue_number}: resumed ${ACTIVE_AGENT} failed. Will retry through the normal path."
+      checkpoint_branch "$issue_number" "$branch"
       post_resume_failure_restart_comment "$issue_number" "$ACTIVE_AGENT"
       return 0
     fi
@@ -591,6 +611,7 @@ implement_and_finalize() {
     # a retry. The next wake resumes this same session once quota resets.
     if [[ "$AGENT_STATUS" == "quota" ]]; then
       warn "Issue #${issue_number}: worker died on a quota/session limit (${ACTIVE_AGENT}). Pausing."
+      checkpoint_branch "$issue_number" "$branch"
       post_quota_paused_comment "$issue_number" "$ACTIVE_AGENT" "$AGENT_SESSION_ID"
       return 0
     fi
@@ -600,12 +621,14 @@ implement_and_finalize() {
     # Retry on a later wake; the heartbeat-comment retry counter governs abandon.
     if [[ "$AGENT_STATUS" != "ok" ]]; then
       warn "Issue #${issue_number}: implementation failed (${ACTIVE_AGENT}, status=${AGENT_STATUS}). Will retry next heartbeat."
+      checkpoint_branch "$issue_number" "$branch"
       return 0
     fi
   fi
 
   if implementation_escalated "$IMPL_OUTPUT"; then
     warn "Implementation workflow escalated for issue #${issue_number}. Abandoning."
+    checkpoint_branch "$issue_number" "$branch"
     gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — workflow escalated" 2>/dev/null || true
     abandon_workflow_escalation "$issue_number" "$IMPL_OUTPUT"
@@ -614,6 +637,7 @@ implement_and_finalize() {
 
   if ! implementation_complete "$IMPL_OUTPUT"; then
     warn "Issue #${issue_number}: implementation returned no valid COMPLETE outcome. Will retry next heartbeat."
+    checkpoint_branch "$issue_number" "$branch"
     return 0
   fi
 
@@ -623,6 +647,7 @@ implement_and_finalize() {
   dirty_worktree=$(git status --porcelain --untracked-files=all 2>/dev/null || true)
   if [[ -n "$dirty_worktree" ]]; then
     warn "Issue #${issue_number}: implementation completed with uncommitted changes. Will retry next heartbeat."
+    checkpoint_branch "$issue_number" "$branch"
     return 0
   fi
 

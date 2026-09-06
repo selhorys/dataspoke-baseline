@@ -43,6 +43,11 @@ from the JSONL `thread.started` event. A later continuation is exactly
 `codex exec resume --json <thread-id> <prompt>` — no Claude-only session, sandbox, tool, turn, or
 budget flags are applied.
 
+When the harness regains control after a worker invocation, it best-effort pushes any committed
+checkpoint on the issue branch, links that branch to the issue, and posts one idempotent issue
+comment per commit with a GitHub commit link. Uncommitted work is still discarded with the
+worktree; a strict push remains part of final PR creation.
+
 If Codex exits before `thread.started`, PRauto has no trustworthy resume target. It preserves the
 raw JSONL artifact and its stderr sidecar for diagnosis but treats the run as an ordinary failed
 attempt, so the next heartbeat follows the normal retry/restart path instead of posting a

@@ -255,6 +255,8 @@ ${co_authored_by%$'\n'}"
     }
   fi
   info "PR #${pr_number}: force-pushed squashed commit."
+  link_branch_to_issue "$issue_number" "$pr_branch" || true
+  publish_commit_checkpoints "$issue_number" "$pr_branch" || true
 
   local final_commit_title
   final_commit_title=$(git log -1 --format='%s' HEAD 2>/dev/null || printf '%s' "$pr_title")

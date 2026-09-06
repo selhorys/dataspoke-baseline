@@ -266,6 +266,50 @@ post_heartbeat_comment() {
     || warn "Failed to post heartbeat comment on issue #${issue_number}."
 }
 
+# post_commit_checkpoint_comment <issue_number> <branch> <sha> <subject>
+# Post one idempotent issue comment for a pushed checkpoint commit.
+post_commit_checkpoint_comment() {
+  local issue_number="$1" branch="$2" sha="$3" subject="$4"
+  local short_sha="${sha:0:12}"
+  local commit_url="https://github.com/${PRAUTO_GITHUB_REPO}/commit/${sha}"
+  local branch_url="https://github.com/${PRAUTO_GITHUB_REPO}/tree/${branch}"
+
+  if comment_exists "issue" "$issue_number" "Checkpoint commit ${sha}"; then
+    info "Checkpoint comment already exists for ${short_sha} on issue #${issue_number}."
+    return 0
+  fi
+
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "prauto(${PRAUTO_WORKER_ID}): Checkpoint commit ${sha}
+
+[`${short_sha}`](${commit_url}) — ${subject}
+Branch: [`${branch}`](${branch_url})" 2>/dev/null \
+    || warn "Failed to post checkpoint comment for ${short_sha} on issue #${issue_number}."
+}
+
+# publish_commit_checkpoints <issue_number> <branch>
+# Publish branch-only commits in oldest-first order. The merge-base keeps an
+# existing branch that started from an older dev commit from replaying its base
+# history; comment_exists makes retries safe when a push/comment partially wins.
+publish_commit_checkpoints() {
+  local issue_number="$1" branch="$2" repo_path="${WORKTREE_DIR:-.}"
+  local base_sha commits sha subject
+
+  base_sha=$(git -C "$repo_path" merge-base "origin/${PRAUTO_BASE_BRANCH}" "$branch" 2>/dev/null || printf '')
+  [[ -n "$base_sha" ]] || {
+    warn "Could not determine checkpoint base for ${branch}."
+    return 1
+  }
+
+  commits=$(git -C "$repo_path" log --reverse --format='%H%x09%s' "${base_sha}..${branch}" 2>/dev/null || printf '')
+  [[ -n "$commits" ]] || return 0
+
+  while IFS=$'\t' read -r sha subject; do
+    [[ -n "$sha" ]] || continue
+    post_commit_checkpoint_comment "$issue_number" "$branch" "$sha" "$subject"
+  done <<< "$commits"
+}
+
 # derive_phase_from_github <issue_number> <branch>
 # Derive the current phase from GitHub signals only. Sets DERIVED_PHASE.
 #   1. PR exists for branch -> pr
