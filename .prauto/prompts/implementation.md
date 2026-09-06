@@ -78,8 +78,10 @@ stage, so a run that dies mid-workflow loses only the stage in flight — earlie
 on the branch.
 
 - Commits land on the private `{branch}` worktree branch only; never `master`, never push.
-- Stage with `git add -A`, inspect `git diff --staged`, and write a conventional commit message
-  (`<type>: <subject>`) from the actual diff. Attribute the commit with
+- List the exact files you changed with `git status --porcelain`, stage only those with
+  `git add <each-path>` (never `git add -A` — sibling and prior stages share this worktree),
+  inspect `git diff --staged` to confirm it holds only your changes, and write a conventional
+  commit message (`<type>: <subject>`) from the actual diff. Attribute the commit with
   `--author="{author_name} <{author_email}>"`.
 - If a stage produced no changes, skip the commit and say so.
 - Reviewers remain read-only and review the committed changes (their reports are untrusted; read

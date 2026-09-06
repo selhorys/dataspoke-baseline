@@ -75,8 +75,10 @@ const REVIEW_SCHEMA = {
 // stage, so a run that dies mid-workflow loses only the stage in flight.
 const COMMIT_STAGE =
   'When your stage\'s work is complete, commit it to the branch before returning your report: ' +
-  'stage with `git add -A`, inspect `git diff --staged`, write a conventional commit message ' +
-  '(`<type>: <subject>`) from the actual diff, and commit' +
+  'list the exact files YOU changed with `git status --porcelain`, stage only those with ' +
+  '`git add <each-path>` (never `git add -A` — sibling stages and prior stages share this ' +
+  'worktree), inspect `git diff --staged` to confirm it holds only your changes, write a ' +
+  'conventional commit message (`<type>: <subject>`) from the actual diff, and commit' +
   (ARGS.author ? ` with --author="${ARGS.author}"` : '') +
   '. If there are no changes, skip the commit and say so. Do NOT push, create branches, or tags.'
 
