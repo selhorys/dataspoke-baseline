@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-PROTECTED_BRANCHES = {"dev", "master"}
+PROTECTED_BRANCHES = {"master"}
 SHELL_SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", "then", "do", "else"}
 COMMIT_CAPABLE = re.compile(
     r"(?:^|[;&|()`\n])\s*(?:env(?:\s+[^;&|()`\n]+)*\s+)?(?:[\w./-]+/)?git\s+[^;&|()`\n]*\bcommit\b"

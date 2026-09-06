@@ -56,7 +56,7 @@ model outside this interactive contract; see `spec/AI_PRAUTO.md`.
 The scaffold installs no automatic project lifecycle hooks. Its only automatic hooks are narrowly
 scoped commit-approval guards. Claude Code's `PreToolUse` binding calls the shared
 `hooks/protected-commit.py` classifier and requests its native approval UI when a recognized
-`git commit` may target `dev` or `master`. Codex has no project hook: the Codex parent follows
+`git commit` may target `master`. Codex has no project hook: the Codex parent follows
 `AGENTS.md` and invokes its native approval or user-question UI immediately before committing.
 Matching Claude input, invocation, branch-resolution, and classifier faults block instead of
 silently allowing a commit. Lint, typecheck, integration validation, and agent lifecycle gates

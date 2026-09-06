@@ -370,12 +370,13 @@ Review is therefore **per-stage and adversarial** — each generator is evaluate
 context before later stages build on its output, upholding the generator ≠ reviewer rule that
 exists to prevent the self-praise failure mode.
 
-The workflow's stages leave their changes unstaged — its `NO_COMMIT` contract tells each subagent
-so — and the implementation phase commits them after the run returns; the parent session holds the
-`git add`/`git commit` grants for exactly this. A run that dies mid-workflow therefore leaves
-delegated work uncommitted, and so invisible to the branch-based continuity mechanism
-([Overview](#overview)), which only sees committed work; such a run restarts the workflow rather
-than resuming it.
+Each generator commits its own stage to the branch as its final action — the workflow's
+commit-per-stage contract — and a REVISE fix pass produces a follow-up commit. Reviewers stay
+read-only and evaluate the committed changes. Commits land on the private `prauto/I-*` worktree
+branch only, never `master`, and are attributed to the worker via `--author`. Progress is therefore
+durable per stage: a run that dies mid-workflow loses only the stage in flight, and a quota-pause
+resume re-enters a branch whose committed state matches the session's memory (the branch is never
+pushed until the final review gate and PR open, so intermediate commits are unreviewed-but-unpublished).
 
 An ESCALATE outcome halts the workflow at the escalating stage group, so later stages never run and
 the branch holds a partial implementation. Prauto must not carry that forward to tests or a PR: it

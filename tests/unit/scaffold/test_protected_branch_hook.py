@@ -56,7 +56,7 @@ def _native(
     )
 
 
-@pytest.mark.parametrize("branch", ["dev", "master"])
+@pytest.mark.parametrize("branch", ["master"])
 def test_native_hook_requests_approval_for_protected_branch(repo: Path, branch: str) -> None:
     subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", branch], check=True)
 
@@ -94,7 +94,7 @@ def test_native_hook_allows_unprotected_or_detached_head(repo: Path, branch: str
     ],
 )
 def test_native_hook_detects_supported_commit_variants(repo: Path, command: str) -> None:
-    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "master"], check=True)
 
     result = _native(repo, command)
 
@@ -132,7 +132,7 @@ def test_native_hook_avoids_non_commit_false_positives(repo: Path, command: str)
     ],
 )
 def test_native_hook_does_not_crash_on_unbalanced_quote_text(repo: Path, command: str) -> None:
-    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "master"], check=True)
 
     result = _native(repo, command)
 
@@ -141,7 +141,7 @@ def test_native_hook_does_not_crash_on_unbalanced_quote_text(repo: Path, command
 
 
 def test_native_hook_fails_open_for_unparseable_non_git_command(repo: Path) -> None:
-    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "master"], check=True)
 
     result = _native(repo, "echo it's just prose with no git in it")
 
@@ -150,7 +150,7 @@ def test_native_hook_fails_open_for_unparseable_non_git_command(repo: Path) -> N
 
 
 def test_native_hook_still_fails_closed_for_unparseable_opaque_git_commit(repo: Path) -> None:
-    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "master"], check=True)
 
     result = _native(repo, "echo `git commit -m it's-nested`")
 
@@ -168,7 +168,7 @@ def test_native_hook_still_fails_closed_for_unparseable_opaque_git_commit(repo: 
     ],
 )
 def test_native_hook_flags_quoted_dollar_paren_substitution(repo: Path, command: str) -> None:
-    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "master"], check=True)
 
     result = _native(repo, command)
 
@@ -178,7 +178,7 @@ def test_native_hook_flags_quoted_dollar_paren_substitution(repo: Path, command:
 
 
 def test_native_hook_honors_git_dash_c_repository(repo: Path, tmp_path: Path) -> None:
-    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "master"], check=True)
 
     result = _native(tmp_path, f"git -C {repo} commit -m message")
 
@@ -271,7 +271,7 @@ def test_native_hook_tracks_cwd_across_shell_separators(
     protected = tmp_path / "protected"
     protected.mkdir()
     subprocess.run(["git", "init", "-q", protected], check=True)
-    subprocess.run(["git", "-C", protected, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", protected, "checkout", "-q", "-b", "master"], check=True)
     if separator == "||":
         subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "master"], check=True)
         target = tmp_path / "unprotected"
@@ -294,14 +294,14 @@ def test_native_hook_keeps_successful_cd_path_across_or_then_sequence(
     protected = tmp_path / "protected-or"
     protected.mkdir()
     subprocess.run(["git", "init", "-q", protected], check=True)
-    subprocess.run(["git", "-C", protected, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", protected, "checkout", "-q", "-b", "master"], check=True)
 
     result = _native(repo, f"cd -- {protected} || exit 1; git commit -m message")
 
     assert result.returncode == 0
     decision = json.loads(result.stdout)["hookSpecificOutput"]
     assert decision["permissionDecision"] == "ask"
-    assert "dev" in decision["permissionDecisionReason"]
+    assert "master" in decision["permissionDecisionReason"]
 
 
 def test_native_hook_tracks_or_and_precedence_across_alternative_cd_paths(
@@ -310,7 +310,7 @@ def test_native_hook_tracks_or_and_precedence_across_alternative_cd_paths(
     protected = tmp_path / "precedence-protected"
     protected.mkdir()
     subprocess.run(["git", "init", "-q", protected], check=True)
-    subprocess.run(["git", "-C", protected, "checkout", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", protected, "checkout", "-q", "-b", "master"], check=True)
 
     ambiguous = _native(repo, f"cd {protected} || cd {repo} && git commit -m potentially-protected")
     topic_only = _native(repo, f"cd {repo} && git commit -m topic-only")
@@ -318,7 +318,7 @@ def test_native_hook_tracks_or_and_precedence_across_alternative_cd_paths(
     assert ambiguous.returncode == 0
     decision = json.loads(ambiguous.stdout)["hookSpecificOutput"]
     assert decision["permissionDecision"] == "ask"
-    assert "dev" in decision["permissionDecisionReason"]
+    assert "master" in decision["permissionDecisionReason"]
     assert topic_only.returncode == 0
     assert topic_only.stdout == ""
 
@@ -422,7 +422,7 @@ def test_claude_hook_configuration_resolves_repository_entrypoint() -> None:
 
 
 @pytest.mark.parametrize(
-    ("branch", "expects_ask"), [("dev", True), ("master", True), ("main", False)]
+    ("branch", "expects_ask"), [("master", True), ("dev", False), ("main", False)]
 )
 def test_configured_claude_hook_decision_for_actual_commit(
     repo: Path, branch: str, expects_ask: bool

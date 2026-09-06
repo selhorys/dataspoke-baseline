@@ -1,7 +1,7 @@
 ---
 name: spec
 description: Writes and edits DataSpoke specification documents under spec/ (top-level and spec/feature/<FEATURE>.md), following the project spec hierarchy, naming, and timeless-reference conventions. Launch with an approved plan or a scoped authoring task; usable as a generator building block in dynamic workflows.
-tools: Read, Write, Edit, Glob, Grep
+tools: Read, Write, Edit, Glob, Grep, Bash(git add *), Bash(git commit *), Bash(git diff *), Bash(git status *)
 model: sonnet
 skills:
   - spec-write
