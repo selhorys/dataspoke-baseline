@@ -110,13 +110,36 @@ cleanup_worktree() {
   WORKTREE_DIR=""
 }
 
+# push_branch_ref <branch>
+# Push HEAD to the named branch, allowing the intentional history rewrite from a
+# rebase while refusing to overwrite a remote update made after this worktree was
+# created. Use the configured GitHub token when available so API and git writes
+# share the same worker identity; otherwise fall back to the configured SSH key.
+push_branch_ref() {
+  local branch="$1" expected_sha lease_flag=""
+  expected_sha=$(git rev-parse --verify --quiet "refs/remotes/origin/${branch}" 2>/dev/null || printf '')
+  if [[ -n "$expected_sha" ]]; then
+    lease_flag="--force-with-lease=refs/heads/${branch}:${expected_sha}"
+  fi
+
+  local refspec="HEAD:refs/heads/${branch}"
+  local -a push_options=(-u)
+  [[ -n "$lease_flag" ]] && push_options=("$lease_flag" -u)
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    local push_url="https://x-access-token:${GH_TOKEN}@github.com/${PRAUTO_GITHUB_REPO}.git"
+    git push "${push_options[@]}" "$push_url" "$refspec"
+  else
+    git push "${push_options[@]}" origin "$refspec"
+  fi
+}
+
 # push_branch <branch>
 # Push the current branch to origin. This is loop-master-owned — the worker never
 # pushes; only the harness finalize path calls this.
 push_branch() {
   local branch="$1"
   info "Pushing ${branch} to origin..."
-  git push -u origin "$branch" 2>/dev/null || error "Failed to push ${branch} to origin."
+  push_branch_ref "$branch" 2>/dev/null || error "Failed to push ${branch} to origin."
   info "Pushed ${branch}."
 }
 
@@ -127,7 +150,7 @@ push_branch() {
 push_checkpoint_branch() {
   local branch="$1"
   info "Pushing checkpoint ${branch} to origin..."
-  if git push -u origin "$branch" 2>/dev/null; then
+  if push_branch_ref "$branch" 2>/dev/null; then
     info "Checkpoint pushed for ${branch}."
     return 0
   fi
