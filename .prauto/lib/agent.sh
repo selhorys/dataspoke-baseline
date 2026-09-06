@@ -443,9 +443,17 @@ generate_squash_commit_message() {
     "issue_number=${issue_number}" "issue_title=${issue_title}" "issue_body=${issue_body}" \
     "pr_number=${pr_number}" "diff_stat=${diff_stat}" "diff=${diff}")
   invoke_agent "$prompt" "" "1" "${PRAUTO_CLAUDE_MAX_BUDGET_ANALYSIS:-}"
+  if [[ "$AGENT_STATUS" != "ok" ]]; then
+    warn "Claude failed to generate commit message (status=${AGENT_STATUS}). Falling back to PR title."
+    SQUASH_COMMIT_MESSAGE="${issue_title}
+
+(issue #${issue_number}, PR #${pr_number})"
+    return 0
+  fi
+
   SQUASH_COMMIT_MESSAGE=$(printf '%s' "$AGENT_OUTPUT" | sed '/^```/d')
   if [[ -z "$SQUASH_COMMIT_MESSAGE" ]]; then
-    warn "Claude failed to generate commit message. Falling back to PR title."
+    warn "Claude returned an empty commit message. Falling back to PR title."
     SQUASH_COMMIT_MESSAGE="${issue_title}
 
 (issue #${issue_number}, PR #${pr_number})"
