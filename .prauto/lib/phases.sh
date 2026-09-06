@@ -4,6 +4,13 @@
 #           all sourced, config loaded.
 # All handlers accept (issue_number, issue_title, branch).
 
+# The heartbeat owns the lifecycle of a cluster it provisions. These globals
+# are read by heartbeat.sh's EXIT trap so even a later test/agent failure gets
+# a best-effort teardown, while a pre-existing healthy cluster is left alone.
+DEV_ENV_PROVISIONED=false
+DEV_ENV_PROVISIONED_ENV_FILE=""
+DEV_ENV_TEARDOWN_ATTEMPTED=false
+
 # checkpoint_branch <issue_number> <branch>
 # Persist committed progress before a worker worktree is removed, then expose
 # the branch and commit links on GitHub. Every operation is best-effort so a
@@ -139,8 +146,38 @@ provision_dev_env() {
     warn "$provision_output"
     return 1
   fi
+  DEV_ENV_PROVISIONED=true
+  DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
   info "Cluster provisioning completed."
   return 0
+}
+
+# teardown_provisioned_dev_env
+# Remove a dev profile that this heartbeat provisioned. Full deletion includes
+# PVCs and namespaces so a temporary test cluster does not keep incurring cost.
+# This is intentionally best-effort because it runs from the EXIT trap.
+teardown_provisioned_dev_env() {
+  [[ "${DEV_ENV_PROVISIONED:-false}" == true ]] || return 0
+  [[ "${DEV_ENV_TEARDOWN_ATTEMPTED:-false}" == true ]] && return 0
+  DEV_ENV_TEARDOWN_ATTEMPTED=true
+
+  local env_file="${DEV_ENV_PROVISIONED_ENV_FILE:-}"
+  local uninstall_script="${REPO_DIR:-}/helm-charts/bin/uninstall.sh"
+  if [[ -z "$env_file" || ! -f "$uninstall_script" ]]; then
+    warn "Cannot tear down the provisioned dev cluster: uninstall.sh or its env file is missing."
+    return 0
+  fi
+
+  info "Tearing down the dev cluster provisioned by this heartbeat..."
+  local teardown_output teardown_exit=0
+  teardown_output=$(bash "$uninstall_script" \
+    --profile dev --env-file "$env_file" --no-question --delete-all 2>&1) || teardown_exit=$?
+  if [[ "$teardown_exit" -ne 0 ]]; then
+    warn "Dev cluster teardown failed (exit ${teardown_exit}):"
+    warn "$teardown_output"
+    return 0
+  fi
+  info "Provisioned dev cluster torn down."
 }
 
 # run_health_check <script> <env_file>
@@ -244,12 +281,12 @@ run_integration_groups() {
 
   if [[ -d "tests/integration/spot" ]]; then
     info "Running spot integration tests..."
-    INTEG_SPOT_OUTPUT=$(DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
+    INTEG_SPOT_OUTPUT=$(ENV_FILE="$env_file" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
       uv run pytest tests/integration/spot/ --tb=short 2>&1) || INTEG_SPOT_EXIT=$?
   fi
   if [[ -d "tests/integration/api_wired" ]]; then
     info "Running api-wired integration tests..."
-    INTEG_API_WIRED_OUTPUT=$(DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
+    INTEG_API_WIRED_OUTPUT=$(ENV_FILE="$env_file" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$env_file" \
       uv run pytest tests/integration/api_wired/ --tb=short 2>&1) || INTEG_API_WIRED_EXIT=$?
   fi
 
@@ -497,7 +534,7 @@ run_e2e_test_fix() {
 
     info "Running E2E tests..."
     e2e_exit=0
-    e2e_output=$(DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" \
+    e2e_output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" \
       pnpm -C tests/e2e test 2>&1) || e2e_exit=$?
     [[ "$e2e_exit" -eq 0 ]] && { info "E2E tests passed on attempt ${attempt}."; break; }
 

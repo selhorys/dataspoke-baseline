@@ -2,9 +2,48 @@
 # Source this file — do not execute directly.
 # Requires: helpers.sh sourced, config loaded, git available.
 
+# github_issue_node_id <issue_number>
+github_issue_node_id() {
+  local issue_number="$1"
+  local owner="${PRAUTO_GITHUB_REPO%%/*}" repo="${PRAUTO_GITHUB_REPO#*/}"
+  gh api graphql \
+    -f query='query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { issue(number: $number) { id } } }' \
+    -f "owner=${owner}" -f "repo=${repo}" -F "number=${issue_number}" 2>/dev/null \
+    | jq -r '.data.repository.issue.id // empty'
+}
+
+# create_linked_branch_for_issue <issue_number> <branch>
+# Create a new remote branch already linked in the issue's Development section.
+# This must run before the local worktree branch is created; GitHub exposes no
+# supported mutation for attaching an existing unlinked branch retroactively.
+create_linked_branch_for_issue() {
+  local issue_number="$1" branch="$2" issue_id base_oid linked_name
+  issue_id=$(github_issue_node_id "$issue_number") || issue_id=""
+  base_oid=$(git -C "$REPO_DIR" rev-parse "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null || printf '')
+  if [[ -z "$issue_id" || -z "$base_oid" ]]; then
+    warn "Could not prepare a linked branch for issue #${issue_number}; using a local branch."
+    return 1
+  fi
+
+  linked_name=$(gh api graphql \
+    -f query='mutation($input: CreateLinkedBranchInput!) { createLinkedBranch(input: $input) { linkedBranch { ref { name } } } }' \
+    -f "input[issueId]=${issue_id}" \
+    -f "input[oid]=${base_oid}" \
+    -f "input[name]=${branch}" 2>/dev/null \
+    | jq -r '.data.createLinkedBranch.linkedBranch.ref.name // empty')
+  if [[ "$linked_name" == "$branch" ]]; then
+    info "Created branch ${branch} linked to issue #${issue_number}."
+    return 0
+  fi
+
+  warn "Could not create a branch linked to issue #${issue_number}; using a local branch."
+  return 1
+}
+
 # create_branch <issue_number>
-# Create a worktree on the prauto/I-<n> branch from the base. If the branch
-# already exists (retry scenario), reuse it in a fresh worktree.
+# Create a worktree on the prauto/I-<n> branch from the base. New remote
+# branches are created through GitHub's linked-branch mutation; an existing
+# branch (retry scenario) is reused in a fresh worktree.
 # Sets: BRANCH_NAME, WORKTREE_DIR.
 create_branch() {
   local issue_number="$1"
@@ -26,9 +65,16 @@ create_branch() {
     git -C "$REPO_DIR" worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null \
       || error "Failed to create worktree for ${BRANCH_NAME}."
   else
-    info "Creating branch ${BRANCH_NAME} from origin/${PRAUTO_BASE_BRANCH}..."
-    git -C "$REPO_DIR" worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null \
-      || error "Failed to create worktree for new branch ${BRANCH_NAME}."
+    if create_linked_branch_for_issue "$issue_number" "$BRANCH_NAME"; then
+      git -C "$REPO_DIR" fetch origin "$BRANCH_NAME" 2>/dev/null \
+        || error "Failed to fetch linked branch ${BRANCH_NAME}."
+      git -C "$REPO_DIR" worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null \
+        || error "Failed to create worktree for linked branch ${BRANCH_NAME}."
+    else
+      info "Creating branch ${BRANCH_NAME} from origin/${PRAUTO_BASE_BRANCH}..."
+      git -C "$REPO_DIR" worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null \
+        || error "Failed to create worktree for new branch ${BRANCH_NAME}."
+    fi
   fi
   info "Worktree ready at ${WORKTREE_DIR} (branch: ${BRANCH_NAME})."
 }
@@ -90,26 +136,23 @@ push_checkpoint_branch() {
 }
 
 # link_branch_to_issue <issue_number> <branch>
-# Link an already-pushed branch in the issue's Development section. GitHub's
-# issue-branch endpoint is not present in every gh version, so this is
-# idempotent and best-effort; commit comments remain the durable fallback.
+# Verify that a branch is linked in the issue's Development section. New
+# branches are linked by create_linked_branch_for_issue before they are pushed;
+# GitHub exposes no supported mutation for retroactively attaching an existing
+# unlinked branch.
 link_branch_to_issue() {
-  local issue_number="$1" branch="$2"
+  local issue_number="$1" branch="$2" owner="${PRAUTO_GITHUB_REPO%%/*}" repo="${PRAUTO_GITHUB_REPO#*/}"
   local linked_branches
 
-  linked_branches=$(gh api "repos/${PRAUTO_GITHUB_REPO}/issues/${issue_number}/branches" \
-    --jq '.[].name' 2>/dev/null || printf '')
+  linked_branches=$(gh api graphql \
+    -f query='query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { issue(number: $number) { linkedBranches(first: 100) { nodes { ref { name } } } } } }' \
+    -f "owner=${owner}" -f "repo=${repo}" -F "number=${issue_number}" 2>/dev/null \
+    | jq -r '.data.repository.issue.linkedBranches.nodes[].ref.name' 2>/dev/null || printf '')
   if printf '%s\n' "$linked_branches" | grep -Fxq "$branch"; then
     info "Branch ${branch} is already linked to issue #${issue_number}."
     return 0
   fi
 
-  if gh api --method POST "repos/${PRAUTO_GITHUB_REPO}/issues/${issue_number}/branches" \
-      -f "branch=${branch}" >/dev/null 2>&1; then
-    info "Linked branch ${branch} to issue #${issue_number}."
-    return 0
-  fi
-
-  warn "Could not link branch ${branch} to issue #${issue_number}; continuing."
+  warn "Branch ${branch} is not linked to issue #${issue_number}; existing branches cannot be retroactively linked by the public API."
   return 1
 }

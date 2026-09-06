@@ -81,6 +81,15 @@ elif [[ "$1" == issue && "$2" == comment ]]; then
     if [[ "$1" == --body ]]; then body="$2"; shift 2; else shift; fi
   done
   printf '%s\\n' "$body" >> "$GH_COMMENTS"
+elif [[ "$1" == api && "$2" == graphql ]]; then
+  if [[ "$*" == *"createLinkedBranch"* ]]; then
+    : > "$GH_LINKED"
+    printf '{"data":{"createLinkedBranch":{"linkedBranch":{"ref":{"name":"prauto/I-176"}}}}}\n'
+  elif [[ "$*" == *"linkedBranches"* ]]; then
+    printf '{"data":{"repository":{"issue":{"linkedBranches":{"nodes":[]}}}}}\n'
+  else
+    printf '{"data":{"repository":{"issue":{"id":"issue-node"}}}}\n'
+  fi
 elif [[ "$1" == api ]]; then
   if [[ " $* " == *" --method POST "* ]]; then
     : > "$GH_LINKED"
@@ -128,6 +137,8 @@ def test_checkpoint_comments_are_linked_and_idempotent(tmp_path: Path) -> None:
     assert body.count("Checkpoint commit") == 1
     assert "/commit/" in body
     assert "fix: checkpoint work" in body
+    assert "[`" in body
+    assert "[](" not in body
     assert "--body" in calls.read_text()
     remote_branch = subprocess.run(
         ["git", "-C", str(repo), "ls-remote", "--heads", "origin", "prauto/I-176"],
@@ -140,15 +151,18 @@ def test_checkpoint_comments_are_linked_and_idempotent(tmp_path: Path) -> None:
     assert not linked.exists()
 
 
-def test_existing_branch_link_is_requested_via_issue_api(tmp_path: Path) -> None:
+def test_new_branch_link_is_requested_via_graphql(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
     bin_dir, calls, linked = _make_gh_stub(tmp_path)
     source = "\n".join(
         [
             f"PRAUTO_DIR={shlex.quote(str(PRAUTO))}",
+            f"REPO_DIR={shlex.quote(str(repo))}",
+            "PRAUTO_BASE_BRANCH=dev",
             "PRAUTO_GITHUB_REPO=owner/repo",
             f"source {shlex.quote(str(PRAUTO / 'lib/helpers.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/git-ops.sh'))}",
-            "link_branch_to_issue 176 prauto/I-176",
+            "create_linked_branch_for_issue 176 prauto/I-176",
         ]
     )
     result = _run(
@@ -163,5 +177,7 @@ def test_existing_branch_link_is_requested_via_issue_api(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     assert linked.exists()
-    assert "--method POST" in calls.read_text()
-    assert "branch=prauto/I-176" in calls.read_text()
+    calls_text = calls.read_text()
+    assert "graphql" in calls_text
+    assert "createLinkedBranch" in calls_text
+    assert "input[name]=prauto/I-176" in calls_text

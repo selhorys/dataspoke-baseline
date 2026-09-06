@@ -26,6 +26,7 @@ cleanup() {
     git worktree prune 2>/dev/null || true
     info "Worktree ${WORKTREE_DIR} cleaned up."
   fi
+  teardown_provisioned_dev_env || true
   release_lock 2>/dev/null || true
 }
 trap cleanup EXIT

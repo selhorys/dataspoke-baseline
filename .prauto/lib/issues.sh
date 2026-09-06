@@ -279,11 +279,14 @@ post_commit_checkpoint_comment() {
     return 0
   fi
 
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Checkpoint commit ${sha}
+  local body
+  body="prauto(${PRAUTO_WORKER_ID}): Checkpoint commit ${sha}
 
-[`${short_sha}`](${commit_url}) — ${subject}
-Branch: [`${branch}`](${branch_url})" 2>/dev/null \
+[\`${short_sha}\`](${commit_url}) — ${subject}
+Branch: [\`${branch}\`](${branch_url})"
+
+  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --body "$body" 2>/dev/null \
     || warn "Failed to post checkpoint comment for ${short_sha} on issue #${issue_number}."
 }
 
