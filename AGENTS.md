@@ -66,9 +66,9 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 - Body optional, **max 15 lines, max 100 chars per line** if included
 - The repository has no automatic agent lifecycle or Git `commit-msg` hooks. A narrowly scoped
   Claude Code `PreToolUse` hook requests native approval for recognized `git commit` commands on
-  `dev` or `master`. Codex has no project hook; its parent agent must use the native approval or
-  user-question interface immediately before committing on either branch.
-- Immediately before a coding agent commits on `dev` or `master`, it must obtain explicit user
+  `master`. Codex has no project hook; its parent agent must use the native approval or
+  user-question interface immediately before committing on `master`.
+- Immediately before a coding agent commits on `master`, it must obtain explicit user
   approval through the coding client's native approval interface. Approval for planning or editing
   is not commit approval.
 - The Claude guard is advisory and repository-writable. Its classifier recognizes common shell forms
