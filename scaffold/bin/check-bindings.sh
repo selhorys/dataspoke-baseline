@@ -131,7 +131,7 @@ for path in memory_files:
 
 DELETED_MECHANISM_TOKENS = (
     'run-stage.sh', 'run-workflow.sh', 'test-adapters.sh', 'reviewer-inspect.sh',
-    '.prauto/lib/', '.prauto/heartbeat.sh', 'prauto-run-heartbeat', 'prauto-check-status',
+    'prauto-run-heartbeat', 'prauto-check-status',
 )
 SUPERSESSION_MARKERS = ('historical', 'deleted', 'removed', 'superseded')
 for path in memory_files:

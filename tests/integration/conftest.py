@@ -41,18 +41,27 @@ from tests.integration.util.db_url import build_postgres_url
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
 
-def _load_dotenv() -> None:
-    """Load helm-charts/.env.dev into os.environ (without overwriting existing vars).
+def _resolve_env_file() -> Path | None:
+    """Locate helm-charts/.env.dev, searching the project root upward.
 
-    Searches from the project root (two levels above this file) upward, which
-    handles git worktrees where helm-charts/.env.dev lives in the main worktree.
+    Walking upward is what makes a git worktree work: the env file is untracked and
+    lives only in the main worktree, so a checkout under `.prauto/worktrees/<branch>/`
+    has none of its own. Every consumer must resolve it through here — a caller that
+    instead assumes `<project root>/helm-charts/.env.dev` silently reads a
+    nonexistent path under a worktree and misreports that as an environment fault.
     """
     start = Path(__file__).resolve().parents[2]
     for candidate in (start, *start.parents):
         env_path = candidate / "helm-charts" / ".env.dev"
         if env_path.is_file():
-            break
-    else:
+            return env_path
+    return None
+
+
+def _load_dotenv() -> None:
+    """Load helm-charts/.env.dev into os.environ (without overwriting existing vars)."""
+    env_path = _resolve_env_file()
+    if env_path is None:
         return
     for line in env_path.read_text().splitlines():
         line = line.strip()
@@ -221,9 +230,16 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
     if os.access(health_check, os.X_OK):
         # The dev-env lock is already held by this point (runtime_conf -> acquire_lock),
         # so --keep-lock tells health-check.sh not to treat it as foreign or stale.
+        # --env-file pins the same file _load_dotenv read, which under a git worktree
+        # is the main worktree's; without it health-check.sh resolves the env file
+        # against its own tree and exits 2 on a perfectly healthy cluster.
+        cmd = [str(health_check), "--keep-lock"]
+        env_file = _resolve_env_file()
+        if env_file is not None:
+            cmd += ["--env-file", str(env_file)]
         try:
             result = subprocess.run(
-                [str(health_check), "--keep-lock"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -239,11 +255,12 @@ def require_server(runtime_conf) -> None:  # noqa: ARG001 — runtime_conf perfo
                 f"helm-charts/bin/health-check.sh failed (exit {result.returncode}). "
                 "Integration tests would fail misleadingly against a broken cluster.\n\n"
                 f"health-check output:\n{result.stdout}{result.stderr}\n\n"
-                "Reinstall the failing subsystem (per AGENTS.md §Integration Test Protocol):\n"
-                "  airflow / postgres / redis → ./helm-charts/bin/install.sh --profile dev --components dataspoke-infra\n"
-                "  datahub-gms / kafka        → ./helm-charts/bin/install.sh --profile dev --components datahub\n"
-                "  example-postgres/kafka     → ./helm-charts/bin/install.sh --profile dev --components dummy-data\n"
-                "  lock-service               → ./helm-charts/bin/install.sh --profile dev --components dev-lock"
+                "Reinstall the failing subsystem (per AGENTS.md §Integration Test Protocol) "
+                "with ./helm-charts/bin/install.sh --profile dev --components <name>:\n"
+                "  airflow / postgres / redis → dataspoke-infra\n"
+                "  datahub-gms / kafka        → datahub\n"
+                "  example-postgres/kafka     → dummy-data\n"
+                "  lock-service               → dev-lock"
             )
 
     base_url = _shared_ingress_url()
