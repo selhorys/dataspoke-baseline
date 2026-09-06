@@ -15,11 +15,10 @@ entirely.
 at 2 — but `[[ ! -f "$ENV_FILE" ]]` passes for an *existing, unreadable* file, and the
 following `source "$ENV_FILE"` then dies under `set -e` at **exit 1**. The script's own usage
 header and `spec/feature/HELM_CHART.md` both named "unreadable env file" as a 2.
-**Historical:** `.prauto/lib/phases.sh` (deleted — the old bash prauto harness) also named it
-a 2 in its docstring, and its `dev_env_healthy` read a bare 1 as cluster evidence and called
-`provision_dev_env` — the exact failure the 1-vs-2 split exists to prevent. Prauto's health-check
-consumer is now the loop master (`spec/AI_PRAUTO.md §Dev Cluster and Deploys`); re-verify the
-1-vs-2 contract against whatever reads the exit code there before re-citing this as a live path.
+`.prauto/lib/phases.sh` also names it a 2 in its docstring, and its `dev_env_healthy` reads a
+bare 1 as cluster evidence and calls `provision_dev_env` — the exact failure the 1-vs-2 split
+exists to prevent. The current health-check consumer is `dev_env_healthy` in
+`.prauto/lib/phases.sh`; re-verify the 1-vs-2 contract there before re-citing this rationale.
 
 **`source X || { ...; exit 2; }` is NOT a fix.** Measured on this machine (bash 3.2.57,
 the only bash on stock macOS, which `#!/usr/bin/env bash` resolves to) with `set -e`:

@@ -97,7 +97,7 @@ repository-relative and resolved from the repository root.
 | `spec/` | Hierarchical spec documents (MANIFESTO → ARCHITECTURE → feature specs) |
 | `helm-charts/` | Umbrella Helm chart + `bin/` install/uninstall/build scripts + dev peripherals. See `spec/feature/HELM_CHART.md` |
 | `ref/` | External source code for AI reference (DataHub v1.6.0, downloaded via `/ref-setup`) |
-| `.prauto/` | Autonomous PR worker: scheduled issue-to-PR automation (loop master + agent-agnostic contract; Claude Code / Codex). See `spec/AI_PRAUTO.md` |
+| `.prauto/` | Autonomous PR worker: scheduled issue-to-PR automation (executor + scheduler + agent-agnostic contract; Claude Code / Codex). See `spec/AI_PRAUTO.md` |
 
 ---
 
@@ -261,7 +261,7 @@ read-only; generators receive workspace-write only for their declared scope.
 |----------|--------|----------|
 | Read-only | Auto-allowed | `kubectl get`, `helm list`, `git log`, `docker ps` |
 | Reference docs | Auto-allowed | `WebSearch`, `WebFetch` to framework/tool documentation domains |
-| Skills | Auto-allowed / prompt | Most skills auto-allowed; `ref-setup` and `spec-to-bulk-issue` require user confirmation (side effects) |
+| Skills | Auto-allowed / prompt | Most skills auto-allowed; `ref-setup`, `spec-to-bulk-issue`, `test-manual-api-wired`, and `test-manual-ui` require user confirmation (side effects / human-in-the-loop mutations) |
 | Deployment scripts | Auto-allowed | `./helm-charts/bin/install.sh`, `./helm-charts/bin/uninstall.sh`, `./helm-charts/bin/health-check.sh`, `./helm-charts/bin/build-image.sh` |
 | Mutating | Prompt for confirmation | `kubectl apply`, `helm install`, `helm upgrade` |
 | Destructive | Always blocked | `kubectl delete namespace`, `rm -rf`, `sudo` |
@@ -274,13 +274,14 @@ reference.
 ## Prauto
 
 Prauto is the autonomous PR worker -- a scheduled system that picks up GitHub issues labeled
-`prauto:ready`, produces implementation PRs via a headless coding-agent CLI (Claude Code or Codex,
-selected by the loop master), and manages the full issue-to-PR lifecycle. It is specified as a
-**loop master + contract** split: the contract (labels, phase state machine, the evidence-based
-plan gate, generator ≠ reviewer, deploy ordering, the security model) lives in
-`spec/AI_PRAUTO.md` and is agent-agnostic; the loop (scheduling, agent selection, subagent
-dispatch) is a loop master with a reference Hermes-Agent binding. The v0.7 bash harness has been
-removed; the loop master is the sole executor. See `spec/AI_PRAUTO.md` for the full specification.
+`prauto:ready`, produces implementation PRs via a headless coding-agent CLI (Claude Code or Codex),
+and manages the full issue-to-PR lifecycle. It is specified as an **executor + scheduler +
+contract** split: the contract (labels, phase state machine, the evidence-based plan gate,
+generator ≠ reviewer, deploy ordering, the security model) lives in `spec/AI_PRAUTO.md` and is
+agent-agnostic; the executor (`.prauto/heartbeat.sh` + `.prauto/lib/*.sh`) deterministically runs
+one tick; a thin loop master (reference Hermes-Agent binding) is the scheduler that wakes on a
+cadence, selects an agent, and invokes the executor. See `spec/AI_PRAUTO.md` for the full
+specification.
 
 ---
 
