@@ -31,7 +31,6 @@ import {
   defaultFormValues,
   VARIABLE_NAME_RE,
   CADENCE_MAX_SEC,
-  variableNameError,
 } from "./validation-conf-form.schema";
 import { METRIC_TIME_WINDOW_SEC_MAX } from "@/types/governance";
 import type { ValidationConfFormValues } from "@/types/validation";
@@ -140,31 +139,6 @@ describe("VARIABLE_NAME_RE — invalid names (src/api/schemas/validation.py _VAR
 
   it("rejects name containing dot: 'col.name'", () => {
     expect(VARIABLE_NAME_RE.test("col.name")).toBe(false);
-  });
-});
-
-// ── 3. variableNameError helper ───────────────────────────────────────────────
-
-describe("variableNameError — returns null for valid, string for invalid (mirrors _VARIABLE_RE)", () => {
-  it("returns null for 'row_cnt'", () => {
-    expect(variableNameError("row_cnt")).toBeNull();
-  });
-
-  it("returns null for single char 'x'", () => {
-    expect(variableNameError("x")).toBeNull();
-  });
-
-  it("returns an error string for uppercase name", () => {
-    expect(variableNameError("ColName")).not.toBeNull();
-    expect(typeof variableNameError("ColName")).toBe("string");
-  });
-
-  it("returns an error string for leading underscore", () => {
-    expect(variableNameError("_col")).not.toBeNull();
-  });
-
-  it("returns an error string for empty string", () => {
-    expect(variableNameError("")).not.toBeNull();
   });
 });
 

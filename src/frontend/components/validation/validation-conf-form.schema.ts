@@ -45,18 +45,6 @@ export const CADENCE_MAX_SEC = METRIC_TIME_WINDOW_SEC_MAX;
 const NAME_RULE_MESSAGE =
   "Must start with a lowercase letter, contain only [a-z0-9_], and be ≤ 100 chars";
 
-/**
- * Returns a human-readable error for an invalid variable name.
- * The regex allows: start with lowercase letter, followed by lowercase letters,
- * digits, or underscores, total length 1–100.
- */
-export function variableNameError(name: string): string | null {
-  if (!VARIABLE_NAME_RE.test(name)) {
-    return NAME_RULE_MESSAGE;
-  }
-  return null;
-}
-
 // Reject ASCII control characters except \t (0x09) and \n (0x0a), plus DEL (0x7f).
 const CONTROL_CHAR_RE = /[\x00-\x08\x0b-\x1f\x7f]/;
 
