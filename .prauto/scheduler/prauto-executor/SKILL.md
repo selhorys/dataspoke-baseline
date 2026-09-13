@@ -132,3 +132,10 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   against `PRAUTO_GITHUB_EXPECTED_ACTOR` (when set).
 - **The monitor is self-terminating and idempotent** (`monitor.lock`). A re-fired tick that finds
   a live executor and a live monitor just reports status and ends.
+- **A `gh pr create` GraphQL error after the PR already exists is recovered as a `[WARN]`**, not a
+  hard failure — the executor checks for the PR by branch head before giving up.
+- **The reviewer is requested when the PR reaches `prauto:review`**, not at PR creation.
+- **A `[WARN]` naming a lock URL (`.../lock/status`) is a dev-env lock-endpoint skip**, not a
+  branch failure — read the URL to tell a stale one from a genuinely down lock service.
+- **A pre-PR static/unit failure is deferred to the post-PR gate**, not itself a branch regression
+  verdict — the mandatory post-PR regression is the sole readiness authority.

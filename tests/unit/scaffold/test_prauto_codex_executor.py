@@ -221,7 +221,10 @@ def test_codex_adapter_uses_default_fresh_and_native_resume_arguments(tmp_path: 
             "PAUSED_AGENT=codex",
             "PAUSED_MARKER_AUTHOR=worker",
             "PRAUTO_GITHUB_ACTOR=worker",
-            'resume_agent "-resume positional prompt" "Claude-only tools" 99 "$PAUSED_SESSION_ID" 1.23',
+            (
+                'resume_agent "-resume positional prompt" "Claude-only tools" '
+                '99 "$PAUSED_SESSION_ID" 1.23'
+            ),
         ]
     )
     result = _run_bash(
@@ -544,7 +547,8 @@ def test_claude_is_error_detection_survives_separate_stderr(tmp_path: Path) -> N
         "\n".join(
             [
                 _source_libraries(tmp_path),
-                f"classify_exit {shlex.quote(str(output_file))} 0 claude {shlex.quote(str(stderr_file))}",
+                f"classify_exit {shlex.quote(str(output_file))} 0 claude "
+                f"{shlex.quote(str(stderr_file))}",
                 'printf "%s" "$AGENT_STATUS"',
             ]
         )

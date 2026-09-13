@@ -1,7 +1,8 @@
 # Issue discovery, claiming, and plan lifecycle for prauto.
 # Source this file — do not execute directly.
-# Requires: helpers.sh sourced (for comment_exists/labels_contain), config loaded,
-# gh CLI available. PRAUTO_GITHUB_ACTOR must already be resolved (see heartbeat.sh).
+# Requires: helpers.sh sourced (for comment_exists/labels_contain), pr.sh sourced
+# (for get_pr_number_for_branch, called at runtime after all libs load), config
+# loaded, gh CLI available. PRAUTO_GITHUB_ACTOR must already be resolved (see heartbeat.sh).
 #
 # GitHub is the single source of truth. Every reader here derives its answer from
 # gh output, never from local state; each wake is a fresh process with nothing
@@ -322,10 +323,8 @@ publish_commit_checkpoints() {
 #   5. No plan comment -> analysis
 derive_phase_from_github() {
   local issue_number="$1" branch="$2"
-  local pr_number
-  pr_number=$(gh pr list -R "$PRAUTO_GITHUB_REPO" --head "$branch" \
-    --json number --jq '.[0].number // empty' 2>/dev/null)
-  if [[ -n "$pr_number" ]]; then
+  get_pr_number_for_branch "$branch"
+  if [[ -n "${BRANCH_PR_NUMBER:-}" ]]; then
     DERIVED_PHASE="pr"; return 0
   fi
 

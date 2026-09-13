@@ -7,7 +7,6 @@ import shlex
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[3]
 PRAUTO = ROOT / ".prauto"
 
@@ -52,7 +51,7 @@ def _make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _make_gh_stub(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _make_gh_stub(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "gh.calls"
@@ -100,12 +99,12 @@ fi
 """
     )
     stub.chmod(0o755)
-    return bin_dir, calls, linked
+    return bin_dir, calls, comments, linked
 
 
 def test_checkpoint_comments_are_linked_and_idempotent(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path)
-    bin_dir, calls, linked = _make_gh_stub(tmp_path)
+    bin_dir, calls, comments, linked = _make_gh_stub(tmp_path)
     source = "\n".join(
         [
             f"PRAUTO_DIR={shlex.quote(str(PRAUTO))}",
@@ -128,12 +127,12 @@ def test_checkpoint_comments_are_linked_and_idempotent(tmp_path: Path) -> None:
         env={
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "GH_CALLS": str(calls),
-            "GH_COMMENTS": str(tmp_path / "gh.comments"),
+            "GH_COMMENTS": str(comments),
         },
     )
 
     assert result.returncode == 0, result.stderr
-    body = (tmp_path / "gh.comments").read_text()
+    body = comments.read_text()
     assert body.count("Checkpoint commit") == 1
     assert "/commit/" in body
     assert "fix: checkpoint work" in body
@@ -153,7 +152,7 @@ def test_checkpoint_comments_are_linked_and_idempotent(tmp_path: Path) -> None:
 
 def test_new_branch_link_is_requested_via_graphql(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path)
-    bin_dir, calls, linked = _make_gh_stub(tmp_path)
+    bin_dir, calls, comments, linked = _make_gh_stub(tmp_path)
     source = "\n".join(
         [
             f"PRAUTO_DIR={shlex.quote(str(PRAUTO))}",
@@ -170,7 +169,7 @@ def test_new_branch_link_is_requested_via_graphql(tmp_path: Path) -> None:
         env={
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "GH_CALLS": str(calls),
-            "GH_COMMENTS": str(tmp_path / "gh.comments"),
+            "GH_COMMENTS": str(comments),
             "GH_LINKED": str(linked),
         },
     )

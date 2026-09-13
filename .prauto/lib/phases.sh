@@ -87,6 +87,13 @@ regression_ready() {
     [[ -n "$branch" ]] && set_pr_wip_label "$branch" || true
     return 1
   fi
+  # Best-effort only: never lets a reviewer-request failure flip a ready PR
+  # back to unready. set_pr_review_label (above) already populated BRANCH_PR_NUMBER.
+  if [[ -n "${PRAUTO_REVIEWER:-}" ]] && [[ -n "$branch" ]] && [[ -n "${BRANCH_PR_NUMBER:-}" ]]; then
+    gh pr edit "$BRANCH_PR_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+      --add-reviewer "$PRAUTO_REVIEWER" 2>/dev/null \
+      || warn "Could not request reviewer ${PRAUTO_REVIEWER} on PR #${BRANCH_PR_NUMBER}."
+  fi
   return 0
 }
 
@@ -190,6 +197,12 @@ provision_dev_env() {
   DEV_ENV_PROVISIONED=true
   DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
   write_dev_env_state_marker "$env_file"
+  # install.sh rewrites the env file in place (e.g. a fresh LB IP for
+  # DATASPOKE_DEV_LOCK_URL); re-resolve so DEV_ENV_FILE/DEV_LOCK_URL reflect it.
+  if ! resolve_dev_env; then
+    warn "Could not re-resolve the dev-env file after provisioning."
+    return 1
+  fi
   info "Cluster provisioning completed."
   return 0
 }
@@ -401,10 +414,10 @@ run_integration_tests_with_protocol() {
     info "Dev-env file not found. Skipping integration tests."
     return 0
   fi
-  local lock_url="$DEV_LOCK_URL"
   if ! dev_env_healthy "$DEV_ENV_FILE"; then info "Dev-env unhealthy. Skipping integration tests."; return 0; fi
+  local lock_url="$DEV_LOCK_URL"
   if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
-    info "Dev-env lock endpoint not reachable. Skipping integration tests."
+    warn "Dev-env lock endpoint not reachable (${lock_url}/status). Skipping integration tests."
     return 0
   fi
 
@@ -707,10 +720,10 @@ run_integration_test_fix() {
   local max_retries="${PRAUTO_INTEGRATION_FIX_MAX_RETRIES:-2}"
 
   if ! resolve_dev_env; then info "Dev-env file not found. Skipping integration fix loop."; return 0; fi
-  local lock_url="$DEV_LOCK_URL"
   if ! dev_env_healthy "$DEV_ENV_FILE"; then info "Dev-env unhealthy. Skipping integration fix loop."; return 0; fi
+  local lock_url="$DEV_LOCK_URL"
   if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
-    info "Dev-env lock endpoint not reachable. Skipping integration fix loop."
+    warn "Dev-env lock endpoint not reachable (${lock_url}/status). Skipping integration fix loop."
     return 0
   fi
 
@@ -860,10 +873,10 @@ run_e2e_test_fix() {
   local lock_owner="prauto-${PRAUTO_WORKER_ID}"
   local max_retries="${PRAUTO_E2E_FIX_MAX_RETRIES:-1}"
   if ! resolve_dev_env; then info "Dev-env file not found. Skipping E2E stage."; return 0; fi
-  local lock_url="$DEV_LOCK_URL"
   if ! dev_env_healthy "$DEV_ENV_FILE"; then info "Dev-env unhealthy. Skipping E2E stage."; return 0; fi
+  local lock_url="$DEV_LOCK_URL"
   if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
-    info "Dev-env lock endpoint not reachable. Skipping E2E stage."
+    warn "Dev-env lock endpoint not reachable (${lock_url}/status). Skipping E2E stage."
     return 0
   fi
 
