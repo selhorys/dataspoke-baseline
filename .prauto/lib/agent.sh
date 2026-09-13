@@ -486,14 +486,31 @@ run_implementation() {
   printf '%s' "$AGENT_OUTPUT" > "${CUR_SESSION_DIR}/implementation.json"
 }
 
-# run_integration_fix_session <issue_number> <branch> <test_output>
+# encode_regression_evidence <failed_stages> <test_output>
+# Serialize untrusted regression output as one base64-encoded JSON value before
+# it crosses into an agent prompt.  The prompt labels it data, never trusted
+# instructions.  Base64 is a transport delimiter, not a security boundary.
+encode_regression_evidence() {
+  local failed_stages="$1" test_output="$2" payload
+  payload=$(jq -cn --arg failed_stages "$failed_stages" --arg test_output "$test_output" \
+    '{failed_stages: $failed_stages, test_output: $test_output}') || return 1
+  printf '%s' "$payload" | base64 | tr -d '\n'
+}
+
+# run_integration_fix_session <issue_number> <branch> <failed_stages> <test_output>
+# This is the single, turn-bounded post-PR repair loop. The executor—not the
+# worker—will repeat exactly failed_stages after pushing the committed head.
 run_integration_fix_session() {
-  local issue_number="$1" branch="$2" test_output="$3"
+  local issue_number="$1" branch="$2" failed_stages="$3" test_output="$4" evidence_base64
   if [[ ${#test_output} -gt 30000 ]]; then test_output="${test_output:0:30000}
 ... (truncated)"; fi
+  evidence_base64=$(encode_regression_evidence "$failed_stages" "$test_output") || {
+    warn "Could not serialize targeted regression evidence."
+    AGENT_STATUS=error; AGENT_OUTPUT="Targeted regression evidence serialization failed."; return 0
+  }
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/integration-fix.md" \
-    "number=${issue_number}" "branch=${branch}" "test_output=${test_output}" \
+    "number=${issue_number}" "branch=${branch}" "failed_stages=${failed_stages}" "evidence_base64=${evidence_base64}" \
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
   invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX:-200}" \
     "${PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"
@@ -501,12 +518,16 @@ run_integration_fix_session() {
 
 # run_e2e_fix_session <issue_number> <branch> <test_output>
 run_e2e_fix_session() {
-  local issue_number="$1" branch="$2" test_output="$3"
+  local issue_number="$1" branch="$2" test_output="$3" evidence_base64
   if [[ ${#test_output} -gt 30000 ]]; then test_output="${test_output:0:30000}
 ... (truncated)"; fi
+  evidence_base64=$(encode_regression_evidence "E2E" "$test_output") || {
+    warn "Could not serialize E2E fix evidence."
+    AGENT_STATUS=error; AGENT_OUTPUT="E2E fix evidence serialization failed."; return 0
+  }
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/e2e-fix.md" \
-    "number=${issue_number}" "branch=${branch}" "test_output=${test_output}" \
+    "number=${issue_number}" "branch=${branch}" "evidence_base64=${evidence_base64}" \
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
   invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_E2E_FIX:-${PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX:-50}}" \
     "${PRAUTO_CLAUDE_MAX_BUDGET_E2E_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"

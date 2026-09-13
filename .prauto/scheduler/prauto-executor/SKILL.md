@@ -112,12 +112,14 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   rejected). The monitor's classifier only recognizes the first one (`no-agent`); it reports the
   second as "task exited unexpectedly". Read the log tail instead of trusting that Slack line. Both
   are inert while `PRAUTO_AGENT=claude`.
-- **A code-affecting branch gates on a full post-PR regression.** The executor provisions and
-  *retains* its dev cluster through PR creation and every regression rerun — tearing it down only at
-  heartbeat exit — then runs the full static + unit + spot + api-wired + E2E suites against the exact
-  pushed PR head, keeping the issue and PR in `prauto:wip` until it passes, bounded by
-  `PRAUTO_REGRESSION_FIX_MAX_RETRIES` (default 2). Budget for long wakes and a cluster that stays up;
-  a diff confined to the executor's non-code exclusion set is exempt.
+- **A code-affecting branch gates on one full post-PR regression.** The executor provisions and
+  *retains* its dev cluster through PR creation — tearing it down only at heartbeat exit — then runs
+  the full static + unit + spot + api-wired + E2E suites against the exact pushed PR head. If that
+  run fails, one turn-bounded coding-agent session fixes and tests only the failed stages; the
+  executor pushes the commit, verifies the exact head, and independently retries just those stages.
+  A targeted pass is review-ready without a second full regression. The final PR comment separates
+  initial failures from targeted-retry passes; a diff confined to the executor's non-code exclusion
+  set is exempt.
 - **Do not do the tick's work in the supervisor.** Claim, phase derivation, dispatch, and
   finalize are the executor's. The supervisor only launches and monitors.
 - **Detach via `launch.sh`, never `nohup &`.** The Hermes terminal tool blocks shell-level

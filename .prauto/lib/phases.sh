@@ -443,6 +443,48 @@ run_integration_tests_with_protocol() {
 }
 
 # post_result <branch> <stage> <exit> <output>
+is_environmental_transport_failure() {
+  local output="$1"
+  # Assertions, API/application responses, and explicit test failures are
+  # never environmental flakes even when a log also mentions the network.
+  if printf '%s' "$output" | grep -Eqi 'assertionerror|assert .*failed|expected .*(got|but)|api mismatch|validationerror|traceback \(most recent call last\)|\b(400|401|403|404|409|422|500)\b'; then
+    return 1
+  fi
+  printf '%s' "$output" | grep -Eqi 'connection reset|connection refused|broken pipe|unexpected eof|eof occurred|i/o timeout|context deadline exceeded|dial tcp|tls handshake timeout|temporary failure in name resolution|no such host|server misbehaving|dns.*(timeout|failure)|ingress.*(502|503|504)|\b(502|503|504)\b'
+}
+
+# stage_has_unrelated_fix_path <stage>
+# A transport signature alone is insufficient: a branch that changes the
+# exercised layer must stay WIP for a normal fix. This is the deterministic
+# "unrelated fix path" basis; an earlier-pass basis can be added only from
+# executor-owned evidence, never a worker assertion.
+stage_has_unrelated_fix_path() {
+  local stage="$1"
+  case "$stage" in
+    "Integration (spot)"|"Integration (api-wired)")
+      ! diff_touches src/api/ src/backend/ src/shared/ tests/integration/
+      ;;
+    "E2E")
+      ! diff_touches src/frontend/ src/api/ src/backend/ src/shared/ tests/e2e/
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+record_post_pr_flake_classification() {
+  local stage="$1" output="$2"
+  case "$stage" in
+    "Integration (spot)"|"Integration (api-wired)"|"E2E")
+      if is_environmental_transport_failure "$output" && stage_has_unrelated_fix_path "$stage"; then
+        POST_PR_FLAKE_STAGES="${POST_PR_FLAKE_STAGES:+${POST_PR_FLAKE_STAGES}, }${stage}"
+        return 0
+      fi
+      ;;
+  esac
+  POST_PR_NON_FLAKE_STAGES="${POST_PR_NON_FLAKE_STAGES:+${POST_PR_NON_FLAKE_STAGES}, }${stage}"
+  return 1
+}
+
 post_result() {
   local branch="$1" stage="$2" exit_code="$3" output="$4"
   # Full post-PR regression deliberately emits one concise status comment per
@@ -454,11 +496,85 @@ post_result() {
         *"|${stage}|"*) ;;
         *) POST_PR_FAILED_STAGES="${POST_PR_FAILED_STAGES:+${POST_PR_FAILED_STAGES}, }${stage}" ;;
       esac
+      # Keep stage-specific, bounded evidence for the one post-regression fix
+      # session.  It is intentionally local-only: public PR status comments
+      # name failed stages but never expose raw test output.
+      POST_PR_FAILURE_EVIDENCE="${POST_PR_FAILURE_EVIDENCE:+${POST_PR_FAILURE_EVIDENCE}
+
+}=== ${stage} (exit ${exit_code}) ===
+$(tail_chars "$output" 14000)"
+      record_post_pr_flake_classification "$stage" "$output" || true
     fi
     return 0
   fi
   get_pr_number_for_branch "$branch"
   [[ -n "$BRANCH_PR_NUMBER" ]] && post_test_results_comment "$BRANCH_PR_NUMBER" "$stage" "$exit_code" "$output"
+}
+
+# stage_is_recorded <stage>
+# POST_PR_FAILED_STAGES is a human-readable comma-separated list assembled by
+# post_result.  Match whole entries so similarly named stages cannot select one
+# another by accident.
+stage_is_recorded() {
+  local stage="$1" entry
+  local -a _prauto_stage_entries
+  IFS=',' read -r -a _prauto_stage_entries <<< "${POST_PR_FAILED_STAGES:-}"
+  for entry in "${_prauto_stage_entries[@]}"; do
+    entry="${entry# }"; entry="${entry% }"
+    [[ "$entry" == "$stage" ]] && return 0
+  done
+  return 1
+}
+
+# require_pushed_head <branch>
+# Targeted verification must test precisely the head the executor published,
+# never an unpushed worker commit or an asynchronously changed remote ref.
+require_pushed_head() {
+  local branch="$1" local_head remote_head
+  local_head=$(git rev-parse HEAD 2>/dev/null || printf '')
+  remote_head=$(git ls-remote origin "refs/heads/${branch}" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  if [[ -z "$local_head" || -z "$remote_head" || "$local_head" != "$remote_head" ]]; then
+    warn "Targeted regression refuses to run: local HEAD and origin/${branch} do not match."
+    return 1
+  fi
+  return 0
+}
+
+# targeted_verification_json <agent_output>
+# Extract only an explicitly prefixed, single-line JSON record. Agent prose and
+# untrusted test output are never parsed as verification authority.
+targeted_verification_json() {
+  local agent_output="$1"
+  printf '%s\n' "$agent_output" | sed -n 's/^PRAUTO_TARGETED_VERIFICATION_JSON: //p' | tail -n 1
+}
+
+# validate_targeted_verification <agent_output> <expected_revision>
+# Accept a worker attestation only when it is well-formed, names exactly the
+# originally failed stages, reports pass for each, and binds them to the local
+# committed revision which the executor subsequently pushes and re-verifies.
+validate_targeted_verification() {
+  local agent_output="$1" expected_revision="$2" payload stage expected_count=0 actual_count
+  local -a _prauto_expected_stage_entries
+  payload=$(targeted_verification_json "$agent_output")
+  [[ -n "$payload" ]] || return 1
+  jq -e --arg revision "$expected_revision" '
+    (.revision == $revision)
+    and (.stages | type == "array")
+    and all(.stages[]; (.name | type == "string" and length > 0)
+        and (.outcome == "pass")
+        and (.evidence_ref | type == "string" and length > 0))
+  ' >/dev/null 2>&1 <<< "$payload" || return 1
+  actual_count=$(jq '.stages | length' <<< "$payload" 2>/dev/null) || return 1
+  local stage_entry
+  IFS=',' read -r -a _prauto_expected_stage_entries <<< "${POST_PR_FAILED_STAGES:-}"
+  for stage_entry in "${_prauto_expected_stage_entries[@]}"; do
+    stage_entry="${stage_entry# }"; stage_entry="${stage_entry% }"
+    [[ -n "$stage_entry" ]] || continue
+    expected_count=$((expected_count + 1))
+    jq -e --arg stage "$stage_entry" '[.stages[] | select(.name == $stage)] | length == 1' \
+      >/dev/null 2>&1 <<< "$payload" || return 1
+  done
+  [[ "$actual_count" -eq "$expected_count" ]]
 }
 
 # post_post_pr_regression_comment <branch> <body>
@@ -551,6 +667,9 @@ run_full_cluster_regression() {
   [[ -d tests/integration/spot && -d tests/integration/api_wired && -d tests/e2e ]] || {
     CLUSTER_REGRESSION_EXIT=2; regression_blocked "$issue_number" "required integration or E2E test directory is missing" "$branch"; return 0; }
   if ! acquire_required_dev_lock "$issue_number" "full regression"; then CLUSTER_REGRESSION_EXIT=2; return 0; fi
+  # acquire_required_dev_lock has just completed the required pre-test health
+  # check. Preserve that executor-owned fact for possible flake classification.
+  POST_PR_FLAKE_HEALTH_BEFORE=true
 
   if ! deploy_branch_api "$DEV_ENV_FILE"; then
     release_required_dev_lock
@@ -586,73 +705,197 @@ run_full_cluster_regression() {
   release_required_dev_lock
 }
 
+# record_targeted_result <stage> <exit> <output>
+# Unlike the initial full regression recorder, this deliberately distinguishes
+# successful targeted retries in the final PR status.
+record_targeted_result() {
+  local stage="$1" exit_code="$2" output="$3"
+  if [[ "$exit_code" -eq 0 ]]; then
+    POST_PR_TARGETED_PASSES="${POST_PR_TARGETED_PASSES:+${POST_PR_TARGETED_PASSES}, }${stage}"
+  else
+    POST_PR_TARGETED_FAILURES="${POST_PR_TARGETED_FAILURES:+${POST_PR_TARGETED_FAILURES}, }${stage}"
+    POST_PR_TARGETED_EVIDENCE="${POST_PR_TARGETED_EVIDENCE:+${POST_PR_TARGETED_EVIDENCE}
+
+}=== ${stage} (exit ${exit_code}) ===
+$(tail_chars "$output" 14000)"
+  fi
+}
+
+# run_targeted_post_pr_regression <issue> <branch>
+# Re-run only stages which failed the initial full regression.  Cluster stages
+# reacquire the lock and rebuild their prerequisite artifact from the exact
+# pushed branch head.  Sets TARGETED_REGRESSION_EXIT: 0 pass, 1 code failure,
+# 2 setup/infrastructure block.
+run_targeted_post_pr_regression() {
+  local issue_number="$1" branch="$2" output exit_code=0
+  TARGETED_REGRESSION_EXIT=0
+  POST_PR_TARGETED_PASSES=""; POST_PR_TARGETED_FAILURES=""; POST_PR_TARGETED_EVIDENCE=""
+  CURRENT_REGRESSION_BRANCH="$branch"
+  require_pushed_head "$branch" || { TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "pushed branch head could not be verified" "$branch"; return 0; }
+
+  # Local checks: dependency sync is setup, while every selected check is a
+  # branch-attributable target. Do not rerun an unrelated successful gate.
+  if stage_is_recorded "Static (ruff)" || stage_is_recorded "Static (mypy)" || \
+     stage_is_recorded "Static (frontend typecheck)" || stage_is_recorded "Static (frontend eslint)" || \
+     stage_is_recorded "Static (E2E typecheck)" || stage_is_recorded "Unit (Python)" || \
+     stage_is_recorded "Unit (frontend)"; then
+    output=$(uv sync 2>&1) || { TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "uv sync failed during targeted regression" "$branch"; return 0; }
+  fi
+  if stage_is_recorded "Static (ruff)"; then
+    exit_code=0; output=$(uv run ruff check src/ tests/ 2>&1) || exit_code=$?
+    record_targeted_result "Static (ruff)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+  fi
+  if stage_is_recorded "Static (mypy)"; then
+    exit_code=0; output=$(uv run mypy src/ 2>&1) || exit_code=$?
+    record_targeted_result "Static (mypy)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+  fi
+  if stage_is_recorded "Static (frontend typecheck)"; then
+    exit_code=0; output=$(pnpm -C src/frontend exec tsc --noEmit 2>&1) || exit_code=$?
+    record_targeted_result "Static (frontend typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+  fi
+  if stage_is_recorded "Static (frontend eslint)"; then
+    exit_code=0; output=$(pnpm -C src/frontend exec eslint src/ 2>&1) || exit_code=$?
+    record_targeted_result "Static (frontend eslint)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+  fi
+  if stage_is_recorded "Static (E2E typecheck)"; then
+    exit_code=0; output=$(pnpm -C tests/e2e typecheck 2>&1) || exit_code=$?
+    record_targeted_result "Static (E2E typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+  fi
+  if stage_is_recorded "Unit (Python)"; then
+    exit_code=0; output=$(uv run pytest tests/unit/ --tb=short 2>&1) || exit_code=$?
+    record_targeted_result "Unit (Python)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+  fi
+  if stage_is_recorded "Unit (frontend)"; then
+    exit_code=0; output=$(pnpm -C src/frontend test 2>&1) || exit_code=$?
+    record_targeted_result "Unit (frontend)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+  fi
+
+  # API is the prerequisite for both integration groups. If the deploy itself
+  # failed initially, retry it alone; otherwise deploy before only the failed
+  # integration groups.
+  if stage_is_recorded "Deploy (API)" || stage_is_recorded "Integration (spot)" || stage_is_recorded "Integration (api-wired)"; then
+    if ! acquire_required_dev_lock "$issue_number" "targeted regression API/integration"; then TARGETED_REGRESSION_EXIT=2; return 0; fi
+    if ! deploy_branch_api "$DEV_ENV_FILE"; then
+      release_required_dev_lock
+      if [[ "$DEPLOY_FAILURE_KIND" == "infrastructure" ]]; then TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "API deploy could not reach or operate the development environment" "$branch"
+      else record_targeted_result "Deploy (API)" 1 "Branch API build/deploy failed."; TARGETED_REGRESSION_EXIT=1; fi
+    else
+      stage_is_recorded "Deploy (API)" && record_targeted_result "Deploy (API)" 0 "Branch API build/deploy passed."
+      if stage_is_recorded "Integration (spot)"; then
+        exit_code=0; output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/spot/ --tb=short 2>&1) || exit_code=$?
+        record_targeted_result "Integration (spot)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+      fi
+      if stage_is_recorded "Integration (api-wired)"; then
+        exit_code=0; output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/api_wired/ --tb=short 2>&1) || exit_code=$?
+        record_targeted_result "Integration (api-wired)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+      fi
+      release_required_dev_lock
+    fi
+  fi
+
+  if stage_is_recorded "Deploy (frontend)" || stage_is_recorded "E2E"; then
+    if ! acquire_required_dev_lock "$issue_number" "targeted regression frontend/E2E"; then TARGETED_REGRESSION_EXIT=2; return 0; fi
+    if ! deploy_branch_frontend "$DEV_ENV_FILE"; then
+      release_required_dev_lock
+      if [[ "$DEPLOY_FAILURE_KIND" == "infrastructure" ]]; then TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "frontend deploy could not reach or operate the development environment" "$branch"
+      else record_targeted_result "Deploy (frontend)" 1 "Branch frontend build/deploy failed."; TARGETED_REGRESSION_EXIT=1; fi
+    else
+      stage_is_recorded "Deploy (frontend)" && record_targeted_result "Deploy (frontend)" 0 "Branch frontend build/deploy passed."
+      if stage_is_recorded "E2E"; then
+        if ! pnpm -C tests/e2e install --frozen-lockfile >/dev/null 2>&1 || ! pnpm -C tests/e2e exec playwright install chromium >/dev/null 2>&1; then
+          release_required_dev_lock; TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "E2E runner/browser setup failed" "$branch"; return 0
+        fi
+        exit_code=0; output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" pnpm -C tests/e2e test 2>&1) || exit_code=$?
+        record_targeted_result "E2E" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+      fi
+      release_required_dev_lock
+    fi
+  fi
+}
+
 # run_post_pr_regression <issue> <branch>
-# Repeats the complete regression after every worker fix, and does not let a
-# setup/cluster condition invoke a code-fix worker. Returns success only when
-# the final pushed PR head is ready for review.
+# Run one full regression. If it finds branch-attributable failures, a single
+# turn-bounded worker fixes them and the executor verifies only those recorded
+# stages against the exact pushed head. A targeted pass is final; no second
+# full regression is permitted.
 run_post_pr_regression() {
-  local issue_number="$1" branch="$2" attempt max_retries
+  local issue_number="$1" branch="$2"
   if ! branch_is_code_affecting "$branch"; then
     info "Diff is confined to the explicit non-code exclusion set; full regression is not required."
     return 0
   fi
   [[ -n "$issue_number" ]] || { warn "No issue number for regression gate."; return 1; }
-  max_retries="${PRAUTO_REGRESSION_FIX_MAX_RETRIES:-2}"
   POST_PR_REGRESSION_SUMMARY_MODE=true
-  for (( attempt=0; attempt<=max_retries; attempt++ )); do
-    POST_PR_FAILED_STAGES=""
-    run_static_and_unit_regression "$branch"
-    if [[ "$LOCAL_REGRESSION_EXIT" -eq 2 ]]; then
-      regression_blocked "$issue_number" "$LOCAL_REGRESSION_REASON" "$branch"
-      POST_PR_REGRESSION_SUMMARY_MODE=false
-      return 1
+  POST_PR_FAILED_STAGES=""; POST_PR_FAILURE_EVIDENCE=""
+  POST_PR_FLAKE_STAGES=""; POST_PR_NON_FLAKE_STAGES=""; POST_PR_FLAKE_HEALTH_BEFORE=false
+  run_static_and_unit_regression "$branch"
+  if [[ "$LOCAL_REGRESSION_EXIT" -eq 2 ]]; then
+    regression_blocked "$issue_number" "$LOCAL_REGRESSION_REASON" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
+  fi
+  run_full_cluster_regression "$issue_number" "$branch"
+  if [[ "$CLUSTER_REGRESSION_EXIT" -eq 2 ]]; then POST_PR_REGRESSION_SUMMARY_MODE=false; return 1; fi
+  if [[ "$LOCAL_REGRESSION_EXIT" -eq 0 && "$CLUSTER_REGRESSION_EXIT" -eq 0 ]]; then
+    if ! post_post_pr_regression_comment "$branch" "Full post-PR regression passed for the current pushed PR head."; then
+      regression_blocked "$issue_number" "required regression success notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
     fi
-    run_full_cluster_regression "$issue_number" "$branch"
-    if [[ "$CLUSTER_REGRESSION_EXIT" -eq 2 ]]; then
-      POST_PR_REGRESSION_SUMMARY_MODE=false
-      return 1
+    POST_PR_REGRESSION_SUMMARY_MODE=false; return 0
+  fi
+  # A flake shortcut is deliberately narrow: every failed stage must have been
+  # classified from a deterministic transport allowlist and unrelated-path
+  # basis, and the real dev environment must be healthy both before and after.
+  # No worker is dispatched on this path, and no raw failure output is posted.
+  if [[ -n "$POST_PR_FLAKE_STAGES" && -z "$POST_PR_NON_FLAKE_STAGES" && \
+        "$POST_PR_FLAKE_HEALTH_BEFORE" == true ]] && dev_env_healthy "$DEV_ENV_FILE"; then
+    if ! post_post_pr_regression_comment "$branch" "Initial full regression reported environmental transport failures in ${POST_PR_FLAKE_STAGES}. Pre- and post-test dev-environment health checks passed; the changed paths are unrelated to those stages. Classified as an environmental flake; no coding agent was dispatched."; then
+      regression_blocked "$issue_number" "environmental-flake status notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
     fi
-    if [[ "$LOCAL_REGRESSION_EXIT" -eq 0 && "$CLUSTER_REGRESSION_EXIT" -eq 0 ]]; then
-      if ! post_post_pr_regression_comment "$branch" "Full post-PR regression passed for the current pushed PR head."; then
-        regression_blocked "$issue_number" "required regression success notice could not be posted" "$branch"
-        POST_PR_REGRESSION_SUMMARY_MODE=false
-        return 1
-      fi
-      POST_PR_REGRESSION_SUMMARY_MODE=false
-      return 0
-    fi
-    if [[ "$attempt" -ge "$max_retries" ]]; then
-      regression_set_wip "$issue_number" "$branch"
-      post_post_pr_regression_comment "$branch" "Post-PR regression is still failing after ${max_retries} fix attempt(s); the PR remains in prauto:wip."
-      POST_PR_REGRESSION_SUMMARY_MODE=false
-      return 1
-    fi
-    # This is intentionally posted before the worker is launched, so PR
-    # readers know why the branch may change while it remains in WIP.
-    if ! post_post_pr_regression_comment "$branch" "Post-PR regression failed: ${POST_PR_FAILED_STAGES:-an unclassified branch-attributable stage}. Generator/reviewer agents will fix this before the full regression reruns."; then
-      regression_blocked "$issue_number" "required regression failure notice could not be posted" "$branch"
-      POST_PR_REGRESSION_SUMMARY_MODE=false
-      return 1
-    fi
-    info "Full regression failed; invoking the worker fix workflow before rerunning every layer."
-    run_integration_fix_session "$issue_number" "$branch" "Full post-PR regression failed in: ${POST_PR_FAILED_STAGES:-an unclassified branch-attributable stage}. Diagnose and fix the branch-attributable failure, then preserve the generator/reviewer contract."
-    checkpoint_branch "$issue_number" "$branch"
+    POST_PR_REGRESSION_SUMMARY_MODE=false; return 0
+  fi
+  if ! post_post_pr_regression_comment "$branch" "Initial full post-PR regression failed: ${POST_PR_FAILED_STAGES:-an unclassified branch-attributable stage}. One turn-bounded coding-agent fix-and-targeted-test loop will retry only these failed stages."; then
+    regression_blocked "$issue_number" "required regression failure notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
+  fi
+  info "Initial full regression failed; invoking one targeted worker fix loop."
+  run_integration_fix_session "$issue_number" "$branch" "$POST_PR_FAILED_STAGES" "$POST_PR_FAILURE_EVIDENCE"
+  checkpoint_branch "$issue_number" "$branch"
     # A PR already exists by this point, so derive_phase_from_github will always
     # report "pr" on the next wake — a phase the quota-resume dispatch in
     # heartbeat.sh does not know how to resume. Posting the normal resumable
     # pause marker here would strand the issue forever (paused, unresumable).
     # Defer instead: no marker, no burned fix attempt, plain retry next wake.
-    if [[ "$AGENT_STATUS" == "quota" ]]; then
-      warn "Issue #${issue_number}: post-PR regression fix worker died on a quota/session limit (${ACTIVE_AGENT}). Deferring without burning a fix attempt."
-      post_post_pr_regression_comment "$branch" "Post-PR regression fix paused: ${ACTIVE_AGENT} quota is exhausted. This is an infrastructure condition, not a code failure — retrying automatically on a later heartbeat." || true
-      POST_PR_REGRESSION_SUMMARY_MODE=false
-      return 1
+  if [[ "$AGENT_STATUS" == "quota" ]]; then
+    warn "Issue #${issue_number}: targeted regression fix worker hit quota (${ACTIVE_AGENT}). Deferring without a second invocation."
+    post_post_pr_regression_comment "$branch" "Targeted regression fix paused: ${ACTIVE_AGENT} quota is exhausted. The PR remains in prauto:wip and will retry on a later heartbeat." || true
+    POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
+  fi
+  local worker_revision
+  worker_revision=$(git rev-parse HEAD 2>/dev/null || printf '')
+  if [[ "$AGENT_STATUS" != "ok" ]] || ! validate_targeted_verification "$AGENT_OUTPUT" "$worker_revision"; then
+    regression_set_wip "$issue_number" "$branch"
+    post_post_pr_regression_comment "$branch" "Targeted regression fix did not produce a valid structured verification record for the committed head; the PR remains in prauto:wip." || true
+    POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
+  fi
+  local dirty_worktree
+  dirty_worktree=$(git status --porcelain --untracked-files=all 2>/dev/null || true)
+  if [[ -n "$dirty_worktree" ]]; then
+    regression_set_wip "$issue_number" "$branch"
+    post_post_pr_regression_comment "$branch" "Targeted regression fix left uncommitted changes; the PR remains in prauto:wip." || true
+    POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
+  fi
+  push_branch "$branch"
+  create_or_update_pr "$issue_number" "" "$branch"
+  if ! require_pushed_head "$branch"; then
+    regression_blocked "$issue_number" "pushed branch head could not be verified after targeted fix" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
+  fi
+  run_targeted_post_pr_regression "$issue_number" "$branch"
+  if [[ "$TARGETED_REGRESSION_EXIT" -eq 0 ]]; then
+    if ! post_post_pr_regression_comment "$branch" "Initial full regression failures: ${POST_PR_FAILED_STAGES}. Targeted retry passed on the current pushed PR head: ${POST_PR_TARGETED_PASSES}. No second full regression was run."; then
+      regression_blocked "$issue_number" "required targeted regression success notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
     fi
-    push_branch "$branch"
-    create_or_update_pr "$issue_number" "" "$branch"
-  done
-  POST_PR_REGRESSION_SUMMARY_MODE=false
-  return 1
+    POST_PR_REGRESSION_SUMMARY_MODE=false; return 0
+  fi
+  regression_set_wip "$issue_number" "$branch"
+  post_post_pr_regression_comment "$branch" "Initial full regression failures: ${POST_PR_FAILED_STAGES}. Targeted retry still failed: ${POST_PR_TARGETED_FAILURES:-an infrastructure/setup condition}. The PR remains in prauto:wip." || true
+  POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
 }
 
 # run_pre_pr_selected_verification <issue> <branch>
@@ -756,7 +999,10 @@ run_integration_test_fix() {
 
     info "Integration tests failed (spot: ${INTEG_SPOT_EXIT}, api-wired: ${INTEG_API_WIRED_EXIT})."
     if [[ "$attempt" -lt "$max_retries" ]]; then
-      run_integration_fix_session "$issue_number" "$branch" "$INTEG_OUTPUT"
+      local failed_stages=""
+      [[ "$INTEG_SPOT_EXIT" -ne 0 ]] && failed_stages="Integration (spot)"
+      [[ "$INTEG_API_WIRED_EXIT" -ne 0 ]] && failed_stages="${failed_stages:+${failed_stages}, }Integration (api-wired)"
+      run_integration_fix_session "$issue_number" "$branch" "$failed_stages" "$INTEG_OUTPUT"
       checkpoint_branch "$issue_number" "$branch"
       # No PR exists yet at this point in the pipeline, so the next wake still
       # derives phase "implementation" and the quota-resume dispatch in

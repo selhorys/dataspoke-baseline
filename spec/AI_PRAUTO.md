@@ -311,8 +311,8 @@ At `PRAUTO_MAX_RETRIES_PER_JOB` (default 4), the issue is abandoned. The counter
 
 | Scenario | Actions |
 |----------|---------|
-| New issue -> PR | Push and create or update the PR in `prauto:wip`; run the required post-PR regression; move the issue and PR to `prauto:review` only after it passes |
-| PR feedback | Return to `prauto:wip`, address with commits, push, run the required post-PR regression, then restore `prauto:review` only on a pass |
+| New issue -> PR | Push and create or update the PR in `prauto:wip`; run the required post-PR regression and, when needed, its bounded targeted retry; move the issue and PR to `prauto:review` only after readiness succeeds |
+| PR feedback | Return to `prauto:wip`, address with commits, push, run the required post-PR regression and, when needed, its bounded targeted retry; restore `prauto:review` only on readiness success |
 | Workflow ESCALATE | Do **not** finalize a PR; remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment naming the escalating stage and its findings |
 | Max retries | Remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment |
 
@@ -531,7 +531,7 @@ run would only re-prove it at far higher cost.
 After implementation, the executor (not the worker) pushes the branch, links it to the issue's
 Development section, posts commit-link comments for any unpublished commits, and creates or
 updates its PR. Creation keeps the issue and PR in `prauto:wip`; `prauto:review` is applied only
-after the required post-PR regression passes. The same checkpoint publication runs after
+after the required post-PR readiness gate succeeds. The same checkpoint publication runs after
 worker-led review and test-fix stages. A strict push remains the finalization gate; checkpoint
 pushes are best-effort so a temporary GitHub outage does not erase local committed progress.
 
@@ -539,8 +539,8 @@ pushes are best-effort so a temporary GitHub outage does not erase local committ
 
 Issues with `prauto:review` label are checked for unaddressed non-prauto comments. The
 feedback-addressed marker breaks the re-pickup loop; new reviewer comments after the marker
-make the PR actionable again. A feedback fix returns the PR to `prauto:wip` and must pass the
-same full post-PR regression against its pushed head before `prauto:review` is restored.
+make the PR actionable again. A feedback fix returns the PR to `prauto:wip` and must complete the
+same post-PR readiness gate against its pushed head before `prauto:review` is restored.
 
 ### Test execution
 
@@ -617,32 +617,86 @@ the selected Playwright target.
   session only on a non-final attempt, so a single attempt runs the suite and reports the result
   without fixing. Raising it buys fix attempts at a full rebuild + redeploy each.
 
-**Stage 5 -- Full regression and readiness gate (post-PR)** *(executor; worker for fixes)*: every
-code-affecting PR runs the complete static-gate and unit-test command families, followed by the
-full spot suite, full api-wired suite, and full E2E suite. Spot and api-wired remain separate
-groups; E2E remains strictly after both. The executor deploys the branch artifacts needed to
-exercise all three cluster-dependent suites, regardless of whether a narrower pre-PR selection
-ran.
+**Stage 5 -- Full regression and targeted-retry readiness gate (post-PR)** *(executor; worker for
+fixes)*: every code-affecting PR first runs the complete static-gate and unit-test command
+families, followed by the full spot suite, full api-wired suite, and full E2E suite. Spot and
+api-wired remain separate groups; E2E remains strictly after both. The executor deploys the branch
+artifacts needed to exercise all three cluster-dependent suites, regardless of whether a narrower
+pre-PR selection ran.
 
-The regression is against the exact pushed PR head. The executor posts no per-stage output or
-collapsible result comment. Instead, a passing exact-head run posts one brief PR success comment.
-A branch-attributable static, unit, spot, api-wired, E2E, or branch-deploy failure keeps the PR out
-of `prauto:review`; before starting the applicable generator/reviewer fix workflow, the executor
-posts one brief PR failure comment naming the failed stage and stating that the agents will fix it
-and rerun full regression. A fix is committed and pushed before the entire required full regression
-reruns; each resulting exact-head pass posts the brief success comment again. The fix-rerun loop is
-bounded by `PRAUTO_REGRESSION_FIX_MAX_RETRIES` (default `2`); exhausting it leaves the PR in
-`prauto:wip` rather than looping forever. A provisioning,
-health-check, lock, or local setup failure is infrastructure-blocked: the executor posts a distinct
-brief blocked comment, leaves the issue and PR in `prauto:wip`, and retries the same regression on
-a later heartbeat without promising a code fix or asking a worker to change code. Only a passing
-run against the final PR head permits the executor to apply `prauto:review`. Excluded, non-code
-PRs may bypass this full regression but still retain any selected pre-PR verification required by
-their changed paths.
+The initial full regression is against the exact pushed PR head. The executor posts no per-stage
+output or collapsible result comment. A clean initial run posts one brief PR success comment and
+permits `prauto:review`. Subject only to the deterministic environmental-flake exception below, a
+branch-attributable static, unit, spot, api-wired, E2E, or branch-deploy failure keeps the PR out
+of `prauto:review`. The executor records the failed stage names and their evidence, posts a brief
+failure comment, and starts the applicable coding-agent fix-and-test loop.
 
-The cluster provisioned by a heartbeat remains available through PR creation, post-PR regression,
-and any regression-fix reruns. The heartbeat tears down only the cluster it provisioned, once at
-its exit; it never tears down and recreates that cluster between the pre-PR and post-PR phases.
+The coding-agent fix-and-test loop is bounded by the configured agent turn limit; it has no
+separate `PRAUTO_REGRESSION_FIX_MAX_RETRIES` budget. In each turn, the agent diagnoses only the
+recorded branch-attributable failures, reruns only their applicable checks, and commits the fix
+when it has targeted-test evidence. Failed spot and api-wired targets remain separate integration
+groups and are never combined. The agent returns the committed revision and structured targeted
+test evidence to the executor; it does not push.
+
+The executor retains checkpoint publication and strict-push ownership. After it publishes the
+agent's committed revision, it rebuilds and deploys only the API and frontend branch artifacts
+required by the recorded failed cluster stages, preserving the established API-then-frontend
+ordering. It reacquires the required dev-environment lock and reruns only the recorded failed
+cluster stages against the exact pushed fix head; static and unit stages are likewise rerun only
+when recorded as failed. A successful targeted retry is readiness success once every recorded
+failed stage has passed with exact-head evidence. The executor does not start another full
+post-PR regression after that success. If executor-targeted verification exposes a new
+branch-attributable failing stage, it reports that failure explicitly and leaves the PR in
+`prauto:wip`; it does not launch another coding-agent fix loop. An exhausted agent turn limit also
+leaves the PR in `prauto:wip` rather than looping forever.
+
+### Deterministic environmental-flake exception
+
+The executor may treat a failure as an ignorable environmental flake only when **all** of the
+following conditions hold:
+
+1. The failure is in a cluster-dependent stage: spot integration, api-wired integration, or E2E.
+2. Sanitized stage output matches an explicit allowlisted infrastructure or transport signature:
+   - a GKE/Kubernetes control-plane request reports `429`, `500`, `502`, `503`, or `504`,
+     `i/o timeout`, `context deadline exceeded`, `TLS handshake timeout`, or `connection reset`;
+   - Kubernetes reports a pod as `Evicted`, `Preempted`, or `NodeNotReady`; or
+   - the configured ingress or DNS client reports `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`,
+     `EAI_AGAIN`, `temporary failure in name resolution`, `upstream reset`, or an ingress `502`,
+     `503`, or `504`.
+3. The executor's required health check passes both immediately before and immediately after the
+   failed stage, using the same worker environment and lock discipline.
+4. The failed stage is unrelated to paths changed by the current fix, or that same stage passed
+   earlier in the same heartbeat.
+5. The output contains no test assertion failure, API contract/schema mismatch, or application
+   response failure. A first-run api-wired or E2E assertion failure is always blocking and is
+   never auto-ignored.
+
+For an initial full regression without a preceding fix, condition 4 can be satisfied only by an
+earlier same-heartbeat pass; the absence of fix paths is not itself evidence of a flake.
+
+The allowlist is exhaustive: an unrecognized message, an ambiguous source for a transport status,
+or any failure outside these conditions remains blocking. A classified flake is non-blocking for
+readiness only; it is not recorded as a passed test and never dispatches a coding agent. The
+executor posts a visible, sanitized PR comment naming the stage, allowlisted category, before/after
+health-check results, and path-or-earlier-pass basis. The comment excludes raw logs, credentials,
+URLs, tokens, dataset values, and other environment-sensitive output.
+
+The final PR readiness comment reports whether the initial full regression passed directly, lists
+the initial failed stages and targeted retry stages that later passed, and identifies any ignored
+environmental flake. This makes partial-retry or flake-qualified success visible without
+representing it as an unqualified clean full-regression result. A
+provisioning, health-check, lock, or local setup failure is infrastructure-blocked: the executor
+posts a distinct brief blocked comment, leaves the issue and PR in `prauto:wip`, and retries the
+blocked regression or targeted stage on a later heartbeat without promising a code fix or asking a
+worker to change code. Only initial full-regression success, completed targeted-retry success, or
+an otherwise-ready result qualified solely by classified environmental flakes permits the executor
+to apply `prauto:review`. Excluded, non-code PRs may bypass this initial full regression but still
+retain any selected pre-PR verification required by their changed paths.
+
+The cluster provisioned by a heartbeat remains available through PR creation, the initial post-PR
+regression, and any targeted retries. The heartbeat tears down only the cluster it provisioned,
+once at its exit; it never tears down and recreates that cluster between the pre-PR and post-PR
+phases.
 
 ### What a green run proves
 
