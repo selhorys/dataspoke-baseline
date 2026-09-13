@@ -369,9 +369,9 @@ def _create_chat_model(provider: str, api_key: str, model: str):  # type: ignore
         # every call. The Responses API accepts tools with reasoning intact, so
         # the debate/reviewer loops in ontogen and metagen keep working as the
         # configured model changes.
-        return ChatOpenAI(  # type: ignore[arg-type]
+        return ChatOpenAI(
             model=model,
-            api_key=api_key,
+            api_key=pydantic.SecretStr(api_key),
             use_responses_api=True,
         )
     elif provider_lower in ("google", "gemini"):
