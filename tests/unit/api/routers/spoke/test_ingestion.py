@@ -470,6 +470,27 @@ async def test_get_source_event_returns_200_envelope(client, mock_svc: AsyncMock
     assert body["events"][0]["wrapper"] is False
 
 
+@pytest.mark.asyncio
+async def test_get_source_event_unknown_source_returns_404(client, mock_svc: AsyncMock) -> None:
+    """GET /ingestion/sources/{id}/event returns 404 INGESTION_SOURCE_NOT_FOUND when absent.
+
+    Mirrors the sibling GET /sources/{id} 404 case (test_get_source_not_found_returns_404):
+    the router's own docstring documents "Returns 404 INGESTION_SOURCE_NOT_FOUND when the
+    id is absent", and the service raises this from its own existence check before querying
+    events.
+
+    Spec: API.md §Error Catalogue — 404 INGESTION_SOURCE_NOT_FOUND.
+    """
+    mock_svc.get_events_for_source = AsyncMock(
+        side_effect=EntityNotFoundError("ingestion_source", _SOURCE_ID)
+    )
+
+    resp = await client.get(f"{_BASE}/sources/{_SOURCE_ID}/event", headers=auth_headers())
+
+    assert resp.status_code == 404
+    assert resp.json()["error_code"] == "INGESTION_SOURCE_NOT_FOUND"
+
+
 # ── GET /unmanaged (DB-direct route) ──────────────────────────────────────────
 
 

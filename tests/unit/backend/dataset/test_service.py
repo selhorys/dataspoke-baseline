@@ -304,6 +304,51 @@ async def test_get_events_no_covering_source(service, db):
     ing.get_events_for_source.assert_not_awaited()
 
 
+async def test_get_events_source_vanishes_mid_request_falls_back_to_dataset_only(
+    service, db
+):
+    """A source deleted between reverse_lookup and get_events_for_source degrades to
+    dataset-only events, not an exception.
+
+    This is the TOCTOU window: reverse_lookup found a covering source, but by the time
+    get_events_for_source runs its own existence check the source row is gone and it
+    raises EntityNotFoundError. The dataset itself still exists, so the timeline must
+    fall back exactly like the "no covering source" case rather than propagating the
+    ingestion-source-specific not-found.
+
+    Spec: feature/BACKEND.md §Querying Events states only that the per-dataset timeline
+      is the dataset's "complete … dataset feed", unioning dataset-level events with the
+      covering source's ingestion runs — it does not say what happens if that source
+      disappears mid-request. The TOCTOU fallback itself (degrade to dataset-only rather
+      than propagate the source's own not-found) is an impl decision, not a spec rule;
+      this test pins that impl behaviour rather than a spec citation.
+    """
+    dataset_rows = [
+        make_event_row(
+            entity_type="dataset",
+            entity_id=_DATASET_URN,
+            event_type="VALIDATION.RESULT_RECORDED",
+            minutes_ago=5,
+        ),
+    ]
+    mock_scalars_query(db, dataset_rows)
+    ing = MagicMock()
+    ing.reverse_lookup = AsyncMock(return_value=_make_source_record())
+    ing.get_events_for_source = AsyncMock(
+        side_effect=EntityNotFoundError("ingestion_source", "src-1")
+    )
+    service._ingestion = ing
+
+    events, total = await service.get_events(_DATASET_URN)
+
+    assert total == 1, (
+        f"a vanished source must degrade to dataset-only events, not raise or drop the "
+        f"dataset's own events; got total={total}."
+    )
+    assert events[0].event_type == "VALIDATION.RESULT_RECORDED"
+    ing.get_events_for_source.assert_awaited_once()
+
+
 async def test_get_events_empty(service, db):
     mock_scalars_query(db, [])
     _stub_ingestion(service, source=None, source_events=[])

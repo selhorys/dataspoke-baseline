@@ -195,13 +195,16 @@ describe("DatasetHubPage — /data/[urn]", () => {
     expect(screen.queryByTestId("ingestion-body")).toBeNull();
   });
 
-  it("Ingestion card shows the Unmanaged state when the dataset has no source", async () => {
+  it("Ingestion card shows the Unmanaged state as a link to /ingestion/unmanaged when the dataset has no source", async () => {
+    // spec: FRONTEND_INGESTION.md §Per-dataset reverse-lookup — "When no source
+    // covers the dataset, the card says so and links to /ingestion/unmanaged."
     mockReverseLookup.mockReturnValue({
       data: { source_id: null },
       isLoading: false,
     });
     await renderPage();
-    expect(screen.getByText(/unmanaged/i)).toBeTruthy();
+    const link = screen.getByRole("link", { name: /unmanaged/i });
+    expect(link.getAttribute("href")).toBe("/ingestion/unmanaged");
   });
 
   it("Validation card shows the latest result data_time beside the score", async () => {

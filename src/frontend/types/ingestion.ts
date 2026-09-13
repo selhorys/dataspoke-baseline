@@ -61,13 +61,6 @@ export interface IngestionSourceBody {
   recipe: Recipe;
 }
 
-/** Request body for PATCH (all fields optional; mode is not patchable). */
-export interface IngestionSourcePatchBody {
-  name?: string;
-  schedule?: string | null;
-  recipe?: Recipe;
-}
-
 // ── Run ─────────────────────────────────────────────────────────────────────────
 
 /**

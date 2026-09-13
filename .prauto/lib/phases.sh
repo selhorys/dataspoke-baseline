@@ -614,7 +614,7 @@ run_static_and_unit_regression() {
   if diff_touches src/frontend/; then
     exit_code=0; output=$(pnpm -C src/frontend exec tsc --noEmit 2>&1) || exit_code=$?
     post_result "$branch" "Static (frontend typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
-    exit_code=0; output=$(pnpm -C src/frontend exec eslint src/ 2>&1) || exit_code=$?
+    exit_code=0; output=$(pnpm -C src/frontend run lint 2>&1) || exit_code=$?
     post_result "$branch" "Static (frontend eslint)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
   fi
   if diff_touches tests/e2e/; then
@@ -762,7 +762,7 @@ run_targeted_post_pr_regression() {
     record_targeted_result "Static (frontend typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
   fi
   if stage_is_recorded "Static (frontend eslint)"; then
-    exit_code=0; output=$(pnpm -C src/frontend exec eslint src/ 2>&1) || exit_code=$?
+    exit_code=0; output=$(pnpm -C src/frontend run lint 2>&1) || exit_code=$?
     record_targeted_result "Static (frontend eslint)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
   fi
   if stage_is_recorded "Static (E2E typecheck)"; then

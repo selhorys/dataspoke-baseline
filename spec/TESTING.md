@@ -140,7 +140,7 @@ its module satisfies the strict bar.
 **Mocking rules**: Mock API client calls with Vitest mocks (`vi.mock`). Use `@testing-library/react` for
 rendering; assert on accessible roles, not DOM internals.
 
-**Static gates**: `npx tsc --noEmit` and `npx eslint src/` (from `src/frontend/`)
+**Static gates**: `npx tsc --noEmit` and `pnpm run lint` (from `src/frontend/`)
 
 `src/frontend/vitest.config.mts` uses Vitest's default pool (`pool: "forks"`, `isolate: true`), so
 each test file runs in its own forked process with its own `process.env` copy — a `process.env.TZ`
@@ -759,7 +759,7 @@ Author-run pre-commit gates:
 
 - `uv run ruff check src/ tests/`
 - `uv run mypy src/`
-- Frontend (from `src/frontend/`): `npx tsc --noEmit` and `npx eslint src/`
+- Frontend (from `src/frontend/`): `npx tsc --noEmit` and `pnpm run lint`
 - E2E: `pnpm -C tests/e2e typecheck` (`tsc --noEmit`)
 
 All four gates must be green. The ruff per-file exemptions and mypy per-module overrides that shape

@@ -293,9 +293,19 @@ class DatasetService:
             # Pull the full run history for the source; the unified timeline
             # paginates over the merged stream, so fetch without source-level
             # pagination (a high limit covers the small per-source volume).
-            source_events, _ = await self._ingestion.get_events_for_source(
-                source.id, offset=0, limit=10_000, dataset_urn=dataset_urn
-            )
+            #
+            # The source can be deleted in the window between the
+            # reverse_lookup above and this call, in which case
+            # get_events_for_source raises EntityNotFoundError. Treat that
+            # exactly like the "no covering source" case below rather than
+            # letting an ingestion-source-specific 404 leak onto this dataset
+            # resource, which still exists.
+            try:
+                source_events, _ = await self._ingestion.get_events_for_source(
+                    source.id, offset=0, limit=10_000, dataset_urn=dataset_urn
+                )
+            except EntityNotFoundError:
+                source_events = []
             records.extend(
                 EventRecord(
                     id=str(e["id"]),

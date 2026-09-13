@@ -8,8 +8,7 @@
  *     GET /spoke/ingestion/sources/{id}/datasets,
  *     GET /spoke/ingestion/sources/{id}/event,
  *     GET /spoke/ingestion/unmanaged,
- *     GET /spoke/common/data/{urn}/attr/ingestion,
- *     GET /spoke/common/data/{urn}/event/ingestion
+ *     GET /spoke/common/data/{urn}/attr/ingestion
  *   - spec/API.md §dry_run: dry_run is a query param on .../method/run (not a body field)
  *   - spec/feature/FRONTEND_INGESTION.md §Source Detail §Run: dry_run toggle posts as QP
  *
@@ -50,7 +49,6 @@ import {
   useIngestionSource,
   useCreateIngestionSource,
   useReplaceIngestionSource,
-  usePatchIngestionSource,
   useDeleteIngestionSource,
   useRunIngestionSource,
   useIngestionSourceDatasets,
@@ -58,7 +56,6 @@ import {
   useIngestionUnmanaged,
   useIngestionSecrets,
   useIngestionReverseLookup,
-  useIngestionDatasetEvents,
   useIngestionSourceDatasetCounts,
   useIngestionSourceLatestRuns,
   selectLatestRunEvent,
@@ -574,63 +571,6 @@ describe("useIngestionReverseLookup — URL construction", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. Per-dataset events — URN encoding + limit + sort
-// ---------------------------------------------------------------------------
-describe("useIngestionDatasetEvents — URL construction", () => {
-  const sampleUrn =
-    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)";
-
-  it("includes the limit param and sort=occurred_at_desc", async () => {
-    mockApiFetch.mockResolvedValue({
-      events: [],
-      total_count: 0,
-      offset: 0,
-      limit: 10,
-    });
-    const { result } = renderHook(
-      () => useIngestionDatasetEvents(sampleUrn, { limit: 10 }),
-      { wrapper: makeWrapper() },
-    );
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    const url = lastUrl();
-    expect(url).toContain("limit=10");
-    expect(url).toContain("sort=occurred_at_desc");
-    expect(url).toContain(
-      `/spoke/common/data/${encodeURIComponent(sampleUrn)}/event/ingestion`,
-    );
-  });
-
-  it("appends from and to when provided", async () => {
-    mockApiFetch.mockResolvedValue({
-      events: [],
-      total_count: 0,
-      offset: 0,
-      limit: 10,
-    });
-    const { result } = renderHook(
-      () =>
-        useIngestionDatasetEvents(sampleUrn, {
-          limit: 10,
-          from: "2024-01-01T00:00:00.000Z",
-          to: "2024-02-01T00:00:00.000Z",
-        }),
-      { wrapper: makeWrapper() },
-    );
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    const url = lastUrl();
-    expect(url).toContain("from=");
-    expect(url).toContain("to=");
-  });
-
-  it("does not fire when datasetUrn is empty", () => {
-    renderHook(() => useIngestionDatasetEvents("", { limit: 10 }), {
-      wrapper: makeWrapper(),
-    });
-    expect(mockApiFetch).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // 10. useIngestionSourceDatasetCounts — per-id datasets?limit=… URL
 // ---------------------------------------------------------------------------
 describe("useIngestionSourceDatasetCounts — URL construction", () => {
@@ -803,30 +743,6 @@ describe("useReplaceIngestionSource — PUT /spoke/ingestion/sources/{id}", () =
     });
     expect(lastUrl()).toBe("/spoke/ingestion/sources/src-1");
     expect(lastMethod()).toBe("PUT");
-  });
-});
-
-describe("usePatchIngestionSource — PATCH /spoke/ingestion/sources/{id}", () => {
-  it("calls PATCH with the correct URL", async () => {
-    mockApiFetch.mockResolvedValue({
-      id: "src-1",
-      mode: "ACTIVE_CUSTOM_MANAGED",
-      name: "patched",
-      schedule: null,
-      recipe: {},
-      platform: "postgres",
-      status: "OK",
-      datahub_source_urn: null,
-      created_at: "2024-01-01T00:00:00Z",
-      updated_at: "2024-01-02T00:00:00Z",
-    });
-    const { result } = renderHook(
-      () => usePatchIngestionSource("src-1"),
-      { wrapper: makeWrapper() },
-    );
-    await result.current.mutateAsync({ name: "patched" });
-    expect(lastUrl()).toBe("/spoke/ingestion/sources/src-1");
-    expect(lastMethod()).toBe("PATCH");
   });
 });
 
