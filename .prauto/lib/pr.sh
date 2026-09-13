@@ -209,6 +209,25 @@ check_review_pr() {
   return 1
 }
 
+# Rebase only when the current PR branch does not already contain the fetched
+# base branch. Replaying an already-merged base through `git rebase` can invent
+# conflicts for changes which the PR branch has already integrated.
+rebase_pr_branch_if_needed() {
+  local pr_number="$1"
+
+  git fetch origin "$PRAUTO_BASE_BRANCH" 2>/dev/null || { warn "PR #${pr_number}: git fetch failed."; return 1; }
+  if git merge-base --is-ancestor "origin/${PRAUTO_BASE_BRANCH}" HEAD 2>/dev/null; then
+    info "PR #${pr_number}: branch already contains origin/${PRAUTO_BASE_BRANCH}; skipping rebase."
+    return 0
+  fi
+
+  git rebase "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null || {
+    warn "PR #${pr_number}: rebase failed. Aborting."
+    git rebase --abort 2>/dev/null || true
+    return 1
+  }
+}
+
 # squash_and_finalize_pr <pr_number> <pr_branch> <pr_title> <pr_body> <issue_number>
 # Squash the PR branch into one commit, force-push, mark prauto:done. Does NOT
 # merge or close — left to the human. Must be called from inside the worktree.
@@ -218,12 +237,7 @@ squash_and_finalize_pr() {
   export GIT_AUTHOR_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_AUTHOR_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
   export GIT_COMMITTER_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
 
-  git fetch origin "$PRAUTO_BASE_BRANCH" 2>/dev/null || { warn "PR #${pr_number}: git fetch failed."; return 1; }
-  git rebase "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null || {
-    warn "PR #${pr_number}: rebase failed. Aborting."
-    git rebase --abort 2>/dev/null || true
-    return 1
-  }
+  rebase_pr_branch_if_needed "$pr_number" || return 1
 
   local merge_base
   merge_base=$(git merge-base HEAD "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null) || {

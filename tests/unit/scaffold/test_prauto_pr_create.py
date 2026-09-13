@@ -447,6 +447,56 @@ def test_check_review_pr_ignores_cross_repository_fork_entry(tmp_path: Path) -> 
     assert "pr list" not in calls_text
 
 
+# --- squash rebase preparation ----------------------------------------------
+
+
+def test_squash_rebase_skips_when_branch_already_contains_base(tmp_path: Path) -> None:
+    events = tmp_path / "git.events"
+    result = _run(
+        _source_pr()
+        + "\nPRAUTO_BASE_BRANCH=dev"
+        + f"\nGIT_EVENTS={shlex.quote(str(events))}"
+        + """
+git() {
+  case "$1" in
+    fetch) printf 'fetch %s\\n' "$*" >> "$GIT_EVENTS" ;;
+    merge-base) return 0 ;;
+    rebase) printf 'rebase %s\\n' "$*" >> "$GIT_EVENTS" ;;
+  esac
+}
+rebase_pr_branch_if_needed 203
+""",
+        env=_base_env(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert events.read_text() == "fetch fetch origin dev\n"
+    assert "already contains origin/dev; skipping rebase" in result.stdout
+
+
+def test_squash_rebase_runs_when_branch_is_behind_base(tmp_path: Path) -> None:
+    events = tmp_path / "git.events"
+    result = _run(
+        _source_pr()
+        + "\nPRAUTO_BASE_BRANCH=dev"
+        + f"\nGIT_EVENTS={shlex.quote(str(events))}"
+        + """
+git() {
+  case "$1" in
+    fetch) printf 'fetch %s\\n' "$*" >> "$GIT_EVENTS" ;;
+    merge-base) return 1 ;;
+    rebase) printf 'rebase %s\\n' "$*" >> "$GIT_EVENTS" ;;
+  esac
+}
+rebase_pr_branch_if_needed 203
+""",
+        env=_base_env(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert events.read_text() == "fetch fetch origin dev\nrebase rebase origin/dev\n"
+
+
 def test_check_review_pr_returns_waiting_on_api_error_object_without_jq_error(
     tmp_path: Path,
 ) -> None:
