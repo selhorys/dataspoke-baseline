@@ -104,8 +104,8 @@ daily / weekly) to the backing Airflow DAG
    JSON body
    (`GET /spoke/ingestion/sources/{id}`). The read-only `<pre>` view caps its height at ~25
    lines and scrolls (`overflow-auto`) for longer recipes; the edit-mode textarea is unbounded. For `ACTIVE_CUSTOM_MANAGED` / `PASSIVE`, editable via a
-   YAML editor and removable (`DELETE`). Save wires `PUT` (full replace); partial recipe
-   edits use `PATCH /sources/{id}`. View-mode shows `Edit` / `Delete` at the section header's
+   YAML editor and removable (`DELETE`). Save always submits a full `PUT` (full replace) — there
+   is no partial-edit UI affordance. View-mode shows `Edit` / `Delete` at the section header's
    top-right; edit-mode replaces them with `Save` / `Cancel` in that same slot (the editor's own
    bottom actions are suppressed), and surfaces the collapsible `SecretRefAuthoringGuide` under
    the editor's secret-ref line for `ACTIVE_CUSTOM_MANAGED` sources. For `DATAHUB_MANAGED` the

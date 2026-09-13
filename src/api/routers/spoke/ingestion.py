@@ -309,7 +309,13 @@ async def get_ingestion_source_event(
 ) -> EventListResponse:
     """Run/event history for a source (INGESTION.COMPLETE, INGESTION.FAIL, etc.).
 
-    Returns ``404 INGESTION_SOURCE_NOT_FOUND`` when the id is absent.
+    Returns ``404 INGESTION_SOURCE_NOT_FOUND`` when the id is absent. Once a
+    source is deleted this route is the only reader of its
+    ``entity_type='ingestion_source'`` event rows, so the 404 also makes the
+    deleted source's full event history — including its own
+    ``INGESTION.SOURCE_DELETE`` audit event — permanently unreachable through
+    the API; the rows are retained in the database but the delete audit event
+    is effectively write-only.
     """
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
     events, total_count = await service.get_events_for_source(

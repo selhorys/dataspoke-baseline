@@ -24,7 +24,10 @@ import {
   useIngestionSecrets,
 } from "@/lib/api/ingestion";
 import { useMe } from "@/lib/auth/use-me";
-import { modeDescription } from "@/lib/ingestion-mode-variant";
+import {
+  modeDescription,
+  TIER_TO_CANONICAL_CRON,
+} from "@/lib/ingestion-mode-variant";
 import { ApiError } from "@/lib/api/client";
 import { toast } from "@/components/ui/use-toast";
 import type { IngestionMode, IngestionSourceBody } from "@/types/ingestion";
@@ -106,11 +109,7 @@ export default function CreateIngestionSourcePage() {
     const tier =
       mode === "PASSIVE" || schedule === "manual"
         ? null
-        : schedule === "hourly"
-          ? "0 * * * *"
-          : schedule === "weekly"
-            ? "0 0 * * 0"
-            : "0 0 * * *";
+        : TIER_TO_CANONICAL_CRON[schedule];
 
     const candidate: IngestionSourceBody = {
       mode,

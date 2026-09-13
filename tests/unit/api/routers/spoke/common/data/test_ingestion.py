@@ -21,6 +21,7 @@ import pytest
 from src.api.dependencies import get_ingestion_service
 from src.api.main import app
 from src.backend.ingestion.service import IngestionService
+from src.shared.exceptions import EntityNotFoundError
 from tests.unit.api.conftest import auth_headers
 
 _BASE = "/api/v1/spoke/common/data"
@@ -370,3 +371,39 @@ async def test_event_ingestion_narrows_the_source_feed_to_this_dataset(
         f"the source feed must be requested narrowed to this dataset URN, by keyword; got "
         f"kwargs={kwargs!r}. Spec: feature/BACKEND.md §Querying Events."
     )
+
+
+@pytest.mark.asyncio
+async def test_event_ingestion_falls_back_to_empty_when_source_vanishes_mid_request(
+    client, mock_svc: AsyncMock
+) -> None:
+    """A source deleted between reverse_lookup and get_events_for_source yields empty, not 404.
+
+    This is the TOCTOU window: reverse_lookup found a covering source, but by the time
+    get_events_for_source runs its own existence check the source row is gone and it
+    raises EntityNotFoundError. The dataset resource itself still exists, so the route
+    must fall back to the same empty-events response used when no source covers the
+    dataset at all, not leak an ingestion-source-specific 404 onto a dataset route.
+
+    This route is the domain-level filtered endpoint (``GET .../data/{urn}/event/ingestion``),
+    which feature/BACKEND.md §Querying Events describes only as filtering by ``event_type``
+    prefix to return one domain's events — it says nothing about a covering source
+    vanishing mid-request. That fallback (degrade to the empty-events shape rather than
+    propagate the source's own not-found) is an impl decision pinned by this test, not a
+    spec-derived rule.
+    """
+    source_id = str(uuid.uuid4())
+    mock_svc.reverse_lookup = AsyncMock(return_value=_mapped_source(source_id))
+    mock_svc.get_events_for_source = AsyncMock(
+        side_effect=EntityNotFoundError("ingestion_source", source_id)
+    )
+
+    resp = await client.get(_EVENTS_URL, headers=auth_headers())
+
+    assert resp.status_code == 200, (
+        f"a source vanishing mid-request must not leak a 404 onto the dataset's event "
+        f"timeline; got {resp.status_code} body={resp.json()!r}."
+    )
+    body = resp.json()
+    assert body["events"] == []
+    assert body["total_count"] == 0

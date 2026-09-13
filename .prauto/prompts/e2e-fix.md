@@ -42,7 +42,7 @@ redeploys and re-runs the suite after you commit.
 
    ```bash
    npx tsc --noEmit
-   npx eslint src/
+   pnpm run lint
    ```
 
 6. Stage and commit with a conventional commit message.

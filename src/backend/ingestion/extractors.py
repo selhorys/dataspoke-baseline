@@ -1,8 +1,8 @@
 """Source-specific metadata extraction and DataHub emission.
 
 The extractor registry maps ``recipe.source.type`` → async extractor function.
-This release ships a **postgres extractor only**. The Kafka ACTIVE extraction
-path is removed (Kafka is reachable as PASSIVE only).
+This release ships a **postgres extractor only**; Kafka is reachable as
+PASSIVE only, with no ACTIVE extraction path.
 
 Adding an extractor for a new ``source.type`` is the fork-and-extend path:
 register an async function that accepts ``(datahub, source_id, recipe,

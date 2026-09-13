@@ -8,6 +8,7 @@ Covers:
 - list_active_sources_for_tier: mode + tier filter
 - list_datasets_for_source: propagates EntityNotFoundError on unknown source
 - get_source: raises EntityNotFoundError for non-existent ID
+- get_events_for_source: raises EntityNotFoundError on unknown source
 - _mirror_execution_requests: DataHub status → INGESTION_COMPLETE / INGESTION_FAIL /
   no-event mapping per spec/feature/BACKEND.md §Sync step 4 (Run events).
 
@@ -1405,6 +1406,92 @@ class TestDpiEmissionContract:
         assert len(complete_events) == 1, (
             "A failed run must still emit the terminal COMPLETE RunEvent. "
             "Spec: DATAHUB_INTEGRATION.md §Failure semantics."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("errors", "expected_response_status", "expected_event_type", "expected_event_status"),
+        [
+            pytest.param(
+                ["extractor crawl failed"],
+                "error",
+                "INGESTION_FAIL",
+                "failure",
+                id="errors-books-fail-with-failure",
+            ),
+            pytest.param(
+                [],
+                "success",
+                "INGESTION_COMPLETE",
+                "success",
+                id="no-errors-books-complete-with-success",
+            ),
+        ],
+    )
+    async def test_run_inner_books_a_matching_event_type_and_status(
+        self,
+        service: IngestionService,
+        db: AsyncMock,
+        datahub: AsyncMock,
+        errors: list[str],
+        expected_response_status: str,
+        expected_event_type: str,
+        expected_event_status: str,
+    ) -> None:
+        """_run_inner books an event whose type and status agree with each other.
+
+        The event row's ``status`` uses the event vocabulary ('success'/'failure'),
+        never the API-response vocabulary ('success'/'error'): the two are related but
+        distinct fields. Both legs of the rule are pinned here so a regression that
+        hardcodes either field (e.g. always 'failure', or always INGESTION.FAIL)
+        fails at the always-run unit tier rather than surviving to api-wired.
+
+        Spec: USE_CASE_en.md §UC1 — 'Each event row carries an event_type
+        (INGESTION.COMPLETE on success, INGESTION.FAIL on failure) and a matching
+        status (success / failure)'.
+        """
+        from src.shared.events import INGESTION_COMPLETE, INGESTION_FAIL
+
+        expected_event_type_value = {
+            "INGESTION_FAIL": INGESTION_FAIL,
+            "INGESTION_COMPLETE": INGESTION_COMPLETE,
+        }[expected_event_type]
+
+        row = _make_source_row(mode="ACTIVE_CUSTOM_MANAGED")
+        mock_scalar_query(db, row)
+        recorded: list[tuple[str, str]] = []
+
+        async def _capture(source_id, event_type, status, detail):  # type: ignore[no-untyped-def]
+            recorded.append((event_type, status))
+
+        with (
+            _patched_run(
+                service,
+                emitted_urns=[_DATASET_URN],
+                errors=errors,
+            ),
+            patch.object(service, "_record_source_event", side_effect=_capture),
+        ):
+            result = await service._run_inner(str(row.id), dry_run=False, manual=True)
+
+        # Backstop: the response-vocabulary field takes the value this leg expects —
+        # this test guards the event row primarily, but checks the response field stays
+        # aligned to the same leg rather than drifting independently.
+        assert result.status == expected_response_status, (
+            f"backstop: the API-response status field for this leg is "
+            f"{expected_response_status!r}; got {result.status!r}."
+        )
+        assert len(recorded) == 1, (
+            f"backstop — the run must have booked exactly one event; got {len(recorded)}."
+        )
+        event_type, status = recorded[0]
+        assert event_type == expected_event_type_value, (
+            f"this leg must book {expected_event_type_value!r}; got {event_type!r}."
+        )
+        assert status == expected_event_status, (
+            f"the {expected_event_type_value!r} event row must use "
+            f"status={expected_event_status!r} (the event vocabulary), not {status!r}. "
+            "spec: USE_CASE_en.md §UC1 — event_type/status vocabulary table."
         )
 
     @pytest.mark.asyncio
@@ -3265,6 +3352,37 @@ class TestStepFourFoldsEachSubPassIntoItsCounter:
             f"{summary['last_ingested_observed']}. "
             "spec: feature/BACKEND.md §Sync + mapping sweep — Sweep summary."
         )
+
+
+# ── get_events_for_source: unknown source existence check ────────────────────
+
+
+class TestGetEventsForSourceUnknownSource:
+    """``get_events_for_source`` raises EntityNotFoundError for an unknown source id.
+
+    The 404 this backs is spec'd at the API level, not the service level: API.md's
+    Error Catalogue defines ``INGESTION_SOURCE_NOT_FOUND`` for exactly this id, and the
+    sibling router test (``test_get_source_event_unknown_source_returns_404``) cites the
+    same anchor for the resulting response. This test pins the service-layer half of
+    that contract — the ``EntityNotFoundError`` the router depends on the service raising
+    before it can translate to that status/error_code.
+
+    Spec: API.md §Error Catalogue → Application Error Codes — "INGESTION_SOURCE_NOT_FOUND
+    | 404 | Ingestion source id does not exist".
+    """
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_raises_entity_not_found(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
+        """get_events_for_source raises EntityNotFoundError for an unknown source id.
+
+        Spec: API.md §Error Catalogue → Application Error Codes —
+        "INGESTION_SOURCE_NOT_FOUND | 404 | Ingestion source id does not exist".
+        """
+        mock_scalar_query(db, None)
+        with pytest.raises(EntityNotFoundError):
+            await service.get_events_for_source(str(uuid.uuid4()))
 
 
 # ── get_events_for_source: dataset_urn is keyword-only ────────────────────────

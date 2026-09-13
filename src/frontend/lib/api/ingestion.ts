@@ -12,7 +12,6 @@ import type {
   IngestionSource,
   IngestionSourceBody,
   IngestionSourceListResponse,
-  IngestionSourcePatchBody,
   IngestionRunResponse,
   IngestionSourceDatasetsResponse,
   IngestionEvent,
@@ -195,23 +194,6 @@ export function useReplaceIngestionSource(id: string) {
   });
 }
 
-/** PATCH /spoke/ingestion/sources/{id} — partial update. */
-export function usePatchIngestionSource(id: string) {
-  const qc = useQueryClient();
-  return useMutation<IngestionSource, Error, IngestionSourcePatchBody>({
-    mutationFn: (body) =>
-      apiFetch<IngestionSource>(
-        `/spoke/ingestion/sources/${encodeURIComponent(id)}`,
-        { method: "PATCH", body: JSON.stringify(body) },
-      ),
-    meta: { handledInline: true },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["ingestion", "source", id] });
-      void qc.invalidateQueries({ queryKey: ["ingestion", "sources"] });
-    },
-  });
-}
-
 /** DELETE /spoke/ingestion/sources/{id}. */
 export function useDeleteIngestionSource(id: string) {
   const qc = useQueryClient();
@@ -361,39 +343,6 @@ export function useIngestionReverseLookup(datasetUrn: string) {
     queryFn: () =>
       apiFetch<IngestionReverseLookupResponse>(
         `/spoke/common/data/${encodeURIComponent(datasetUrn)}/attr/ingestion`,
-      ),
-    enabled: !!datasetUrn,
-    meta: { handledInline: true },
-  });
-}
-
-interface DatasetEventParams {
-  offset?: number;
-  limit?: number;
-  from?: string;
-  to?: string;
-}
-
-function buildDatasetEventUrl(datasetUrn: string, params: DatasetEventParams): string {
-  const sp = new URLSearchParams();
-  if (params.offset !== undefined) sp.set("offset", String(params.offset));
-  sp.set("limit", String(params.limit ?? 20));
-  if (params.from) sp.set("from", params.from);
-  if (params.to) sp.set("to", params.to);
-  sp.set("sort", "occurred_at_desc");
-  return `/spoke/common/data/${encodeURIComponent(datasetUrn)}/event/ingestion?${sp.toString()}`;
-}
-
-/** GET /spoke/common/data/{urn}/event/ingestion — per-dataset ingestion events. */
-export function useIngestionDatasetEvents(
-  datasetUrn: string,
-  params: DatasetEventParams = {},
-) {
-  return usePoll<IngestionEventListResponse>({
-    queryKey: ["ingestion", "dataset-events", datasetUrn, params],
-    queryFn: () =>
-      apiFetch<IngestionEventListResponse>(
-        buildDatasetEventUrl(datasetUrn, params),
       ),
     enabled: !!datasetUrn,
     meta: { handledInline: true },

@@ -584,7 +584,7 @@ prefixes) and hold the dev-env lock at `$DATASPOKE_DEV_LOCK_URL`.
 
 **Stage 1 -- Static gates** *(worker before PR; executor after PR)*: `uv run ruff check src/ tests/` and `uv run mypy src/`,
 invoked as **checks, never `--fix`** — prauto verifies the author-run gate rather than mutating
-the diff until it passes. Frontend-touching work adds `npx tsc --noEmit` and `npx eslint src/`
+the diff until it passes. Frontend-touching work adds `npx tsc --noEmit` and `pnpm run lint`
 from `src/frontend/`; diffs touching `tests/e2e/` add `pnpm -C tests/e2e typecheck`. These are
 the four author-run gates of [`TESTING.md §CI Behavior`](TESTING.md#ci-behavior); no
 `.github/workflows/` exists, so they are the only thing standing between prauto and a red `dev`.

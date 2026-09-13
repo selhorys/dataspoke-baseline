@@ -22,6 +22,7 @@ from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ingestion import IngestionLatestRunSummary, IngestionReverseLookupResponse
 from src.backend.ingestion.service import IngestionService
 from src.shared.db.models import Event
+from src.shared.exceptions import EntityNotFoundError
 from src.shared.models.ingestion import Mode
 
 sub_router = APIRouter()
@@ -108,15 +109,28 @@ async def get_data_ingestion_event(
         )
 
     order_by = parse_sort(sort, {"occurred_at": Event.occurred_at}, None)
-    events, total_count = await service.get_events_for_source(
-        source_id=source.id,
-        offset=offset,
-        limit=limit,
-        from_dt=from_time,
-        to_dt=to_time,
-        order_by=order_by,
-        dataset_urn=dataset_urn,
-    )
+    # The source can be deleted in the window between the reverse_lookup
+    # above and this call, in which case get_events_for_source raises
+    # EntityNotFoundError. Fall back to the same empty-events response used
+    # for "no covering source" rather than leaking an ingestion-source-
+    # specific 404 onto this dataset resource, which still exists.
+    try:
+        events, total_count = await service.get_events_for_source(
+            source_id=source.id,
+            offset=offset,
+            limit=limit,
+            from_dt=from_time,
+            to_dt=to_time,
+            order_by=order_by,
+            dataset_urn=dataset_urn,
+        )
+    except EntityNotFoundError:
+        return EventListResponse(
+            offset=offset,
+            limit=limit,
+            total_count=0,
+            events=[],
+        )
     return EventListResponse(
         offset=offset,
         limit=limit,

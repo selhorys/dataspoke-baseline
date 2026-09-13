@@ -16,19 +16,6 @@ from src.shared.secrets.grammar import SECRET_REF_RE
 
 logger = logging.getLogger(__name__)
 
-# ── Platform enum ─────────────────────────────────────────────────────────────
-
-
-class Platform(StrEnum):
-    POSTGRESQL = "postgres"
-    MYSQL = "mysql"
-    ORACLE = "oracle"
-    ATHENA = "athena"
-    BIGQUERY = "bigquery"
-    SNOWFLAKE = "snowflake"
-    KAFKA = "kafka"
-
-
 # ── Mode enum ─────────────────────────────────────────────────────────────────
 
 

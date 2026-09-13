@@ -183,6 +183,6 @@ test("/ingestion/conf — a newer SOURCE_UPDATE does not mask an older failed ru
   await expect(
     statusCell,
     "the badge must report the failed RUN, not the newer SOURCE_UPDATE that heads the feed",
-  ).toHaveText("error", { timeout: 20_000 });
+  ).toHaveText("failure", { timeout: 20_000 });
   await expect(statusCell).not.toHaveText("success");
 });

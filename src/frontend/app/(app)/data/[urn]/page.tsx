@@ -50,7 +50,12 @@ function IngestionSummaryCard({ datasetUrn }: { datasetUrn: string }) {
           <span className="text-muted-foreground">Loading…</span>
         )}
         {!isLoading && unmapped && (
-          <span className="text-muted-foreground">Unmanaged</span>
+          <Link
+            href="/ingestion/unmanaged"
+            className="text-muted-foreground hover:underline"
+          >
+            Unmanaged
+          </Link>
         )}
         {!isLoading && !unmapped && lookup && (
           <>
