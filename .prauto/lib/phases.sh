@@ -721,6 +721,14 @@ $(tail_chars "$output" 14000)"
   fi
 }
 
+# Render bounded, secret-scrubbed executor evidence for a public PR comment.
+targeted_failure_comment_evidence() {
+  local safe
+  safe=$(scrub_secrets "$(tail_chars "${POST_PR_TARGETED_EVIDENCE:-}" 12000)")
+  safe=$(printf '%s' "$safe" | sed 's/```/`&#8203;``/g')
+  printf '%s' "$safe"
+}
+
 # run_targeted_post_pr_regression <issue> <branch>
 # Re-run only stages which failed the initial full regression.  Cluster stages
 # reacquire the lock and rebuild their prerequisite artifact from the exact
@@ -894,7 +902,16 @@ run_post_pr_regression() {
     POST_PR_REGRESSION_SUMMARY_MODE=false; return 0
   fi
   regression_set_wip "$issue_number" "$branch"
-  post_post_pr_regression_comment "$branch" "Initial full regression failures: ${POST_PR_FAILED_STAGES}. Targeted retry still failed: ${POST_PR_TARGETED_FAILURES:-an infrastructure/setup condition}. The PR remains in prauto:wip." || true
+  local targeted_evidence
+  targeted_evidence=$(targeted_failure_comment_evidence)
+  post_post_pr_regression_comment "$branch" "Initial full regression failures: ${POST_PR_FAILED_STAGES}. Targeted retry still failed: ${POST_PR_TARGETED_FAILURES:-an infrastructure/setup condition}. The PR remains in prauto:wip.
+
+<details><summary>Sanitized executor evidence</summary>
+
+\`\`\`text
+${targeted_evidence:-No executor output was captured.}
+\`\`\`
+</details>" || true
   POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
 }
 

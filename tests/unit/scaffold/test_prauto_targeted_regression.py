@@ -183,3 +183,4 @@ def test_targeted_failure_or_infrastructure_block_keeps_pr_wip(
     assert "wip" in lines
     assert lines.count("full-cluster") == 1
     assert any("Targeted retry still failed: Static (ruff)." in line for line in lines)
+    assert any("Sanitized executor evidence" in line for line in lines)

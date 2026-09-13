@@ -679,7 +679,9 @@ or any failure outside these conditions remains blocking. A classified flake is 
 readiness only; it is not recorded as a passed test and never dispatches a coding agent. The
 executor posts a visible, sanitized PR comment naming the stage, allowlisted category, before/after
 health-check results, and path-or-earlier-pass basis. The comment excludes raw logs, credentials,
-URLs, tokens, dataset values, and other environment-sensitive output.
+URLs, tokens, dataset values, and other environment-sensitive output. A targeted-retry failure
+posts a bounded, secret-scrubbed executor-evidence block so reviewers can distinguish test,
+deployment, and transport conditions without accessing local artifacts.
 
 The final PR readiness comment reports whether the initial full regression passed directly, lists
 the initial failed stages and targeted retry stages that later passed, and identifies any ignored
