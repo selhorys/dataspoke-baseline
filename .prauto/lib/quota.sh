@@ -143,7 +143,7 @@ check_quota() {
     if [[ "$code" -eq 124 ]]; then
       warn "Claude dry-run timed out after ${quota_timeout}s — proceeding anyway."
       return 0
-    elif printf '%s' "$stderr" | grep -qi "rate limit\|quota\|session limit"; then
+    elif grep -qi "rate limit\|quota\|session limit" <<< "$stderr"; then
       warn "Claude quota exhausted or rate-limited."
     else
       warn "Claude dry-run failed (exit ${code}): $(printf '%s' "$stderr" | head -c 200)"
@@ -219,7 +219,7 @@ has_quota_paused_comment() {
             | select(.body | test("prauto:quota-paused|Resumed|Restarting"))]
       | last | .body // ""
     ') || return 1
-  printf '%s' "$latest" | grep -q 'prauto:quota-paused'
+  grep -q 'prauto:quota-paused' <<< "$latest"
 }
 
 # read_pause_marker <issue_number>

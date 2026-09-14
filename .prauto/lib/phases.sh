@@ -16,6 +16,16 @@ DEV_ENV_TEARDOWN_ATTEMPTED=false
 # leaves it behind for a later heartbeat's recover_orphaned_dev_env() to act on —
 # the in-memory globals above are lost the moment the process dies, this is not.
 DEV_ENV_STATE_FILE="${PRAUTO_DIR}/state/dev-env-provisioned.json"
+# Executor-observed passing cluster stages in this heartbeat, one
+# "<stage><TAB><commit sha>" line each. In-process only: never read from a
+# file, the worktree, or agent output. It is the earlier-same-heartbeat-pass
+# basis for the post-PR environmental-flake exception.
+HEARTBEAT_STAGE_PASSES=""
+# Commit of the branch API / frontend artifact this heartbeat last deployed
+# successfully from a clean tree; empty when unknown, failed, or superseded. A
+# pass is evidence only for the artifact it actually exercised.
+DEPLOYED_API_SHA=""
+DEPLOYED_FRONTEND_SHA=""
 
 # checkpoint_branch <issue_number> <branch>
 # Persist committed progress before a worker worktree is removed, then expose
@@ -442,41 +452,449 @@ run_integration_tests_with_protocol() {
   info "Integration test results posted on PR #${pr_number}."
 }
 
-# post_result <branch> <stage> <exit> <output>
+# Flake signatures. Every grep reads a here-string rather than a pipe: under
+# `pipefail`, `grep -q` exiting on its first match would SIGPIPE a large writer
+# and turn a match into a miss.
+#
+# TRANSPORT_FLAKE_DISQUALIFIER_RE: assertions, contract/schema mismatches, and
+# application response statuses. Any match keeps a failure blocking. Gateway
+# statuses (502/503/504) are judged per failure instead, against
+# TRANSPORT_FLAKE_GATEWAY_SOURCE_RE.
+TRANSPORT_FLAKE_DISQUALIFIER_RE='assertionerror|assert .*failed|^E[[:space:]]+assert[[:space:]]|[[:space:]]-[[:space:]]assert[[:space:]]|^E[[:space:]]+Failed:[[:space:]]|expected .*(got|but)|^[[:space:]]*expected:|^[[:space:]]*received:|expect\(.*\)\.(to|not)|api mismatch|validationerror|(status[_ ]?code|http/[0-9.]+|<response \[|returned|status)[^0-9]{0,12}\b(400|401|403|404|409|422|500)\b'
+# TRANSPORT_FLAKE_GATEWAY_SOURCE_RE: a 502/503/504 attributed to the ingress
+# controller or the Kubernetes control plane. A failure reason carrying a
+# gateway status without this source is not a transport flake.
+TRANSPORT_FLAKE_GATEWAY_STATUS_RE='\b(502|503|504)\b'
+TRANSPORT_FLAKE_GATEWAY_SOURCE_RE='(ingress-nginx|ingress controller|nginx).{0,40}\b(502|503|504)\b|\b(502|503|504)\b.{0,80}<center>nginx</center>|(kubernetes|kube-apiserver|apiserver|control[- ]plane|gke).{0,60}\b(502|503|504)\b'
+# TRANSPORT_FLAKE_ALLOWLIST_RE: the closed spec allowlist. Client-side
+# transport errors; control-plane-sourced statuses and timeouts; pod/node
+# lifecycle events; ingress-controller-sourced gateway statuses.
+TRANSPORT_FLAKE_ALLOWLIST_RE='econnreset|econnrefused|etimedout|eai_again|temporary failure in name resolution|upstream reset|connectionrefusederror|connection refused|connect call failed|connecterror|all connection attempts failed|(kubernetes|kube-apiserver|apiserver|control[- ]plane|gke).{0,60}(\b(429|500|502|503|504)\b|i/o timeout|context deadline exceeded|tls handshake timeout|connection reset)|pod.{0,80}\b(evicted|preempted)\b|reason:[[:space:]]*(evicted|preempted)\b|\bnodenotready\b|(ingress-nginx|ingress controller|nginx).{0,40}\b(502|503|504)\b|\b(502|503|504)\b.{0,80}<center>nginx</center>'
+
+# is_environmental_transport_failure <text>
+# True only when text matches the allowlist and nothing in it disqualifies.
+# Unrecognized or ambiguous text (e.g. a bare gateway status with no ingress
+# or control-plane source) stays blocking.
 is_environmental_transport_failure() {
-  local output="$1"
-  # Assertions, API/application responses, and explicit test failures are
-  # never environmental flakes even when a log also mentions the network.
-  if printf '%s' "$output" | grep -Eqi 'assertionerror|assert .*failed|expected .*(got|but)|api mismatch|validationerror|traceback \(most recent call last\)|\b(400|401|403|404|409|422|500)\b'; then
-    return 1
+  local text="$1"
+  grep -Eqi "$TRANSPORT_FLAKE_DISQUALIFIER_RE" <<< "$text" && return 1
+  if grep -Eqi "$TRANSPORT_FLAKE_GATEWAY_STATUS_RE" <<< "$text"; then
+    grep -Eqi "$TRANSPORT_FLAKE_GATEWAY_SOURCE_RE" <<< "$text" || return 1
   fi
-  printf '%s' "$output" | grep -Eqi 'connection reset|connection refused|broken pipe|unexpected eof|eof occurred|i/o timeout|context deadline exceeded|dial tcp|tls handshake timeout|temporary failure in name resolution|no such host|server misbehaving|dns.*(timeout|failure)|ingress.*(502|503|504)|\b(502|503|504)\b'
+  grep -Eqi "$TRANSPORT_FLAKE_ALLOWLIST_RE" <<< "$text"
 }
 
-# stage_has_unrelated_fix_path <stage>
-# A transport signature alone is insufficient: a branch that changes the
-# exercised layer must stay WIP for a normal fix. This is the deterministic
-# "unrelated fix path" basis; an earlier-pass basis can be added only from
-# executor-owned evidence, never a worker assertion.
-stage_has_unrelated_fix_path() {
-  local stage="$1"
-  case "$stage" in
-    "Integration (spot)"|"Integration (api-wired)")
-      ! diff_touches src/api/ src/backend/ src/shared/ tests/integration/
-      ;;
-    "E2E")
-      ! diff_touches src/frontend/ src/api/ src/backend/ src/shared/ tests/e2e/
-      ;;
-    *) return 1 ;;
+# transport_flake_category <text>
+# Name the allowlisted category an (already qualifying) failure reason
+# matched, for the public flake notice.
+transport_flake_category() {
+  local text="$1"
+  if grep -Eqi '(kubernetes|kube-apiserver|apiserver|control[- ]plane|gke)' <<< "$text"; then
+    printf 'control-plane request failure'
+  elif grep -Eqi 'evicted|preempted|nodenotready' <<< "$text"; then
+    printf 'pod eviction/preemption or node not ready'
+  elif grep -Eqi "$TRANSPORT_FLAKE_GATEWAY_STATUS_RE" <<< "$text"; then
+    printf 'ingress gateway error'
+  elif grep -Eqi 'eai_again|temporary failure in name resolution' <<< "$text"; then
+    printf 'DNS resolution failure'
+  else
+    printf 'client connection refused/reset/timeout'
+  fi
+}
+
+# record_heartbeat_stage_pass <stage> <sha>
+# Record an executor-observed passing cluster stage against the exact commit
+# it ran on. Only a full 40-hex sha is recorded.
+record_heartbeat_stage_pass() {
+  local stage="$1" sha="$2"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  HEARTBEAT_STAGE_PASSES="${HEARTBEAT_STAGE_PASSES:-}${stage}"$'\t'"${sha}"$'\n'
+}
+
+# heartbeat_stage_passed_at <stage> <sha>
+# True when this heartbeat's executor recorded <stage> passing at exactly <sha>.
+heartbeat_stage_passed_at() {
+  local stage="$1" sha="$2" entry_stage entry_sha
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  while IFS=$'\t' read -r entry_stage entry_sha; do
+    [[ "$entry_stage" == "$stage" && "$entry_sha" == "$sha" ]] && return 0
+  done <<< "${HEARTBEAT_STAGE_PASSES:-}"
+  return 1
+}
+
+# executor_test_head
+# Print HEAD for a pass record or deployed-artifact binding, or nothing when the
+# worktree has any modified or untracked file (then the sha would not describe
+# what ran or was built). Nothing is excluded: test artifacts (pytest cache,
+# Playwright reports/auth, node_modules) are gitignored and so never listed.
+executor_test_head() {
+  local head status
+  head=$(git rev-parse HEAD 2>/dev/null) || return 0
+  status=$(git status --porcelain --untracked-files=all 2>/dev/null) || return 0
+  [[ -z "$status" ]] || return 0
+  printf '%s' "$head"
+}
+
+# current_head
+# Print HEAD, or nothing when it cannot be resolved.
+current_head() {
+  git rev-parse HEAD 2>/dev/null || true
+}
+
+# is_cluster_health_abort <output>
+# True when an integration pytest session aborted at the conftest session-start
+# health gate (require_server) before any test ran. That is an infrastructure
+# condition, never a branch-attributable failure or a flake.
+is_cluster_health_abort() {
+  local output="$1"
+  grep -Eq 'helm-charts/bin/health-check\.sh (failed \(exit|did not finish within)' <<< "$output"
+}
+
+# integration_health_abort_blocked <issue> <branch> <stage> <exit> <output>
+# Returns 0 after releasing the required lock and posting the blocked notice
+# when a non-zero integration run aborted at the harness health gate; the
+# caller then records exit 2 and stops. Returns 1 otherwise.
+integration_health_abort_blocked() {
+  local issue_number="$1" branch="$2" stage="$3" exit_code="$4" output="$5"
+  [[ "$exit_code" -ne 0 ]] || return 1
+  is_cluster_health_abort "$output" || return 1
+  release_required_dev_lock
+  regression_blocked "$issue_number" "integration harness health gate failed during ${stage}" "$branch" || true
+  return 0
+}
+
+# dev_env_probe_healthy <env_file>
+# Post-stage health probe for flake classification. Unlike dev_env_healthy it
+# never provisions or reinstalls, and it fails closed: a flake needs positive
+# evidence, so a missing checkout, script, or env file is unhealthy.
+dev_env_probe_healthy() {
+  local env_file="$1" script health_exit=0
+  [[ -n "${REPO_DIR:-}" && -n "$env_file" ]] || { warn "Post-stage health probe cannot run: REPO_DIR or env file is unset."; return 1; }
+  script="${REPO_DIR}/helm-charts/bin/health-check.sh"
+  [[ -f "$script" ]] || { warn "Post-stage health probe cannot run: health-check.sh not found."; return 1; }
+  info "Running post-stage dev-env health probe (no provisioning)..."
+  run_health_check "$script" "$env_file" || health_exit=$?
+  if [[ "$health_exit" -ne 0 ]]; then
+    warn "Post-stage dev-env health probe failed (exit ${health_exit})."
+    return 1
+  fi
+  info "Post-stage dev-env health probe passed."
+  return 0
+}
+
+# pytest clips short-summary reasons to the terminal width (80 columns when not
+# a TTY). Regression runs widen it so every FAILED/ERROR line keeps the reason
+# that the listing and per-failure flake classification read.
+PYTEST_REPORT_COLUMNS=1000
+
+# failed_test_output_kind <stage>
+# Map a regression stage name to its output parser; prints nothing for a stage
+# without test identifiers (deploys) or an unknown stage.
+failed_test_output_kind() {
+  case "$1" in
+    "Unit (Python)"|"Integration (spot)"|"Integration (api-wired)") printf 'pytest' ;;
+    "E2E") printf 'playwright' ;;
+    "Static (ruff)") printf 'ruff' ;;
+    "Static (mypy)") printf 'mypy' ;;
+    "Static (frontend typecheck)"|"Static (E2E typecheck)") printf 'tsc' ;;
+    "Static (frontend eslint)") printf 'eslint' ;;
+    "Unit (frontend)") printf 'vitest' ;;
   esac
 }
 
+# parse_failed_test_entries <kind> <output>
+# Shared parser for the PR listing and flake classification, so both see the
+# same failures. Prints raw "E<TAB>identifier<TAB>reason" lines (pytest short
+# summary FAILED/ERROR lines; Playwright numbered failure headers with their
+# first Error: line; static-check diagnostics; Vitest failures) and
+# "S<TAB>text" summary count lines. Only tabs are normalized and ANSI colour
+# sequences stripped; no escaping happens here. sed and awk both consume their
+# whole input, so the pipeline has no early-exit reader.
+parse_failed_test_entries() {
+  local kind="$1" output="$2"
+  [[ -n "$kind" ]] || return 0
+  # sed rather than ${var//}: bash pattern substitution is slow on multi-MB logs.
+  # shellcheck disable=SC2001
+  sed $'s/\x1b\\[[0-9;]*[A-Za-z]//g' <<< "$output" | awk -v kind="$kind" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function clean(s) { gsub(/\t/, " ", s); return trim(s) }
+    function emit(id, reason) {
+      id = clean(id)
+      if (id == "" || seen[id]++) return
+      printf "E\t%s\t%s\n", id, clean(reason)
+    }
+    function summary(s) { s = clean(s); if (s != "" && !seen_summary[s]++) printf "S\t%s\n", s }
+    kind == "pytest" {
+      if ($0 ~ /^(FAILED|ERROR) /) {
+        line = $0
+        sub(/^(FAILED|ERROR) /, "", line)
+        i = index(line, " - ")
+        if (i > 0) emit(substr(line, 1, i - 1), substr(line, i + 3)); else emit(line, "")
+      } else if ($0 ~ /^=+ .*(failed|error|passed).* in [0-9.]+s/) {
+        line = $0; gsub(/^=+ /, "", line); gsub(/ =+$/, "", line); summary(line)
+      }
+      next
+    }
+    kind == "playwright" {
+      if ($0 ~ /^[ \t]*[0-9]+\) \[[^]]+\] › /) {
+        if (pending != "") emit(pending, "")
+        line = $0; sub(/^[ \t]*[0-9]+\) /, "", line); gsub(/[ \t]*(─)+[ \t]*$/, "", line)
+        pending = line
+      } else if (pending != "" && $0 ~ /^[ \t]*Error:/) {
+        emit(pending, $0); pending = ""
+      } else if ($0 ~ /^[ \t]*[0-9]+ (failed|flaky)/) {
+        if (pending != "") { emit(pending, ""); pending = "" }
+        summary($0)
+      }
+      next
+    }
+    kind == "ruff" {
+      if ($0 ~ /^[^ \t]+:[0-9]+:[0-9]+: [A-Z]+[0-9]+ /) {
+        i = index($0, ": "); emit(substr($0, 1, i - 1), substr($0, i + 2))
+      } else if ($0 ~ /^[A-Z]+[0-9]+ /) {
+        rule = $0
+      } else if (rule != "" && $0 ~ /^[ \t]*--> [^ \t]+:[0-9]+:[0-9]+/) {
+        line = $0; sub(/^[ \t]*--> /, "", line); emit(line, rule); rule = ""
+      }
+      next
+    }
+    kind == "mypy" {
+      if ($0 ~ /^[^ \t]+:[0-9]+: error: /) {
+        i = index($0, ": error: "); emit(substr($0, 1, i - 1), substr($0, i + 9))
+      }
+      next
+    }
+    kind == "tsc" {
+      if ($0 ~ /^[^ \t]+\([0-9]+,[0-9]+\): error TS[0-9]+/) {
+        i = index($0, "): error "); loc = substr($0, 1, i)
+        sub(/\(/, ":", loc); sub(/,/, ":", loc); sub(/\)$/, "", loc)
+        emit(loc, substr($0, i + 9))
+      }
+      next
+    }
+    kind == "eslint" {
+      if ($0 ~ /^[ \t]*[0-9]+:[0-9]+[ \t]+(error|Error:)[ \t]/) {
+        line = trim($0); split(line, parts, /[ \t]+/); pos = parts[1]
+        sub(/^[0-9]+:[0-9]+[ \t]+(error|Error:)[ \t]+/, "", line)
+        emit((file != "" ? file ":" : "") pos, line)
+      } else if ($0 ~ /^[^ \t✖]/ && $0 !~ /^[0-9]+:[0-9]+/ && $0 !~ /^(>|info|warn|Warning|ESLint)/) {
+        file = trim($0)
+      }
+      next
+    }
+    kind == "vitest" {
+      if ($0 ~ /^[ \t]*(FAIL|×|✗) /) {
+        if (pending != "") emit(pending, "")
+        line = $0; sub(/^[ \t]*(FAIL|×|✗) +/, "", line); sub(/ [0-9]+ms$/, "", line)
+        pending = line
+      } else if (pending != "" && $0 ~ /^[ \t]*([A-Za-z]*Error:|→ )/) {
+        line = $0; sub(/^[ \t]*→ /, "", line); emit(pending, line); pending = ""
+      }
+      next
+    }
+    END { if (pending != "") emit(pending, "") }
+  '
+}
+
+# sanitize_failed_test_entries <parsed_entries>
+# Neutralize already-scrubbed parser entries for markdown rendering. Invalid
+# UTF-8 becomes U+FFFD. Identifiers are restricted to a conservative charset
+# (anything else becomes '?'; '>' is kept for Vitest name paths and is inert
+# inside a code span); reasons and summaries have backticks replaced so
+# they stay inside their code spans. Every field is clipped to 200 characters
+# (whole characters, never a split byte sequence).
+sanitize_failed_test_entries() {
+  local parsed="$1"
+  # shellcheck disable=SC2016
+  perl -MEncode=decode,encode -e '
+    sub clip { my ($s) = @_; return length($s) > 200 ? substr($s, 0, 200) : $s }
+    while (my $line = <STDIN>) {
+      chomp $line;
+      my ($tag, $first, $second) = split /\t/, $line, 3;
+      next unless defined $tag && ($tag eq "E" || $tag eq "S");
+      my $a = decode("UTF-8", $first // "");
+      my $b = decode("UTF-8", $second // "");
+      if ($tag eq "E") {
+        $a =~ s{[^A-Za-z0-9_./:\[\]()=,+\- \@*>\x{203A}]}{?}g;
+        $b =~ tr/`/\x27/;
+        print encode("UTF-8", "E\t" . clip($a) . "\t" . clip($b)), "\n";
+      } else {
+        $a =~ tr/`/\x27/;
+        print encode("UTF-8", "S\t" . clip($a)), "\n";
+      }
+    }
+  ' <<< "$parsed"
+}
+
+# extract_failed_tests <stage> <output> [with_reasons]
+# Print a bounded, secret-scrubbed markdown bullet list of the failing test
+# identifiers in one stage's output: pytest node IDs, Playwright test titles,
+# Vitest test names, or static-check diagnostics as path:line entries. With
+# with_reasons=false (flake notices) only identifiers are listed. Raw entries
+# are scrubbed before any neutralization or clipping, and the rendered block is
+# scrubbed again. Identifiers, reasons, and summaries each sit in their own
+# code span, so mentions, links, images, issue references, and HTML are inert.
+FAILED_TESTS_MAX_ENTRIES=50
+FAILED_TESTS_MAX_SUMMARIES=5
+extract_failed_tests() {
+  local stage="$1" output="$2" with_reasons="${3:-true}"
+  local kind parsed=""
+  case "$stage" in
+    "Deploy (API)"|"Deploy (frontend)")
+      printf '%s\n' "- (deploy stage; no test identifiers)"; return 0 ;;
+  esac
+  if ! command -v perl >/dev/null 2>&1; then
+    printf '%s\n' "- Failing test identifiers withheld: the output sanitizer is unavailable."; return 0
+  fi
+  kind=$(failed_test_output_kind "$stage")
+  if [[ -n "$kind" ]]; then
+    parsed=$(parse_failed_test_entries "$kind" "$output")
+    parsed=$(scrub_secrets "$parsed")
+    parsed=$(sanitize_failed_test_entries "$parsed") || parsed=""
+  fi
+
+  local rendered="" total=0 shown=0 summaries="" summary_count=0 tag id reason
+  while IFS=$'\t' read -r tag id reason; do
+    case "$tag" in
+      E)
+        total=$((total + 1))
+        [[ "$total" -le "$FAILED_TESTS_MAX_ENTRIES" ]] || continue
+        shown=$((shown + 1))
+        if [[ "$with_reasons" == true && -n "$reason" ]]; then
+          rendered="${rendered}- \`${id}\` — \`${reason}\`"$'\n'
+        elif [[ "$with_reasons" == true ]]; then
+          rendered="${rendered}- \`${id}\` — no reason reported"$'\n'
+        else
+          rendered="${rendered}- \`${id}\`"$'\n'
+        fi
+        ;;
+      S)
+        summary_count=$((summary_count + 1))
+        [[ "$summary_count" -le "$FAILED_TESTS_MAX_SUMMARIES" ]] || continue
+        summaries="${summaries}- Summary: \`${id}\`"$'\n'
+        ;;
+    esac
+  done <<< "$parsed"
+
+  if [[ "$shown" -eq 0 ]]; then
+    rendered="- No failing test identifiers could be extracted from this stage's output."$'\n'
+  elif [[ "$total" -gt "$shown" ]]; then
+    rendered="${rendered}- … and $((total - shown)) more"$'\n'
+  fi
+  rendered="${rendered}${summaries}"
+  scrub_secrets "${rendered%$'\n'}"
+}
+
+# render_failed_tests_block <stage> <exit_code> <output> <with_reasons>
+# One collapsible block per stage. The heading is built only from the fixed
+# internal stage name and a numeric exit code (empty for identifier-only flake
+# listings); it never carries branch or output text.
+render_failed_tests_block() {
+  local stage="$1" exit_code="$2" output="$3" with_reasons="$4" heading
+  heading="$stage"
+  [[ "$exit_code" =~ ^[0-9]+$ ]] && heading="${stage} — failed (exit ${exit_code})"
+  printf '<details><summary>%s</summary>\n\n%s\n\n</details>' "$heading" "$(extract_failed_tests "$stage" "$output" "$with_reasons")"
+}
+
+# truncate_failed_tests_block <block> <max_chars>
+# Clip a single rendered block by whole lines so it fits max_chars, keeping the
+# opening <details> line and closing </details> tag.
+truncate_failed_tests_block() {
+  local block="$1" max_chars="$2" out="" line first=true
+  local footer=$'- Listing truncated (size limit).\n\n</details>'
+  [[ ${#block} -le $max_chars ]] && { printf '%s' "$block"; return 0; }
+  while IFS= read -r line; do
+    if [[ "$first" == true ]]; then out="$line"; first=false; continue; fi
+    [[ "$line" == "</details>" ]] && break
+    (( ${#out} + ${#line} + 1 + ${#footer} + 1 <= max_chars )) || break
+    out="${out}"$'\n'"${line}"
+  done <<< "$block"
+  printf '%s\n%s' "$out" "$footer"
+}
+
+# append_failed_tests_block <var_name> <block>
+# Append one rendered stage block to an accumulator, bounded so a PR comment
+# stays within size limits. A first block larger than the cap is clipped by
+# whole lines; later blocks are appended whole (keeping <details> tags
+# balanced) and, once the cap would be exceeded, a single omission line is
+# added instead.
+FAILED_TESTS_DETAILS_MAX_CHARS=20000
+append_failed_tests_block() {
+  local var_name="$1" block="$2" current marker="- Further failed-stage listings omitted (size limit)."
+  current="${!var_name:-}"
+  if [[ -z "$current" ]]; then
+    printf -v "$var_name" '%s' "$(truncate_failed_tests_block "$block" "$FAILED_TESTS_DETAILS_MAX_CHARS")"
+    return 0
+  fi
+  if [[ $(( ${#current} + ${#block} )) -gt "$FAILED_TESTS_DETAILS_MAX_CHARS" ]]; then
+    case "$current" in
+      *"$marker") ;;
+      *) printf -v "$var_name" '%s\n\n%s' "$current" "$marker" ;;
+    esac
+    return 0
+  fi
+  printf -v "$var_name" '%s\n\n%s' "$current" "$block"
+}
+
+# stage_failures_are_transport_flakes <stage> <output>
+# Per-failure, fail-closed flake signature check for a cluster stage. The
+# whole output must carry no disqualifier, at least one failure must be
+# extracted (pytest short-summary FAILED/ERROR lines, or Playwright failure
+# headers), and every extracted failure's own reason must match the allowlist
+# without a disqualifier.
+stage_failures_are_transport_flakes() {
+  local stage="$1" output="$2" kind entries tag id reason count=0
+  case "$stage" in
+    "Integration (spot)"|"Integration (api-wired)") kind=pytest ;;
+    "E2E") kind=playwright ;;
+    *) return 1 ;;
+  esac
+  grep -Eqi "$TRANSPORT_FLAKE_DISQUALIFIER_RE" <<< "$output" && return 1
+  entries=$(parse_failed_test_entries "$kind" "$output")
+  while IFS=$'\t' read -r tag id reason; do
+    [[ "$tag" == E ]] || continue
+    count=$((count + 1))
+    [[ -n "$reason" ]] || return 1
+    is_environmental_transport_failure "$reason" || return 1
+  done <<< "$entries"
+  [[ "$count" -gt 0 ]]
+}
+
+# stage_transport_flake_categories <stage> <output>
+# Distinct allowlisted categories across a qualifying stage's failure reasons.
+stage_transport_flake_categories() {
+  local stage="$1" output="$2" kind entries tag id reason category categories=""
+  case "$stage" in
+    "Integration (spot)"|"Integration (api-wired)") kind=pytest ;;
+    "E2E") kind=playwright ;;
+    *) return 0 ;;
+  esac
+  entries=$(parse_failed_test_entries "$kind" "$output")
+  while IFS=$'\t' read -r tag id reason; do
+    [[ "$tag" == E && -n "$reason" ]] || continue
+    category=$(transport_flake_category "$reason")
+    case "|${categories}|" in
+      *"|${category}|"*) ;;
+      *) categories="${categories:+${categories}|}${category}" ;;
+    esac
+  done <<< "$entries"
+  printf '%s' "${categories//|/, }"
+}
+
+# record_post_pr_flake_classification <stage> <output>
+# A failed cluster stage is an environmental flake only when every failure is
+# an allowlisted transport signature AND this heartbeat's executor recorded the
+# same stage passing at exactly the commit the post-PR regression tested.
+# Changed paths are never a basis: the initial full regression has no
+# preceding fix.
 record_post_pr_flake_classification() {
   local stage="$1" output="$2"
   case "$stage" in
     "Integration (spot)"|"Integration (api-wired)"|"E2E")
-      if is_environmental_transport_failure "$output" && stage_has_unrelated_fix_path "$stage"; then
+      if stage_failures_are_transport_flakes "$stage" "$output" && \
+         heartbeat_stage_passed_at "$stage" "${POST_PR_REGRESSION_HEAD:-}"; then
         POST_PR_FLAKE_STAGES="${POST_PR_FLAKE_STAGES:+${POST_PR_FLAKE_STAGES}, }${stage}"
+        POST_PR_FLAKE_CATEGORIES="${POST_PR_FLAKE_CATEGORIES:+${POST_PR_FLAKE_CATEGORIES}; }${stage}: $(stage_transport_flake_categories "$stage" "$output")"
         return 0
       fi
       ;;
@@ -485,6 +903,7 @@ record_post_pr_flake_classification() {
   return 1
 }
 
+# post_result <branch> <stage> <exit> <output>
 post_result() {
   local branch="$1" stage="$2" exit_code="$3" output="$4"
   # Full post-PR regression deliberately emits one concise status comment per
@@ -503,7 +922,14 @@ post_result() {
 
 }=== ${stage} (exit ${exit_code}) ===
 $(tail_chars "$output" 14000)"
-      record_post_pr_flake_classification "$stage" "$output" || true
+      # The public listing carries only extracted, scrubbed identifiers and
+      # one-line reasons; flake notices carry identifiers only.
+      append_failed_tests_block POST_PR_FAILED_TEST_DETAILS \
+        "$(render_failed_tests_block "$stage" "$exit_code" "$output" true)"
+      if record_post_pr_flake_classification "$stage" "$output"; then
+        append_failed_tests_block POST_PR_FLAKE_TEST_IDS \
+          "$(render_failed_tests_block "$stage" "" "$output" false)"
+      fi
     fi
     return 0
   fi
@@ -519,6 +945,8 @@ stage_is_recorded() {
   local stage="$1" entry
   local -a _prauto_stage_entries
   IFS=',' read -r -a _prauto_stage_entries <<< "${POST_PR_FAILED_STAGES:-}"
+  # An empty array expansion is unbound under `set -u` in bash 3.2.
+  [[ "${#_prauto_stage_entries[@]}" -gt 0 ]] || return 1
   for entry in "${_prauto_stage_entries[@]}"; do
     entry="${entry# }"; entry="${entry% }"
     [[ "$entry" == "$stage" ]] && return 0
@@ -567,6 +995,9 @@ validate_targeted_verification() {
   actual_count=$(jq '.stages | length' <<< "$payload" 2>/dev/null) || return 1
   local stage_entry
   IFS=',' read -r -a _prauto_expected_stage_entries <<< "${POST_PR_FAILED_STAGES:-}"
+  # An attestation over zero recorded stages verifies nothing (and an empty
+  # array expansion is unbound under `set -u` in bash 3.2).
+  [[ "${#_prauto_expected_stage_entries[@]}" -gt 0 ]] || return 1
   for stage_entry in "${_prauto_expected_stage_entries[@]}"; do
     stage_entry="${stage_entry# }"; stage_entry="${stage_entry% }"
     [[ -n "$stage_entry" ]] || continue
@@ -574,22 +1005,39 @@ validate_targeted_verification() {
     jq -e --arg stage "$stage_entry" '[.stages[] | select(.name == $stage)] | length == 1' \
       >/dev/null 2>&1 <<< "$payload" || return 1
   done
+  [[ "$expected_count" -gt 0 ]] || return 1
   [[ "$actual_count" -eq "$expected_count" ]]
 }
 
 # post_post_pr_regression_comment <branch> <body>
 # Regression status belongs to the PR conversation, not its linked issue.
-# The body is deliberately caller-supplied summary text; never include command
-# output here, because test output can contain credentials or excessive detail.
+# The body is caller-supplied summary text. Beyond fixed status wording it may
+# carry only the bounded, secret-scrubbed failed-test listing produced by
+# extract_failed_tests and the sanitized targeted evidence from
+# targeted_failure_comment_evidence — never raw command output. The body is
+# passed through a private temporary file, not argv, so it is neither exposed
+# in the process table nor limited by argument size.
 post_post_pr_regression_comment() {
-  local branch="$1" body="$2"
+  local branch="$1" body="$2" body_dir rc=0
   get_pr_number_for_branch "$branch"
   if [[ -z "${BRANCH_PR_NUMBER:-}" ]]; then
     warn "No PR found for branch ${branch}; could not post regression status."
     return 1
   fi
-  if ! gh pr comment "$BRANCH_PR_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): ${body}" 2>/dev/null; then
+  if ! body_dir=$(mktemp -d); then
+    warn "Could not create a temp dir for the regression status on PR #${BRANCH_PR_NUMBER}."
+    return 1
+  fi
+  chmod 700 "$body_dir" 2>/dev/null || true
+  if ! printf 'prauto(%s): %s' "$PRAUTO_WORKER_ID" "$body" > "${body_dir}/body.md"; then
+    rm -rf "$body_dir"
+    warn "Could not write the regression status body for PR #${BRANCH_PR_NUMBER}."
+    return 1
+  fi
+  gh pr comment "$BRANCH_PR_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
+    --body-file "${body_dir}/body.md" 2>/dev/null || rc=$?
+  rm -rf "$body_dir"
+  if [[ "$rc" -ne 0 ]]; then
     warn "Failed to post regression status on PR #${BRANCH_PR_NUMBER}."
     return 1
   fi
@@ -623,7 +1071,7 @@ run_static_and_unit_regression() {
   fi
 
   [[ -d tests/unit ]] || { LOCAL_REGRESSION_EXIT=2; LOCAL_REGRESSION_REASON="tests/unit is missing"; return 0; }
-  exit_code=0; output=$(uv run pytest tests/unit/ --tb=short 2>&1) || exit_code=$?
+  exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" uv run pytest tests/unit/ --tb=short 2>&1) || exit_code=$?
   post_result "$branch" "Unit (Python)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
   if diff_touches src/frontend/; then
     exit_code=0; output=$(pnpm -C src/frontend test 2>&1) || exit_code=$?
@@ -633,11 +1081,14 @@ run_static_and_unit_regression() {
 }
 
 # acquire_required_dev_lock <issue> <purpose>
-# Sets REQUIRED_LOCK_OWNER.  Unlike historical pre-PR helpers, every failure is
-# a blocked result: a required regression must never become a passing skip.
+# Sets REQUIRED_LOCK_OWNER only once the lock is actually held, so a release
+# (including the heartbeat EXIT trap's) never targets a lock this worker does
+# not own. Every failure is a blocked result: a required regression must never
+# become a passing skip.
 acquire_required_dev_lock() {
   local issue_number="$1" purpose="$2" lock_code
-  REQUIRED_LOCK_OWNER="prauto-${PRAUTO_WORKER_ID}"
+  local owner="prauto-${PRAUTO_WORKER_ID}"
+  REQUIRED_LOCK_OWNER=""
   if ! resolve_dev_env; then regression_blocked "$issue_number" "dev env file is unavailable" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
   if ! dev_env_healthy "$DEV_ENV_FILE"; then regression_blocked "$issue_number" "dev cluster health/provisioning failed" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
   if ! curl -s --connect-timeout 2 "${DEV_LOCK_URL}/status" >/dev/null 2>&1; then
@@ -645,15 +1096,22 @@ acquire_required_dev_lock() {
   fi
   lock_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DEV_LOCK_URL}/acquire" \
     -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${REQUIRED_LOCK_OWNER}\", \"message\": \"prauto ${purpose} for issue #${issue_number}\"}")
+    -d "{\"owner\": \"${owner}\", \"message\": \"prauto ${purpose} for issue #${issue_number}\"}")
   if [[ "$lock_code" != 200 ]]; then regression_blocked "$issue_number" "dev-env lock acquisition returned HTTP ${lock_code}" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
+  REQUIRED_LOCK_OWNER="$owner"
   return 0
 }
 
+# release_required_dev_lock
+# Idempotent: the owner is cleared after one release attempt, so a later call
+# (e.g. from the heartbeat EXIT trap) is a no-op. Bounded so the trap cannot hang
+# on an unreachable lock endpoint.
 release_required_dev_lock() {
   [[ -n "${DEV_LOCK_URL:-}" && -n "${REQUIRED_LOCK_OWNER:-}" ]] || return 0
-  curl -s -X POST "${DEV_LOCK_URL}/release" -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${REQUIRED_LOCK_OWNER}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
+  local owner="$REQUIRED_LOCK_OWNER"
+  REQUIRED_LOCK_OWNER=""
+  curl -s --connect-timeout 5 --max-time 30 -X POST "${DEV_LOCK_URL}/release" -H "Content-Type: application/json" \
+    -d "{\"owner\": \"${owner}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
 }
 
 # run_full_cluster_regression <issue> <branch>
@@ -680,9 +1138,13 @@ run_full_cluster_regression() {
     fi
     return 0
   fi
-  exit_code=0; output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/spot/ --tb=short 2>&1) || exit_code=$?
+  # A session aborted at the integration harness health gate ran no test: it is
+  # infrastructure-blocked and ends this regression without recording a stage.
+  exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/spot/ --tb=short 2>&1) || exit_code=$?
+  if integration_health_abort_blocked "$issue_number" "$branch" "Integration (spot)" "$exit_code" "$output"; then CLUSTER_REGRESSION_EXIT=2; return 0; fi
   post_result "$branch" "Integration (spot)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || CLUSTER_REGRESSION_EXIT=1
-  exit_code=0; output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/api_wired/ --tb=short 2>&1) || exit_code=$?
+  exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/api_wired/ --tb=short 2>&1) || exit_code=$?
+  if integration_health_abort_blocked "$issue_number" "$branch" "Integration (api-wired)" "$exit_code" "$output"; then CLUSTER_REGRESSION_EXIT=2; return 0; fi
   post_result "$branch" "Integration (api-wired)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || CLUSTER_REGRESSION_EXIT=1
   # E2E reset-seeds independently and frontend deployment rolls the API, so it
   # must acquire after the integration group has fully released its lock.
@@ -718,13 +1180,24 @@ record_targeted_result() {
 
 }=== ${stage} (exit ${exit_code}) ===
 $(tail_chars "$output" 14000)"
+    append_failed_tests_block POST_PR_TARGETED_FAILED_TEST_DETAILS \
+      "$(render_failed_tests_block "$stage" "$exit_code" "$output" true)"
   fi
 }
 
 # Render bounded, secret-scrubbed executor evidence for a public PR comment.
 targeted_failure_comment_evidence() {
-  local safe
-  safe=$(scrub_secrets "$(tail_chars "${POST_PR_TARGETED_EVIDENCE:-}" 12000)")
+  local safe body max_chars=12000
+  # Scrub the complete evidence before truncating, so a cut can never split a
+  # secret into an unrecognizable fragment; drop the partial first line the
+  # cut leaves, then scrub the bounded text again.
+  safe=$(scrub_secrets "${POST_PR_TARGETED_EVIDENCE:-}")
+  if [[ ${#safe} -gt $max_chars ]]; then
+    body="${safe: -max_chars}"
+    [[ "$body" == *$'\n'* ]] && body="${body#*$'\n'}"
+    safe="(truncated — last ${#body} characters)"$'\n'"${body}"
+  fi
+  safe=$(scrub_secrets "$safe")
   safe=$(printf '%s' "$safe" | sed 's/```/`&#8203;``/g')
   printf '%s' "$safe"
 }
@@ -738,7 +1211,15 @@ run_targeted_post_pr_regression() {
   local issue_number="$1" branch="$2" output exit_code=0
   TARGETED_REGRESSION_EXIT=0
   POST_PR_TARGETED_PASSES=""; POST_PR_TARGETED_FAILURES=""; POST_PR_TARGETED_EVIDENCE=""
+  POST_PR_TARGETED_FAILED_TEST_DETAILS=""
   CURRENT_REGRESSION_BRANCH="$branch"
+  # A retry with nothing recorded to verify can never be readiness success.
+  local recorded_stages="${POST_PR_FAILED_STAGES:-}"
+  if [[ -z "${recorded_stages//[[:space:],]/}" ]]; then
+    TARGETED_REGRESSION_EXIT=2
+    regression_blocked "$issue_number" "targeted regression invoked with no recorded failed stages" "$branch"
+    return 0
+  fi
   require_pushed_head "$branch" || { TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "pushed branch head could not be verified" "$branch"; return 0; }
 
   # Local checks: dependency sync is setup, while every selected check is a
@@ -770,7 +1251,7 @@ run_targeted_post_pr_regression() {
     record_targeted_result "Static (E2E typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
   fi
   if stage_is_recorded "Unit (Python)"; then
-    exit_code=0; output=$(uv run pytest tests/unit/ --tb=short 2>&1) || exit_code=$?
+    exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" uv run pytest tests/unit/ --tb=short 2>&1) || exit_code=$?
     record_targeted_result "Unit (Python)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
   fi
   if stage_is_recorded "Unit (frontend)"; then
@@ -785,16 +1266,18 @@ run_targeted_post_pr_regression() {
     if ! acquire_required_dev_lock "$issue_number" "targeted regression API/integration"; then TARGETED_REGRESSION_EXIT=2; return 0; fi
     if ! deploy_branch_api "$DEV_ENV_FILE"; then
       release_required_dev_lock
-      if [[ "$DEPLOY_FAILURE_KIND" == "infrastructure" ]]; then TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "API deploy could not reach or operate the development environment" "$branch"
+      if [[ "$DEPLOY_FAILURE_KIND" == "infrastructure" ]]; then TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "API deploy could not reach or operate the development environment" "$branch"; return 0
       else record_targeted_result "Deploy (API)" 1 "Branch API build/deploy failed."; TARGETED_REGRESSION_EXIT=1; fi
     else
       stage_is_recorded "Deploy (API)" && record_targeted_result "Deploy (API)" 0 "Branch API build/deploy passed."
       if stage_is_recorded "Integration (spot)"; then
-        exit_code=0; output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/spot/ --tb=short 2>&1) || exit_code=$?
+        exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/spot/ --tb=short 2>&1) || exit_code=$?
+        if integration_health_abort_blocked "$issue_number" "$branch" "Integration (spot)" "$exit_code" "$output"; then TARGETED_REGRESSION_EXIT=2; return 0; fi
         record_targeted_result "Integration (spot)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
       fi
       if stage_is_recorded "Integration (api-wired)"; then
-        exit_code=0; output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/api_wired/ --tb=short 2>&1) || exit_code=$?
+        exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" uv run pytest tests/integration/api_wired/ --tb=short 2>&1) || exit_code=$?
+        if integration_health_abort_blocked "$issue_number" "$branch" "Integration (api-wired)" "$exit_code" "$output"; then TARGETED_REGRESSION_EXIT=2; return 0; fi
         record_targeted_result "Integration (api-wired)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
       fi
       release_required_dev_lock
@@ -805,7 +1288,7 @@ run_targeted_post_pr_regression() {
     if ! acquire_required_dev_lock "$issue_number" "targeted regression frontend/E2E"; then TARGETED_REGRESSION_EXIT=2; return 0; fi
     if ! deploy_branch_frontend "$DEV_ENV_FILE"; then
       release_required_dev_lock
-      if [[ "$DEPLOY_FAILURE_KIND" == "infrastructure" ]]; then TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "frontend deploy could not reach or operate the development environment" "$branch"
+      if [[ "$DEPLOY_FAILURE_KIND" == "infrastructure" ]]; then TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "frontend deploy could not reach or operate the development environment" "$branch"; return 0
       else record_targeted_result "Deploy (frontend)" 1 "Branch frontend build/deploy failed."; TARGETED_REGRESSION_EXIT=1; fi
     else
       stage_is_recorded "Deploy (frontend)" && record_targeted_result "Deploy (frontend)" 0 "Branch frontend build/deploy passed."
@@ -836,6 +1319,10 @@ run_post_pr_regression() {
   POST_PR_REGRESSION_SUMMARY_MODE=true
   POST_PR_FAILED_STAGES=""; POST_PR_FAILURE_EVIDENCE=""
   POST_PR_FLAKE_STAGES=""; POST_PR_NON_FLAKE_STAGES=""; POST_PR_FLAKE_HEALTH_BEFORE=false
+  POST_PR_FAILED_TEST_DETAILS=""; POST_PR_FLAKE_TEST_IDS=""; POST_PR_FLAKE_CATEGORIES=""
+  # The commit every initial-regression stage tests; finalize_issue_pr has
+  # just pushed it. The flake basis compares recorded passes against it.
+  POST_PR_REGRESSION_HEAD=$(git rev-parse HEAD 2>/dev/null || printf '')
   run_static_and_unit_regression "$branch"
   if [[ "$LOCAL_REGRESSION_EXIT" -eq 2 ]]; then
     regression_blocked "$issue_number" "$LOCAL_REGRESSION_REASON" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
@@ -848,18 +1335,33 @@ run_post_pr_regression() {
     fi
     POST_PR_REGRESSION_SUMMARY_MODE=false; return 0
   fi
-  # A flake shortcut is deliberately narrow: every failed stage must have been
-  # classified from a deterministic transport allowlist and unrelated-path
-  # basis, and the real dev environment must be healthy both before and after.
+  # A flake shortcut is deliberately narrow: every failure in every failed stage
+  # must match the deterministic transport allowlist, each such stage must have
+  # an executor-recorded pass from earlier in this heartbeat, bound to the
+  # deployed artifact, at POST_PR_REGRESSION_HEAD, and the real dev
+  # environment must be healthy both before and after.
+  # The post-stage check is a probe only; it never provisions a cluster.
   # No worker is dispatched on this path, and no raw failure output is posted.
   if [[ -n "$POST_PR_FLAKE_STAGES" && -z "$POST_PR_NON_FLAKE_STAGES" && \
-        "$POST_PR_FLAKE_HEALTH_BEFORE" == true ]] && dev_env_healthy "$DEV_ENV_FILE"; then
-    if ! post_post_pr_regression_comment "$branch" "Initial full regression reported environmental transport failures in ${POST_PR_FLAKE_STAGES}. Pre- and post-test dev-environment health checks passed; the changed paths are unrelated to those stages. Classified as an environmental flake; no coding agent was dispatched."; then
+        "$POST_PR_FLAKE_HEALTH_BEFORE" == true && -n "$POST_PR_REGRESSION_HEAD" && \
+        "$(git rev-parse HEAD 2>/dev/null || printf '')" == "$POST_PR_REGRESSION_HEAD" ]] && \
+     require_pushed_head "$branch" && dev_env_probe_healthy "${DEV_ENV_FILE:-}"; then
+    local flake_ids_section=""
+    [[ -n "$POST_PR_FLAKE_TEST_IDS" ]] && flake_ids_section="
+
+Failing test identifiers:
+
+${POST_PR_FLAKE_TEST_IDS}"
+    if ! post_post_pr_regression_comment "$branch" "Initial full regression reported environmental transport failures in ${POST_PR_FLAKE_STAGES} (allowlisted categories — ${POST_PR_FLAKE_CATEGORIES}). Pre- and post-test dev-environment health checks passed; the same stages passed earlier in this heartbeat against commit ${POST_PR_REGRESSION_HEAD:0:12}. Classified as an environmental flake; no coding agent was dispatched.${flake_ids_section}"; then
       regression_blocked "$issue_number" "environmental-flake status notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
     fi
     POST_PR_REGRESSION_SUMMARY_MODE=false; return 0
   fi
-  if ! post_post_pr_regression_comment "$branch" "Initial full post-PR regression failed: ${POST_PR_FAILED_STAGES:-an unclassified branch-attributable stage}. One turn-bounded coding-agent fix-and-targeted-test loop will retry only these failed stages."; then
+  if ! post_post_pr_regression_comment "$branch" "Initial full post-PR regression failed: ${POST_PR_FAILED_STAGES:-an unclassified branch-attributable stage}. One turn-bounded coding-agent fix-and-targeted-test loop will retry only these failed stages.
+
+Failed tests:
+
+${POST_PR_FAILED_TEST_DETAILS:-- No failing test identifiers were recorded.}"; then
     regression_blocked "$issue_number" "required regression failure notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
   fi
   info "Initial full regression failed; invoking one targeted worker fix loop."
@@ -895,6 +1397,9 @@ run_post_pr_regression() {
     regression_blocked "$issue_number" "pushed branch head could not be verified after targeted fix" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
   fi
   run_targeted_post_pr_regression "$issue_number" "$branch"
+  # Exit 2 has already posted its infrastructure-blocked notice and established
+  # prauto:wip; it is never readiness success and never a code-failure report.
+  if [[ "$TARGETED_REGRESSION_EXIT" -eq 2 ]]; then POST_PR_REGRESSION_SUMMARY_MODE=false; return 1; fi
   if [[ "$TARGETED_REGRESSION_EXIT" -eq 0 ]]; then
     if ! post_post_pr_regression_comment "$branch" "Initial full regression failures: ${POST_PR_FAILED_STAGES}. Targeted retry passed on the current pushed PR head: ${POST_PR_TARGETED_PASSES}. No second full regression was run."; then
       regression_blocked "$issue_number" "required targeted regression success notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
@@ -904,7 +1409,11 @@ run_post_pr_regression() {
   regression_set_wip "$issue_number" "$branch"
   local targeted_evidence
   targeted_evidence=$(targeted_failure_comment_evidence)
-  post_post_pr_regression_comment "$branch" "Initial full regression failures: ${POST_PR_FAILED_STAGES}. Targeted retry still failed: ${POST_PR_TARGETED_FAILURES:-an infrastructure/setup condition}. The PR remains in prauto:wip.
+  post_post_pr_regression_comment "$branch" "Initial full regression failures: ${POST_PR_FAILED_STAGES}. Targeted retry still failed: ${POST_PR_TARGETED_FAILURES:-an unrecorded stage}. The PR remains in prauto:wip.
+
+Failed tests:
+
+${POST_PR_TARGETED_FAILED_TEST_DETAILS:-- No failing test identifiers were recorded.}
 
 <details><summary>Sanitized executor evidence</summary>
 
@@ -1011,7 +1520,16 @@ run_integration_test_fix() {
     gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — integration test fix loop: attempt ${attempt}/${max_retries}" \
       2>/dev/null || true
+    local tested_head
+    tested_head=$(executor_test_head)
     run_integration_groups "$DEV_ENV_FILE"
+    # Executor-observed passes only, and only as evidence for the artifact that
+    # ran: the clean tested commit must be the deployed branch API and HEAD must
+    # not have moved during the run. A missing group directory is a skip.
+    if [[ -n "$tested_head" && "$tested_head" == "${DEPLOYED_API_SHA:-}" && "$(current_head)" == "$tested_head" ]]; then
+      [[ -d tests/integration/spot && "$INTEG_SPOT_EXIT" -eq 0 ]] && record_heartbeat_stage_pass "Integration (spot)" "$tested_head"
+      [[ -d tests/integration/api_wired && "$INTEG_API_WIRED_EXIT" -eq 0 ]] && record_heartbeat_stage_pass "Integration (api-wired)" "$tested_head"
+    fi
     [[ "$INTEG_EXIT" -eq 0 ]] && { info "Integration tests passed on attempt ${attempt}."; break; }
 
     info "Integration tests failed (spot: ${INTEG_SPOT_EXIT}, api-wired: ${INTEG_API_WIRED_EXIT})."
@@ -1054,7 +1572,7 @@ classify_deploy_failure() {
   # Helm's own schema-validation wording puts "schema" before "chart" (e.g.
   # "values don't meet the specifications of the schema(s) in the following
   # chart(s):"), so both orders are matched.
-  if printf '%s' "$deploy_output" | grep -Eqi 'failed to solve.*(Dockerfile|COPY|RUN)|Dockerfile.*(error|failed)|(^|[^[:alpha:]])(tsc|typescript|eslint|mypy|ruff)[^[:alpha:]].*(error|failed)|chart.*(schema|validation)|(schema|validation).*chart|values.*(invalid|required|must be)|template.*(executing|error).*\.yaml'; then
+  if grep -Eqi 'failed to solve.*(Dockerfile|COPY|RUN)|Dockerfile.*(error|failed)|(^|[^[:alpha:]])(tsc|typescript|eslint|mypy|ruff)[^[:alpha:]].*(error|failed)|chart.*(schema|validation)|(schema|validation).*chart|values.*(invalid|required|must be)|template.*(executing|error).*\.yaml' <<< "$deploy_output"; then
     DEPLOY_FAILURE_KIND="branch"
   fi
 }
@@ -1063,16 +1581,22 @@ deploy_branch_api() {
   local env_file="$1"
   DEPLOY_FAILURE_KIND="infrastructure"
   local install_script="${WORKTREE_DIR:-}/helm-charts/bin/install.sh"
-  [[ -z "${WORKTREE_DIR:-}" ]] || [[ ! -f "$install_script" ]] && { warn "Branch install.sh not found. Cannot deploy API."; return 1; }
+  [[ -z "${WORKTREE_DIR:-}" ]] || [[ ! -f "$install_script" ]] && { DEPLOYED_API_SHA=""; DEPLOYED_FRONTEND_SHA=""; warn "Branch install.sh not found. Cannot deploy API."; return 1; }
   local tool
   for tool in kubectl helm docker; do
-    command -v "$tool" >/dev/null 2>&1 || { warn "${tool} not available. Cannot deploy API."; return 1; }
+    command -v "$tool" >/dev/null 2>&1 || { DEPLOYED_API_SHA=""; DEPLOYED_FRONTEND_SHA=""; warn "${tool} not available. Cannot deploy API."; return 1; }
   done
 
+  # Bind the artifact to the clean commit it is built from. An API upgrade
+  # removes the cluster frontend, so the frontend binding is always cleared.
+  local build_head
+  build_head=$(executor_test_head)
+  DEPLOYED_API_SHA=""; DEPLOYED_FRONTEND_SHA=""
   info "Building and deploying the branch API..."
   local deploy_output deploy_exit=0
   deploy_output=$(bash "$install_script" --profile dev --components api --env-file "$env_file" 2>&1) || deploy_exit=$?
   if [[ "$deploy_exit" -ne 0 ]]; then classify_deploy_failure "$deploy_output"; warn "API deploy failed (exit ${deploy_exit}, ${DEPLOY_FAILURE_KIND}):"; warn "$deploy_output"; return 1; fi
+  DEPLOYED_API_SHA="$build_head"
   info "Branch API deployed and rolled."
   return 0
 }
@@ -1084,27 +1608,34 @@ deploy_branch_frontend() {
   local install_script="${WORKTREE_DIR:-}/helm-charts/bin/install.sh"
   local ns
   ns=$(env_file_value "$env_file" "DATASPOKE_KUBE_DATASPOKE_NAMESPACE"); ns="${ns:-dataspoke-01}"
-  [[ -z "${WORKTREE_DIR:-}" ]] || [[ ! -f "$install_script" ]] && { warn "Branch install.sh not found. Cannot deploy frontend."; return 1; }
+  [[ -z "${WORKTREE_DIR:-}" ]] || [[ ! -f "$install_script" ]] && { DEPLOYED_FRONTEND_SHA=""; warn "Branch install.sh not found. Cannot deploy frontend."; return 1; }
   local tool
   for tool in kubectl helm docker; do
-    command -v "$tool" >/dev/null 2>&1 || { warn "${tool} not available. Cannot deploy frontend."; return 1; }
+    command -v "$tool" >/dev/null 2>&1 || { DEPLOYED_FRONTEND_SHA=""; warn "${tool} not available. Cannot deploy frontend."; return 1; }
   done
 
+  # Bind the artifact to the clean commit it is built from. The umbrella
+  # upgrade also rolls the API pod, so a failed frontend deploy clears the API
+  # binding as well; a successful one leaves the API image binding intact.
+  local build_head
+  build_head=$(executor_test_head)
+  DEPLOYED_FRONTEND_SHA=""
   info "Building and deploying the branch frontend..."
   local deploy_output deploy_exit=0
   deploy_output=$(bash "$install_script" --profile dev --components frontend --env-file "$env_file" 2>&1) || deploy_exit=$?
-  if [[ "$deploy_exit" -ne 0 ]]; then classify_deploy_failure "$deploy_output"; warn "Frontend deploy failed (exit ${deploy_exit}, ${DEPLOY_FAILURE_KIND}):"; warn "$deploy_output"; return 1; fi
+  if [[ "$deploy_exit" -ne 0 ]]; then DEPLOYED_API_SHA=""; classify_deploy_failure "$deploy_output"; warn "Frontend deploy failed (exit ${deploy_exit}, ${DEPLOY_FAILURE_KIND}):"; warn "$deploy_output"; return 1; fi
 
   info "Forcing a frontend rollout restart..."
-  kubectl rollout restart deployment/dataspoke-frontend -n "$ns" >/dev/null 2>&1 || { DEPLOY_FAILURE_KIND="infrastructure"; warn "Could not restart frontend in ${ns}."; return 1; }
+  kubectl rollout restart deployment/dataspoke-frontend -n "$ns" >/dev/null 2>&1 || { DEPLOYED_API_SHA=""; DEPLOY_FAILURE_KIND="infrastructure"; warn "Could not restart frontend in ${ns}."; return 1; }
 
   local deployment status_exit
   for deployment in dataspoke-frontend dataspoke-api; do
     info "Waiting for ${deployment} rollout..."
     status_exit=0
     kubectl rollout status "deployment/${deployment}" -n "$ns" --timeout=5m >/dev/null 2>&1 || status_exit=$?
-    [[ "$status_exit" -ne 0 ]] && { DEPLOY_FAILURE_KIND="infrastructure"; warn "${deployment} did not become ready in ${ns}."; return 1; }
+    [[ "$status_exit" -ne 0 ]] && { DEPLOYED_API_SHA=""; DEPLOY_FAILURE_KIND="infrastructure"; warn "${deployment} did not become ready in ${ns}."; return 1; }
   done
+  DEPLOYED_FRONTEND_SHA="$build_head"
   info "Branch frontend deployed and rolled."
   return 0
 }
@@ -1165,10 +1696,21 @@ run_e2e_test_fix() {
     deployed=true
 
     info "Running E2E tests..."
+    local tested_head
+    tested_head=$(executor_test_head)
     e2e_exit=0
     e2e_output=$(ENV_FILE="$DEV_ENV_FILE" DATASPOKE_DEV_LOCK_PREACQUIRED=1 with_dev_env "$DEV_ENV_FILE" \
       pnpm -C tests/e2e test 2>&1) || e2e_exit=$?
-    [[ "$e2e_exit" -eq 0 ]] && { info "E2E tests passed on attempt ${attempt}."; break; }
+    if [[ "$e2e_exit" -eq 0 ]]; then
+      # Evidence only when both exercised artifacts (frontend and the API it
+      # calls) were deployed from the clean tested commit and HEAD is unchanged.
+      if [[ -n "$tested_head" && "$tested_head" == "${DEPLOYED_FRONTEND_SHA:-}" && \
+            "$tested_head" == "${DEPLOYED_API_SHA:-}" && "$(current_head)" == "$tested_head" ]]; then
+        record_heartbeat_stage_pass "E2E" "$tested_head"
+      fi
+      info "E2E tests passed on attempt ${attempt}."
+      break
+    fi
 
     info "E2E tests failed (exit ${e2e_exit})."
     if [[ "$attempt" -lt "$max_retries" ]]; then

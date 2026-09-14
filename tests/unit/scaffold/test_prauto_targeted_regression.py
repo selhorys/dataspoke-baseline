@@ -49,6 +49,15 @@ def _control_flow_harness(*, initial_failure: bool, targeted_exit: int = 0) -> s
         if initial_failure
         else ":"
     )
+    # targeted_exit == 2 mirrors run_targeted_post_pr_regression's own
+    # infrastructure-block path (e.g. "no recorded failed stages", a pushed-head
+    # mismatch, or an E2E setup failure): the real function calls
+    # regression_blocked itself and never records a targeted pass/failure.
+    targeted_body = (
+        'regression_blocked "$1" "targeted regression could not be verified" "$2"'
+        if targeted_exit == 2
+        else 'POST_PR_TARGETED_PASSES="Static (ruff)"; POST_PR_TARGETED_FAILURES="Static (ruff)"'
+    )
     return _source_phases() + f"""
     branch_is_code_affecting() {{ return 0; }}
     run_static_and_unit_regression() {{
@@ -72,11 +81,12 @@ def _control_flow_harness(*, initial_failure: bool, targeted_exit: int = 0) -> s
     run_targeted_post_pr_regression() {{
       echo targeted >> "$EVENTS"
       TARGETED_REGRESSION_EXIT={targeted_exit}
-      POST_PR_TARGETED_PASSES="Static (ruff)"
-      POST_PR_TARGETED_FAILURES="Static (ruff)"
+      {targeted_body}
     }}
     regression_set_wip() {{ echo wip >> "$EVENTS"; return 0; }}
     regression_blocked() {{ echo blocked:$2 >> "$EVENTS"; return 0; }}
+    regression_ready() {{ echo ready >> "$EVENTS"; return 0; }}
+    set_pr_review_label() {{ echo review-label >> "$EVENTS"; return 0; }}
     run_post_pr_regression 179 prauto/I-179
     """
 
@@ -168,13 +178,13 @@ def test_require_pushed_head_rejects_remote_head_mismatch(tmp_path: Path) -> Non
     assert "local HEAD and origin/prauto/I-179 do not match" in result.stdout
 
 
-@pytest.mark.parametrize("targeted_exit", [1, 2])
-def test_targeted_failure_or_infrastructure_block_keeps_pr_wip(
-    tmp_path: Path, targeted_exit: int
-) -> None:
+def test_targeted_failure_keeps_pr_wip_with_code_failure_report(tmp_path: Path) -> None:
+    """spec: AI_PRAUTO.md §Stage 5 -- Full regression and targeted-retry readiness gate
+    (post-PR) -- 'If executor-targeted verification exposes a new branch-attributable
+    failing stage, it reports that failure explicitly and leaves the PR in prauto:wip.'"""
     events = tmp_path / "events"
     result = _run(
-        _control_flow_harness(initial_failure=True, targeted_exit=targeted_exit),
+        _control_flow_harness(initial_failure=True, targeted_exit=1),
         env={"EVENTS": str(events)},
     )
 
@@ -184,3 +194,37 @@ def test_targeted_failure_or_infrastructure_block_keeps_pr_wip(
     assert lines.count("full-cluster") == 1
     assert any("Targeted retry still failed: Static (ruff)." in line for line in lines)
     assert any("Sanitized executor evidence" in line for line in lines)
+
+
+def test_targeted_infrastructure_block_keeps_pr_wip_without_code_failure_report(
+    tmp_path: Path,
+) -> None:
+    """spec: AI_PRAUTO.md §Stage 5 -- Full regression and targeted-retry readiness
+    gate (post-PR) -- 'A targeted retry with no recorded failed stages is
+    infrastructure-blocked, is never readiness success, and never applies
+    prauto:review.' (See also the infrastructure-blocked paragraph in
+    §Deterministic environmental-flake exception: 'A provisioning, health-check,
+    lock, or local setup failure is infrastructure-blocked: the executor posts a
+    distinct brief blocked comment, leaves the issue and PR in prauto:wip, and
+    retries the blocked regression or targeted stage on a later heartbeat.') A
+    blocked targeted retry is never reported as a "still failed" code result, and
+    posts no success comment either."""
+    events = tmp_path / "events"
+    result = _run(
+        _control_flow_harness(initial_failure=True, targeted_exit=2),
+        env={"EVENTS": str(events)},
+    )
+
+    assert result.returncode == 1
+    lines = events.read_text().splitlines()
+    assert lines.count("full-cluster") == 1
+    assert any(line.startswith("blocked:") for line in lines)
+    # An infrastructure-blocked targeted retry is "never readiness success, and
+    # never applies prauto:review" (spec §Stage 5): regression_ready (which gates
+    # set_pr_review_label) must never run on this path, nor may the "still failed"
+    # code-failure report or a targeted-retry success comment.
+    assert "ready" not in lines
+    assert "review-label" not in lines
+    assert not any("Targeted retry" in line for line in lines)
+    assert not any("Full post-PR regression passed" in line for line in lines)
+    assert any(line.startswith("comment:") for line in lines)

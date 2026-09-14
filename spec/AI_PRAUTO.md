@@ -624,12 +624,17 @@ api-wired remain separate groups; E2E remains strictly after both. The executor 
 artifacts needed to exercise all three cluster-dependent suites, regardless of whether a narrower
 pre-PR selection ran.
 
-The initial full regression is against the exact pushed PR head. The executor posts no per-stage
-output or collapsible result comment. A clean initial run posts one brief PR success comment and
-permits `prauto:review`. Subject only to the deterministic environmental-flake exception below, a
+The initial full regression is against the exact pushed PR head. The executor posts no raw
+per-stage output. A clean initial run posts one brief PR success comment and permits
+`prauto:review`. Subject only to the deterministic environmental-flake exception below, a
 branch-attributable static, unit, spot, api-wired, E2E, or branch-deploy failure keeps the PR out
-of `prauto:review`. The executor records the failed stage names and their evidence, posts a brief
-failure comment, and starts the applicable coding-agent fix-and-test loop.
+of `prauto:review`. The executor records the failed stage names and their evidence, and posts a
+failure comment that lists, for each failed stage, the failing test identifiers — pytest node IDs,
+Playwright test titles, or static-check diagnostics as `path:line` entries — each with a one-line
+reason, bounded in size and secret-scrubbed. A deploy-stage failure names the stage only, since it
+carries no test identifiers to extract. When no identifiers can be extracted from a failed stage's
+output, the comment says so for that stage rather than omitting it. The executor then starts the
+applicable coding-agent fix-and-test loop.
 
 The coding-agent fix-and-test loop is bounded by the configured agent turn limit; it has no
 separate `PRAUTO_REGRESSION_FIX_MAX_RETRIES` budget. In each turn, the agent diagnoses only the
@@ -645,10 +650,12 @@ ordering. It reacquires the required dev-environment lock and reruns only the re
 cluster stages against the exact pushed fix head; static and unit stages are likewise rerun only
 when recorded as failed. A successful targeted retry is readiness success once every recorded
 failed stage has passed with exact-head evidence. The executor does not start another full
-post-PR regression after that success. If executor-targeted verification exposes a new
-branch-attributable failing stage, it reports that failure explicitly and leaves the PR in
-`prauto:wip`; it does not launch another coding-agent fix loop. An exhausted agent turn limit also
-leaves the PR in `prauto:wip` rather than looping forever.
+post-PR regression after that success. A targeted retry with no recorded failed stages is
+infrastructure-blocked, is never readiness success, and never applies `prauto:review`. If
+executor-targeted verification exposes a new branch-attributable failing stage, it reports that
+failure explicitly and leaves the PR in `prauto:wip`; it does not launch another coding-agent fix
+loop. An exhausted agent turn limit also leaves the PR in `prauto:wip` rather than looping
+forever.
 
 ### Deterministic environmental-flake exception
 
@@ -661,10 +668,13 @@ following conditions hold:
      `i/o timeout`, `context deadline exceeded`, `TLS handshake timeout`, or `connection reset`;
    - Kubernetes reports a pod as `Evicted`, `Preempted`, or `NodeNotReady`; or
    - the configured ingress or DNS client reports `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`,
-     `EAI_AGAIN`, `temporary failure in name resolution`, `upstream reset`, or an ingress `502`,
-     `503`, or `504`.
+     `EAI_AGAIN`, `temporary failure in name resolution`, `upstream reset`, an ingress `502`,
+     `503`, or `504`, `ConnectionRefusedError`, `Connection refused`, `Connect call failed`, httpx
+     `ConnectError`, or `All connection attempts failed`.
 3. The executor's required health check passes both immediately before and immediately after the
-   failed stage, using the same worker environment and lock discipline.
+   failed stage, using the same worker environment and lock discipline. This post-stage check is a
+   probe only — it never provisions or reinstalls the cluster; a failing post-stage probe makes the
+   failure non-flake.
 4. The failed stage is unrelated to paths changed by the current fix, or that same stage passed
    earlier in the same heartbeat.
 5. The output contains no test assertion failure, API contract/schema mismatch, or application
@@ -677,23 +687,29 @@ earlier same-heartbeat pass; the absence of fix paths is not itself evidence of 
 The allowlist is exhaustive: an unrecognized message, an ambiguous source for a transport status,
 or any failure outside these conditions remains blocking. A classified flake is non-blocking for
 readiness only; it is not recorded as a passed test and never dispatches a coding agent. The
-executor posts a visible, sanitized PR comment naming the stage, allowlisted category, before/after
-health-check results, and path-or-earlier-pass basis. The comment excludes raw logs, credentials,
-URLs, tokens, dataset values, and other environment-sensitive output. A targeted-retry failure
-posts a bounded, secret-scrubbed executor-evidence block so reviewers can distinguish test,
-deployment, and transport conditions without accessing local artifacts.
+executor posts a visible, sanitized PR comment naming the stage, allowlisted category,
+before/after health-check results, and path-or-earlier-pass basis. The comment excludes raw logs,
+credentials, URLs, tokens, dataset values, and other environment-sensitive output, and may name
+the failing test identifiers, bounded and secret-scrubbed, without per-test reasons. A
+targeted-retry failure posts a bounded, secret-scrubbed executor-evidence block so reviewers can
+distinguish test, deployment, and transport conditions without accessing local artifacts,
+carrying the same per-stage failed-test listing described above for the stages that still fail
+after the retry.
 
 The final PR readiness comment reports whether the initial full regression passed directly, lists
 the initial failed stages and targeted retry stages that later passed, and identifies any ignored
 environmental flake. This makes partial-retry or flake-qualified success visible without
-representing it as an unqualified clean full-regression result. A
-provisioning, health-check, lock, or local setup failure is infrastructure-blocked: the executor
-posts a distinct brief blocked comment, leaves the issue and PR in `prauto:wip`, and retries the
-blocked regression or targeted stage on a later heartbeat without promising a code fix or asking a
-worker to change code. Only initial full-regression success, completed targeted-retry success, or
-an otherwise-ready result qualified solely by classified environmental flakes permits the executor
-to apply `prauto:review`. Excluded, non-code PRs may bypass this initial full regression but still
-retain any selected pre-PR verification required by their changed paths.
+representing it as an unqualified clean full-regression result. A provisioning, health-check,
+lock, or local setup failure is infrastructure-blocked: the executor posts a distinct brief
+blocked comment, leaves the issue and PR in `prauto:wip`, and retries the blocked regression or
+targeted stage on a later heartbeat without promising a code fix or asking a worker to change
+code. A spot or api-wired stage whose integration session-start health gate (`require_server` in
+`tests/integration/conftest.py`) aborts before any test runs is likewise infrastructure-blocked —
+never branch-attributable or a flake — and dispatches no coding agent. Only initial
+full-regression success, completed targeted-retry success, or an otherwise-ready result qualified
+solely by classified environmental flakes permits the executor to apply `prauto:review`. Excluded,
+non-code PRs may bypass this initial full regression but still retain any selected pre-PR
+verification required by their changed paths.
 
 The cluster provisioned by a heartbeat remains available through PR creation, the initial post-PR
 regression, and any targeted retries. The heartbeat tears down only the cluster it provisioned,

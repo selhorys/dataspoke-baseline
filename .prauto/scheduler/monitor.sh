@@ -102,12 +102,12 @@ run_text() {
 classify() {
   local run
   run=$(run_text)
-  if printf '%s' "$run" | grep -q "quota/session limit\|Quota-pause marker posted"; then
+  if grep -q "quota/session limit\|Quota-pause marker posted" <<< "$run"; then
     echo "quota-paused"; return 0
   fi
-  if printf '%s' "$run" | grep -q "No coding agent available"; then echo "no-agent"; return 0; fi
-  if printf '%s' "$run" | grep -q "waiting for plan approval"; then echo "waiting-approval"; return 0; fi
-  if printf '%s' "$run" | grep -q "Heartbeat complete"; then echo "done"; return 0; fi
+  if grep -q "No coding agent available" <<< "$run"; then echo "no-agent"; return 0; fi
+  if grep -q "waiting for plan approval" <<< "$run"; then echo "waiting-approval"; return 0; fi
+  if grep -q "Heartbeat complete" <<< "$run"; then echo "done"; return 0; fi
   echo "unknown"
 }
 

@@ -2,27 +2,125 @@
 # Source this file — do not execute directly.
 # Requires: helpers.sh, state.sh, agent.sh, config loaded, gh/git available.
 
+# scrub_secret_values
+# Print, one per line, the exact secret values scrub_secrets redacts literally:
+# the worker's own GH_TOKEN / ANTHROPIC_API_KEY, plus credential-bearing
+# entries of the dev env file(s). The env file is parsed as data and never
+# sourced, decoded the way helm-charts/bin/lib/helpers.sh writes and reads it:
+# optional `export ` prefix, a single-quoted value with '\'' escapes reversed,
+# a double-quoted value, or an unquoted value with any trailing ` # comment`
+# stripped. Only a key that names a credential (length >= 8, or >= 6 for
+# PASS/PASSWORD keys), a value embedding URL userinfo, or a generated-looking
+# value (SCRUB_GENERATED_VALUE_RE, not a slug) is redacted, so plain
+# configuration (namespaces, database, model, and cluster names) stays legible.
+SCRUB_CREDENTIAL_KEY_RE='(PASSWORD|PASSWD|PASS|SECRET|TOKEN|API_?KEY|_KEY$|PAT$|CREDENTIAL|AUTH|DSN|PRIVATE|SALT|SIGNING|CERT)'
+# A generated secret whatever its key: >= 16 hex/base64/base64url characters.
+# A lowercase hyphen/underscore slug (cluster names, namespaces, project ids)
+# has the same alphabet but is configuration, so it is exempt.
+SCRUB_GENERATED_VALUE_RE='^[A-Za-z0-9+/=_-]{16,}$'
+SCRUB_SLUG_VALUE_RE='^[a-z0-9]+([-_][a-z0-9]+)+$'
+scrub_secret_values() {
+  local file line key upper_key value min_len
+  local sq="'" sq_escaped="'\\''" userinfo_re='://[^@/]*:[^@/]+@'
+  local -a files=()
+  [[ -n "${DEV_ENV_FILE:-}" ]] && files+=("$DEV_ENV_FILE")
+  if [[ -n "${REPO_DIR:-}" ]]; then
+    local configured="${PRAUTO_DEV_ENV_FILE:-helm-charts/.env.dev}"
+    [[ "$configured" == /* ]] || configured="${REPO_DIR}/${configured}"
+    files+=("$configured")
+  elif [[ "${PRAUTO_DEV_ENV_FILE:-}" == /* ]]; then
+    files+=("$PRAUTO_DEV_ENV_FILE")
+  fi
+  [[ -n "${GH_TOKEN:-}" ]] && printf '%s\n' "$GH_TOKEN"
+  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && printf '%s\n' "$ANTHROPIC_API_KEY"
+  [[ "${#files[@]}" -gt 0 ]] || return 0
+  for file in "${files[@]}"; do
+    [[ -f "$file" && -r "$file" ]] || continue
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%$'\r'}"
+      line="${line#"${line%%[![:space:]]*}"}"
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      [[ "$line" =~ ^export[[:space:]]+(.*)$ ]] && line="${BASH_REMATCH[1]}"
+      [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+      key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+      if [[ ${#value} -ge 2 && "$value" == "$sq"*"$sq" ]]; then
+        value="${value:1:${#value}-2}"
+        value="${value//"$sq_escaped"/$sq}"
+      elif [[ ${#value} -ge 2 && "$value" == \"*\" ]]; then
+        value="${value:1:${#value}-2}"
+      else
+        value="${value%%[[:space:]]#*}"
+        value="${value%"${value##*[![:space:]]}"}"
+      fi
+      [[ -n "$value" ]] || continue
+      if [[ "$value" =~ $userinfo_re ]] || \
+         [[ "$value" =~ $SCRUB_GENERATED_VALUE_RE && ! "$value" =~ $SCRUB_SLUG_VALUE_RE ]]; then
+        printf '%s\n' "$value"
+        continue
+      fi
+      upper_key=$(tr '[:lower:]' '[:upper:]' <<< "$key")
+      [[ "$upper_key" =~ $SCRUB_CREDENTIAL_KEY_RE ]] || continue
+      min_len=8
+      [[ "$upper_key" == *PASS* ]] && min_len=6
+      [[ ${#value} -ge $min_len ]] && printf '%s\n' "$value"
+    done < "$file"
+  done
+  return 0
+}
+
 # scrub_secrets <text>
-# Redact credentials before test output reaches a public PR comment. The E2E and
-# api-wired suites exercise auth flows with DATASPOKE_DEV_* credentials, so a
-# failing assertion can echo a token or a postgresql://user:***@host URL verbatim.
-# Redacts (with ***REDACTED***):
-#   - DATASPOKE_*= env assignments (the value, keeping the key for context)
-#   - JWTs (three base64url segments)
-#   - dsk_-prefixed API tokens
-#   - user:password@ credentials embedded in URLs
-#   - the worker's own GH_TOKEN / ANTHROPIC_API_KEY values
-# sed -E / [:class:] / + are portable across BSD and GNU sed.
+# Sanitize text before it reaches a public PR comment. The E2E and api-wired
+# suites exercise auth flows with DATASPOKE_DEV_* credentials, so a failing
+# assertion can echo a token or a postgresql://user:***@host URL verbatim.
+# In order:
+#   1. Normalize: strip CR and other C0/C1 controls (keeping LF and TAB), ESC
+#      CSI/OSC sequences (including OSC 8 hyperlinks), and invisible Unicode
+#      format characters (zero-width, bidi controls, BOM).
+#   2. Literally redact every exact value from scrub_secret_values.
+#   3. Redact credential shapes: DATASPOKE_* assignments (=, :, quoted keys),
+#      Authorization/Bearer tokens, password/secret/token/api-key assignments,
+#      JWTs, dsk_/sk-/GitHub token shapes, and URL userinfo (including an
+#      empty username).
+# Value classes stop at a backtick so a redaction never consumes the closing
+# delimiter of a markdown code span. Runs in perl, byte-oriented so malformed
+# UTF-8 cannot abort it. Without a working perl the text is withheld entirely
+# rather than published unscrubbed.
 scrub_secrets() {
-  local text="$1"
-  text=$(printf '%s' "$text" | sed -E \
-    -e 's/(DATASPOKE_[A-Z0-9_]*=)[^[:space:]]*/\1***REDACTED***/g' \
-    -e 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/***REDACTED***/g' \
-    -e 's/dsk_[A-Za-z0-9_-]+/***REDACTED***/g' \
-    -e 's#://[^:@/[:space:]]+:[^@/[:space:]]+@#://***REDACTED***@#g')
-  [[ -n "${GH_TOKEN:-}" ]] && text="${text//${GH_TOKEN}/***REDACTED***}"
-  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && text="${text//${ANTHROPIC_API_KEY}/***REDACTED***}"
-  printf '%s' "$text"
+  local text="$1" values scrubbed
+  if ! command -v perl >/dev/null 2>&1; then
+    printf '%s' "(output withheld: secret scrubber unavailable)"
+    return 0
+  fi
+  values=$(scrub_secret_values)
+  # shellcheck disable=SC2016
+  if ! scrubbed=$(PRAUTO_SCRUB_VALUES="$values" perl -0777 -pe '
+      BEGIN {
+        our @values = sort { length($b) <=> length($a) }
+          grep { length($_) >= 6 } split /\n/, ($ENV{PRAUTO_SCRUB_VALUES} // "");
+      }
+      our @values;
+      s/\e\][^\a\e\n]*(?:\a|\e\\)?//g;
+      s/\e\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]//g;
+      s/\e[\x40-\x5f]//g;
+      s/[\x00-\x08\x0b-\x1f\x7f]//g;
+      s/\xc2[\x80-\x9f]//g;
+      s/\xe2\x80[\x8b-\x8f\xaa-\xae]|\xe2\x81[\xa0-\xa4\xa6-\xa9]|\xef\xbb\xbf|\xd8\x9c//g;
+      for my $v (@values) { s/\Q$v\E/***REDACTED***/g; }
+      s/(DATASPOKE_[A-Z0-9_]*=)[^\s\x60]*/${1}***REDACTED***/g;
+      s/(["\x27]?DATASPOKE_[A-Z0-9_]*["\x27]?[ \t]*:[ \t]*["\x27]?)[^\s"\x27,}\x60]+/${1}***REDACTED***/g;
+      s/\b(Authorization|Bearer)([: \t]+)(?:(?:Bearer|Basic|Token)[ \t]+)?[^\s"\x27,;\x60]+/${1}${2}***REDACTED***/gi;
+      s/((?:password|passwd|pwd|secret|token|api[_-]?key)["\x27]?[ \t]*[:=][ \t]*["\x27]?)[^\s"\x27&,;\x60]+/${1}***REDACTED***/gi;
+      s/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/***REDACTED***/g;
+      s/dsk_[A-Za-z0-9_-]+/***REDACTED***/g;
+      s/\bsk-[A-Za-z0-9_-]{16,}/***REDACTED***/g;
+      s/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}/***REDACTED***/g;
+      s/\bgithub_pat_[A-Za-z0-9_]{16,}/***REDACTED***/g;
+      s#://[^@/\s\x60]*:[^@/\s\x60]+@#://***REDACTED***@#g;
+    ' <<< "$text"); then
+    printf '%s' "(output withheld: secret scrubber failed)"
+    return 0
+  fi
+  printf '%s' "$scrubbed"
 }
 
 # create_or_update_pr <issue_number> <issue_title> <branch>
@@ -161,7 +259,7 @@ check_review_pr() {
   latest_prauto_time=$(printf '%s' "$pr_issue_comments" | jq -r --arg actor "$PRAUTO_GITHUB_ACTOR" \
     '[.[] | select(.user == $actor)] | sort_by(.created_at) | last | .created_at // ""')
 
-  if printf '%s' "$latest_prauto_body" | grep -q "Reviewer feedback addressed"; then
+  if grep -q "Reviewer feedback addressed" <<< "$latest_prauto_body"; then
     local newer_issue newer_reviews
     newer_issue=$(printf '%s' "$pr_issue_comments" | jq --arg actor "$PRAUTO_GITHUB_ACTOR" --arg ts "$latest_prauto_time" \
       '[.[] | select(.user != $actor) | select(.created_at > $ts)] | length')

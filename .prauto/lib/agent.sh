@@ -188,7 +188,7 @@ $(cat "$stderr_file" 2>/dev/null || printf '')"
   # still exiting 0. Check that before the exit-code fast path below, so a
   # "successful" exit that actually errored is never marked ok.
   if claude_result_is_error "$output_file"; then
-    if printf '%s' "$raw" | grep -qi "rate limit\|quota\|session limit"; then
+    if grep -qi "rate limit\|quota\|session limit" <<< "$raw"; then
       AGENT_STATUS=quota
     else
       AGENT_STATUS=error
@@ -198,7 +198,7 @@ $(cat "$stderr_file" 2>/dev/null || printf '')"
 
   if [[ "$exit_code" -eq 0 ]]; then
     AGENT_STATUS=ok
-  elif printf '%s' "$raw" | grep -qi "rate limit\|quota\|session limit\|api_error\|API error"; then
+  elif grep -qi "rate limit\|quota\|session limit\|api_error\|API error" <<< "$raw"; then
     AGENT_STATUS=quota
   else
     AGENT_STATUS=error

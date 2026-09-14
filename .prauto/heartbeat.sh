@@ -25,6 +25,9 @@ cleanup() {
     git worktree prune 2>/dev/null || true
     info "Worktree ${WORKTREE_DIR} cleaned up."
   fi
+  # A regression interrupted mid-stage must not strand the dev-env lock; the
+  # release is idempotent, so a lock already released is left alone.
+  if declare -F release_required_dev_lock >/dev/null; then release_required_dev_lock || true; fi
   teardown_provisioned_dev_env || true
   release_lock 2>/dev/null || true
 }

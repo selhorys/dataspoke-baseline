@@ -105,7 +105,7 @@ claim_issue() {
   local current_labels
   current_labels=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --json labels --jq '.labels[].name' 2>/dev/null)
-  if printf '%s' "$current_labels" | grep -q "^${PRAUTO_GITHUB_LABEL_WIP}$"; then
+  if grep -q "^${PRAUTO_GITHUB_LABEL_WIP}$" <<< "$current_labels"; then
     warn "Issue #${issue_number} already has ${PRAUTO_GITHUB_LABEL_WIP} — another worker claimed it."
     return 1
   fi
@@ -160,7 +160,7 @@ analysis_confirms_skip_plan() {
   local analysis_output="$1" line
   line=$(printf '%s' "$analysis_output" | grep -iE 'Skip-plan eligible' | head -1 || true)
   [[ -n "$line" ]] || return 1
-  printf '%s' "$line" | grep -qiE ':[[:space:]]*[*`> ]*yes\b'
+  grep -qiE ':[[:space:]]*[*`> ]*yes\b' <<< "$line"
 }
 
 # resolve_change_size <issue_body> <analysis_output>

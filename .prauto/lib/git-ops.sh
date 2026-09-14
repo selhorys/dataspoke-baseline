@@ -168,7 +168,7 @@ link_branch_to_issue() {
     -f query='query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { issue(number: $number) { linkedBranches(first: 100) { nodes { ref { name } } } } } }' \
     -f "owner=${owner}" -f "repo=${repo}" -F "number=${issue_number}" 2>/dev/null \
     | jq -r '.data.repository.issue.linkedBranches.nodes[].ref.name' 2>/dev/null || printf '')
-  if printf '%s\n' "$linked_branches" | grep -Fxq "$branch"; then
+  if grep -Fxq "$branch" <<< "$linked_branches"; then
     info "Branch ${branch} is already linked to issue #${issue_number}."
     return 0
   fi
