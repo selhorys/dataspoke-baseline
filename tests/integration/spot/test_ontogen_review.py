@@ -118,12 +118,32 @@ async def test_ontogen_node_review_approve(
     admin_headers: dict[str, str],
     async_session: AsyncSession,
 ) -> None:
-    """POST node/{id}/method/review with 'approve' transitions status to approved."""
-    from src.shared.db.models import OntogenNode
+    """POST node/{id}/method/review with 'approve' transitions status to approved
+    and propagates to dataset_node_map, which GET node-detail's member_datasets
+    then reflects.
+
+    Real Postgres eager-loading (OntogenNode.dataset_maps via selectinload) cannot
+    be exercised by the mock-DB unit tests, and api-wired's UC4 flow seeds
+    dataset_node_map via the same raw-SQL helper rather than a real inference run
+    (stub LLM in spot mode also returns no nodes/edges), so a directly-seeded spot
+    scenario is the only place this eager-load + response-shape path is reachable
+    end-to-end. spec: TESTING.md §Spot vs Api-Wired Integration Tests.
+
+    Spec: spec/feature/BACKEND.md §Ontology Generation Service §Approval flow —
+    node verdict:'approve' marks the node and its dataset_node_map memberships
+    as approved.
+    Spec: spec/API.md §Ontology Generation — GET /result/node/{node_id} returns
+    node detail including member datasets.
+    """
+    from tests.integration.util.metagen import delete_ontogen_node, seed_dataset_node_map
 
     suffix = uuid.uuid4().hex[:8]
     node_id = f"spot_node_{suffix}"
+    dataset_urn = f"urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.spot_ontogen_{suffix},DEV)"
     await _insert_pending_node(async_session, node_id, f"SpotTestNode-{suffix}")
+    await seed_dataset_node_map(
+        async_session, dataset_urn=dataset_urn, node_id=node_id, status="llm_pending"
+    )
 
     try:
         review_resp = await api_client.post(
@@ -135,8 +155,29 @@ async def test_ontogen_node_review_approve(
         body = review_resp.json()
         assert body["status"] == "approved"
         assert body["id"] == node_id
+
+        detail_resp = await api_client.get(
+            f"/api/v1/spoke/ontogen/result/node/{node_id}",
+            headers=admin_headers,
+        )
+        assert detail_resp.status_code == 200, detail_resp.text
+        detail_body = detail_resp.json()
+        assert detail_body["member_datasets"] == [
+            {
+                "dataset_urn": dataset_urn,
+                "confidence_score": 0.90,
+                "status": "approved",
+                "is_primary": False,
+            }
+        ], (
+            "member_datasets must reflect the seeded dataset_node_map row, with "
+            "status propagated to 'approved' by review_node's approve branch; "
+            "got " + repr(detail_body["member_datasets"])
+        )
     finally:
-        await _delete_row(async_session, OntogenNode, node_id)
+        # delete_ontogen_node removes the dataset_node_map row before the
+        # ontogen_nodes row (FK-safe), unlike the local _delete_row helper.
+        await delete_ontogen_node(async_session, node_id)
 
 
 @pytest.mark.asyncio

@@ -350,6 +350,46 @@ async def test_list_seeds_returns_all_with_enabled_state(
     )
 
 
+# ── Node detail (get_node) ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_node_returns_row_with_eager_loaded_dataset_maps(
+    svc: OntogenService, db: AsyncMock
+) -> None:
+    """get_node eager-loads OntogenNode.dataset_maps (DatasetNodeMap rows) so the
+    node-detail route can build NodeDetailResponse.member_datasets without a
+    separate lazy-load.
+
+    spec: spec/API.md §Ontology Generation — 'GET /spoke/ontogen/result/node/{node_id}
+    — Get node detail (incl. member datasets)'.
+    spec: spec/feature/BACKEND.md §Ontology Generation Service §Approval flow —
+    a node's dataset_node_map memberships are read and mutated alongside the node.
+    """
+    node = make_ontogen_node_row(id="book", status="approved")
+    dm_a = make_dataset_node_map_row(
+        node_id="book",
+        dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.a,DEV)",
+        is_primary=True,
+    )
+    dm_b = make_dataset_node_map_row(
+        node_id="book",
+        dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.b,DEV)",
+        is_primary=False,
+    )
+    node.dataset_maps = [dm_a, dm_b]
+    mock_scalar_query(db, node)
+
+    row = await svc.get_node("book")
+
+    assert row is node
+    assert row.dataset_maps == [dm_a, dm_b], (
+        "get_node must return the ORM row with dataset_maps populated (eager-loaded "
+        "via selectinload) so the node-detail route can build member_datasets "
+        "without a separate lazy-load."
+    )
+
+
 # ── Verdict enum validation ────────────────────────────────────────────────────
 
 
@@ -359,8 +399,6 @@ async def test_review_node_rejects_invalid_verdict(svc: OntogenService, db: Asyn
     node = make_ontogen_node_row(status="llm_pending")
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = node
-    # cache get returns None
-    svc._cache.get = AsyncMock(return_value=None)
     db.execute = AsyncMock(return_value=result_mock)
 
     with pytest.raises(PreconditionFailedError) as exc_info:
@@ -430,9 +468,6 @@ async def test_review_triple_dependency_gate_raises_when_nodes_not_approved(
             (lambda s: "ontogen_nodes" in s and "'edition'" in s, make_result(obj_node)),
         ],
     )
-
-    # Also mock cache for get_node
-    svc._cache.get = AsyncMock(return_value=None)
 
     with pytest.raises(PreconditionFailedError) as exc_info:
         await svc.review_triple(triple.id, verdict="approve")
@@ -795,9 +830,6 @@ async def test_review_node_approve_sets_approved_status(
             return m
 
     db.execute = AsyncMock(side_effect=execute_side_effect)
-    svc._cache.get = AsyncMock(return_value=None)
-    svc._cache.delete = AsyncMock()
-    svc._cache.set = AsyncMock()
     mock_db_refresh(db)
 
     datahub.emit_aspect = AsyncMock()
@@ -871,9 +903,6 @@ async def test_review_triple_approve_writes_no_datahub_aspect(
         raise AssertionError(f"Unexpected SQL in _route_execute: {sql[:300]}")
 
     db.execute = AsyncMock(side_effect=_route_execute)
-    svc._cache.get = AsyncMock(return_value=None)
-    svc._cache.delete = AsyncMock()
-    svc._cache.set = AsyncMock()
     mock_db_refresh(db)
 
     datahub.emit_aspect = AsyncMock()
@@ -943,7 +972,6 @@ async def test_review_triple_dependency_gate_and_no_datahub_side_effects(
         raise AssertionError(f"Unexpected SQL in _route_execute: {sql[:300]}")
 
     db.execute = AsyncMock(side_effect=_route_execute)
-    svc._cache.get = AsyncMock(return_value=None)
     datahub.emit_aspect = AsyncMock()
 
     with pytest.raises(PreconditionFailedError) as exc_info:
