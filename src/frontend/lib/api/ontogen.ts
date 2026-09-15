@@ -7,7 +7,6 @@ import type {
   EdgeListResponse,
   NodeListResponse,
   OntogenConf,
-  OntogenConfPatchBody,
   OntogenConfPutBody,
   OntogenEdge,
   OntogenEventListResponse,
@@ -37,21 +36,6 @@ export function useUpsertOntogenConf() {
     mutationFn: (body) =>
       apiFetch<OntogenConf>("/spoke/ontogen/attr/conf", {
         method: "PUT",
-        body: JSON.stringify(body),
-      }),
-    meta: { handledInline: true },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["ontogen", "conf"] });
-    },
-  });
-}
-
-export function usePatchOntogenConf() {
-  const qc = useQueryClient();
-  return useMutation<OntogenConf, Error, OntogenConfPatchBody>({
-    mutationFn: (body) =>
-      apiFetch<OntogenConf>("/spoke/ontogen/attr/conf", {
-        method: "PATCH",
         body: JSON.stringify(body),
       }),
     meta: { handledInline: true },
