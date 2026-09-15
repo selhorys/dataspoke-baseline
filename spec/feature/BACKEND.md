@@ -154,9 +154,6 @@ they invoke the loop.
 | Pattern | TTL | Purpose |
 |---------|-----|---------|
 | `quality:{dataset_urn}:score` | 300s | Cached `QualityScore` aggregation for dataset attr-get |
-| `ontogen:node:{node_id}` | 300s | Ontology Generation node lookup cache |
-| `ontogen:edge:{edge_id}` | 300s | Ontology Generation edge lookup cache |
-| `ontogen:triple:{triple_id}` | 300s | Ontology Generation triple lookup cache |
 
 Rate-limit counters are outside this namespace and outside the `cache/client.py`
 wrapper. The API's SlowAPI limiters delegate storage to the `limits` library,
