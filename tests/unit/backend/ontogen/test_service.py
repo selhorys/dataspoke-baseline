@@ -353,6 +353,23 @@ async def test_list_seeds_returns_all_with_enabled_state(
 # ── Node detail (get_node) ──────────────────────────────────────────────────────
 
 
+def _selectin_eager_loaded_keys(stmt: Any) -> set[str]:
+    """Return the set of relationship attribute keys the statement eager-loads
+    via `lazy=selectin` (i.e. `.options(selectinload(...))`), by inspecting the
+    compiled loader-option strategy tree rather than any mocked execute result.
+    """
+    keys: set[str] = set()
+    for opt in getattr(stmt, "_with_options", ()):
+        for inner in getattr(opt, "context", ()):
+            if getattr(inner, "strategy", None) != (("lazy", "selectin"),):
+                continue
+            path_tokens = getattr(inner.path, "path", ())
+            for tok in path_tokens:
+                if hasattr(tok, "key"):
+                    keys.add(tok.key)
+    return keys
+
+
 @pytest.mark.asyncio
 async def test_get_node_returns_row_with_eager_loaded_dataset_maps(
     svc: OntogenService, db: AsyncMock
@@ -383,10 +400,12 @@ async def test_get_node_returns_row_with_eager_loaded_dataset_maps(
     row = await svc.get_node("book")
 
     assert row is node
-    assert row.dataset_maps == [dm_a, dm_b], (
-        "get_node must return the ORM row with dataset_maps populated (eager-loaded "
-        "via selectinload) so the node-detail route can build member_datasets "
-        "without a separate lazy-load."
+
+    stmt = db.execute.await_args.args[0]
+    assert "dataset_maps" in _selectin_eager_loaded_keys(stmt), (
+        "get_node must issue a SELECT with .options(selectinload(OntogenNode.dataset_maps)) "
+        "so the node-detail route can build member_datasets without a separate lazy-load; "
+        "found no selectin-strategy loader option targeting dataset_maps on the executed statement."
     )
 
 
