@@ -178,15 +178,12 @@ def _node_resp(row: object) -> NodeResponse:
 
 
 def _node_detail_resp(row: object) -> NodeDetailResponse:
+    member_maps = sorted(
+        row.dataset_maps,  # type: ignore[attr-defined]
+        key=lambda dm: (not dm.is_primary, dm.dataset_urn),
+    )
     return NodeDetailResponse(
-        id=row.id,  # type: ignore[attr-defined]
-        name=row.name,  # type: ignore[attr-defined]
-        description=row.description or "",  # type: ignore[attr-defined]
-        confidence_score=row.confidence_score,  # type: ignore[attr-defined]
-        status=row.status,  # type: ignore[attr-defined]
-        run_id=row.run_id,  # type: ignore[attr-defined]
-        created_at=row.created_at,  # type: ignore[attr-defined]
-        updated_at=row.updated_at,  # type: ignore[attr-defined]
+        **_node_resp(row).model_dump(),
         member_datasets=[
             NodeMemberDataset(
                 dataset_urn=dm.dataset_urn,
@@ -194,7 +191,7 @@ def _node_detail_resp(row: object) -> NodeDetailResponse:
                 status=dm.status,
                 is_primary=dm.is_primary,
             )
-            for dm in row.dataset_maps  # type: ignore[attr-defined]
+            for dm in member_maps
         ],
     )
 
