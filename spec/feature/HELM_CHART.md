@@ -1904,7 +1904,7 @@ without authentication: the limiter derives one bucket key per distinct
 caller-supplied bearer or client address, and for an API-token-prefixed bearer it
 hashes the string into a key *without resolving the token*, so an unauthenticated
 caller mints a fresh key per request. The cached-read keyspace is the opposite
-shape — entity-scoped, one key per dataset URN or ontology entity id (see
+shape — entity-scoped, one key per dataset URN (see
 [BACKEND.md §Cache Key Conventions](BACKEND.md#cache-key-conventions)) — bounded
 by catalog size and written only behind authenticated routes. `maxmemory` is an **instance-wide** budget with no
 per-logical-DB isolation, and the limiter runs in its own logical DB
