@@ -15,6 +15,7 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.backend._dataset_filter import resolve_dataset_scope, validate_dataset_filter_service
 from src.backend.admin.config_service import get_runtime_config
@@ -75,9 +76,6 @@ logger = logging.getLogger(__name__)
 # Redis key for the ontogen singleton lock
 _LOCK_KEY = "ontogen:running:singleton"
 _LOCK_TTL_SECONDS = 3600  # 1 hour
-
-# Redis cache TTL for hot node/edge/triple lookups
-_CACHE_TTL = 300
 
 # Node embedding collection (node_embeddings table)
 _NODE_EMBEDDING_COLLECTION = "node_embeddings"
@@ -1035,26 +1033,14 @@ class OntogenService:
         return list(rows), total
 
     async def get_node(self, node_id: str) -> OntogenNode:
-        cached = await self._cache.get(f"ontogen:node:{node_id}")
-        if cached:
-            # Return ORM row freshly from DB (cache just signals hot path)
-            pass
-
-        result = await self._db.execute(select(OntogenNode).where(OntogenNode.id == node_id))
+        result = await self._db.execute(
+            select(OntogenNode)
+            .options(selectinload(OntogenNode.dataset_maps))
+            .where(OntogenNode.id == node_id)
+        )
         row = result.scalar_one_or_none()
         if row is None:
             raise EntityNotFoundError("node", node_id)
-
-        try:
-            import json
-
-            await self._cache.set(
-                f"ontogen:node:{node_id}",
-                json.dumps({"id": node_id, "status": row.status}),
-                ttl_seconds=_CACHE_TTL,
-            )
-        except Exception:
-            pass
 
         return row
 
@@ -1256,11 +1242,6 @@ class OntogenService:
             event_type = NODE_REJECT
 
         await self._record_review_event("node", node_id, event_type, verdict, reason)
-        # Invalidate cache
-        try:
-            await self._cache.delete(f"ontogen:node:{node_id}")
-        except Exception:
-            pass
 
         return row
 
@@ -1298,10 +1279,6 @@ class OntogenService:
         await self._db.refresh(row)
 
         await self._record_review_event("edge", edge_id, event_type, verdict, reason)
-        try:
-            await self._cache.delete(f"ontogen:edge:{edge_id}")
-        except Exception:
-            pass
 
         return row
 
@@ -1371,10 +1348,6 @@ class OntogenService:
             event_type = TRIPLE_REJECT
 
         await self._record_review_event("triple", triple_id, event_type, verdict, reason)
-        try:
-            await self._cache.delete(f"ontogen:triple:{triple_id}")
-        except Exception:
-            pass
 
         return row
 

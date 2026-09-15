@@ -137,6 +137,25 @@ class NodeListResponse(PaginatedResponse):
     nodes: list[NodeResponse] = Field(default=[], description="Page of node records")
 
 
+class NodeMemberDataset(BaseModel):
+    dataset_urn: str = Field(description="URN of the member dataset")
+    confidence_score: float = Field(description="LLM confidence score (0–1)")
+    status: str = Field(
+        description=(
+            "Lifecycle status: llm_pending (LLM-created, awaiting review), "
+            "llm_approved (LLM-reviewer accepted + high confidence), "
+            "approved (human-approved), or rejected (human-rejected)"
+        )
+    )
+    is_primary: bool = Field(description="Whether this dataset is the node's primary member")
+
+
+class NodeDetailResponse(NodeResponse):
+    member_datasets: list[NodeMemberDataset] = Field(
+        default=[], description="Datasets mapped to this node"
+    )
+
+
 # ── Edge ─────────────────────────────────────────────────────────────────────
 
 
