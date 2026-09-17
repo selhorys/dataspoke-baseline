@@ -130,6 +130,13 @@ spec:
     metadata:
       labels:
         app: dev-lock
+      annotations:
+        # Keeps this pod (and its node) out of cluster-autoscaler's scale-down
+        # candidate set — Autopilot node churn during a heartbeat/test run
+        # evicts this single-replica pod otherwise, dropping the lock it holds
+        # mid-run. Same guard as postgres/redis/nginx-ingress-controller; see
+        # HELM_CHART.md §Eviction resilience.
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
       containers:
         - name: lock

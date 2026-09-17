@@ -18,7 +18,50 @@ source "$PRAUTO_DIR/lib/helpers.sh"
 # dies must not leave a dirty worktree or a stale lock for the next wake.
 # ---------------------------------------------------------------------------
 WORKTREE_DIR=""
+CLEANUP_DONE=false
 cleanup() {
+  # A signal handler calls cleanup explicitly and then disables EXIT before it
+  # exits. The guard also makes cleanup safe if an error path invokes it while
+  # the EXIT trap is unwinding.
+  [[ "$CLEANUP_DONE" == true ]] && return 0
+  CLEANUP_DONE=true
+  # A gated child has not been authorized to exec its real command yet. Closing
+  # the parent FIFO descriptor makes that inert wrapper receive EOF and exit;
+  # this also closes the tiny signal window before its private PGID is stored.
+  # Once a verified command group exists, do not wait for the former wrapper
+  # PID here: it may already have execed install.sh and be wedged. Group
+  # termination must happen before any wait that could block on that PID.
+  if [[ "${CONTAINMENT_GATE_FD_OPEN:-false}" == true ]]; then
+    exec 9>&- 2>/dev/null || true
+    CONTAINMENT_GATE_FD_OPEN=false
+  fi
+  # provision_dev_env's install.sh job runs in its own process group (`set -m`),
+  # separate from this shell's. If this heartbeat is killed while still
+  # blocked inside that wait, control lands here directly — the post-wait
+  # clear in provision_dev_env never runs, so a non-empty PROVISION_PGID here
+  # means a real, still-running process tree only this trap can still reach.
+  # TERM it first (a grace window, matching wait_with_group_backstop's own
+  # timeout handling and install.sh's own EXIT-trap group-kill of helm, so a
+  # cooperating install.sh gets the chance to run its own cleanup) before
+  # escalating to KILL.
+  if [[ -n "${PROVISION_PGID:-}" && -n "${PROVISION_LEADER_PID:-}" ]]; then
+    warn "Heartbeat exiting with a provisioning run still active (pgid ${PROVISION_PGID}); stopping it."
+    # PROVISION_PGID is recorded only after provision_dev_env verified a
+    # private process group whose leader is the install shell. Never fall back
+    # to signalling the leader PID: that can leave descendants alive, and an
+    # unverified group could include this heartbeat itself.
+    kill -TERM -"$PROVISION_PGID" 2>/dev/null || true
+    sleep 2
+    if managed_process_group_is_live "$PROVISION_PGID"; then
+      kill -9 -"$PROVISION_PGID" 2>/dev/null || true
+    fi
+    wait "$PROVISION_LEADER_PID" 2>/dev/null || true
+  elif [[ -n "${CONTAINMENT_GATE_WRAPPER_PID:-}" ]]; then
+    # No verified command group exists, so the child is still an inert FIFO
+    # wrapper. The closed parent descriptor above delivers EOF; reap it now.
+    wait "$CONTAINMENT_GATE_WRAPPER_PID" 2>/dev/null || true
+    CONTAINMENT_GATE_WRAPPER_PID=""
+  fi
   if [[ -n "$WORKTREE_DIR" ]] && [[ -d "$WORKTREE_DIR" ]]; then
     cd "$REPO_DIR"
     git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
@@ -28,10 +71,31 @@ cleanup() {
   # A regression interrupted mid-stage must not strand the dev-env lock; the
   # release is idempotent, so a lock already released is left alone.
   if declare -F release_required_dev_lock >/dev/null; then release_required_dev_lock || true; fi
+  # provision_dev_env now writes the durable marker before launching install.sh
+  # (not only after it succeeds), so a cluster this heartbeat only partially
+  # built — including one whose install.sh was just stopped above — still has
+  # a marker for this same trap's teardown_provisioned_dev_env to find via the
+  # in-memory DEV_ENV_PROVISIONED/DEV_ENV_PROVISIONED_ENV_FILE globals; a crash
+  # that skips this trap entirely leaves the marker for the next heartbeat's
+  # recover_orphaned_dev_env instead. Neither path ever tears down a
+  # pre-existing healthy cluster — DEV_ENV_PROVISIONED is only ever set inside
+  # provision_dev_env, which only runs when this heartbeat itself decided
+  # provisioning was needed.
   teardown_provisioned_dev_env || true
   release_lock 2>/dev/null || true
 }
+handle_signal() {
+  local status="$1"
+  # A signal-specific trap replaces Bash's default signal termination, so it
+  # must perform the cleanup itself. Disable all traps before cleanup to avoid
+  # a second teardown when `exit` below fires EXIT.
+  trap - EXIT INT TERM
+  cleanup || true
+  exit "$status"
+}
 trap cleanup EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 printf '\n=== prauto heartbeat — %s ===\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

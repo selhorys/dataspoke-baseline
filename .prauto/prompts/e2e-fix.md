@@ -30,14 +30,18 @@ redeploys and re-runs the suite after you commit.
    UI regression as a test bug — decide which from the code, and note that a passing assertion
    against the wrong element is worse than a failing one.
 3. Fix the source code (not the tests) unless the test itself has a bug.
-4. Verify what you can without a cluster — the E2E suite itself needs one, so do not run it:
+4. Run every verification command in this session in the foreground and block until it finishes.
+   Never background a run (no `&`, `nohup`, `disown`), poll for its completion and end your turn
+   while it is still in progress, or delegate it to a subagent or Workflow tool — this session
+   must not delegate this work, and it is the only context watching the run.
+5. Verify what you can without a cluster — the E2E suite itself needs one, so do not run it:
 
    ```bash
    pnpm -C src/frontend test
    pnpm -C tests/e2e typecheck
    ```
 
-5. When your change touches `src/frontend/`, run these gates from `src/frontend/` as checks and fix
+6. When your change touches `src/frontend/`, run these gates from `src/frontend/` as checks and fix
    what they report:
 
    ```bash
@@ -45,6 +49,6 @@ redeploys and re-runs the suite after you commit.
    pnpm run lint
    ```
 
-6. Stage and commit with a conventional commit message.
+7. Stage and commit with a conventional commit message.
    Use: git commit --author="{author_name} <{author_email}>"
-7. Do NOT push. The orchestrator handles pushing.
+8. Do NOT push. The orchestrator handles pushing.

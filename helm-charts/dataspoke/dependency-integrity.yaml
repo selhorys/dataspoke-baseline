@@ -1,0 +1,19 @@
+# Trusted remote dependency archives for helm-charts/dataspoke.
+#
+# Keep this manifest in lock-step with Chart.lock.  A resolver may reuse an
+# archive only when its Chart.lock name/version/repository tuple has one exact
+# entry here and the archive's bytes hash to the recorded digest.
+version: 1
+dependencies:
+  - name: postgresql
+    version: 18.5.24
+    repository: https://charts.bitnami.com/bitnami
+    sha256: 169f8a5ecde73036aa7778bacc64947301e0cbb90997100b22fa75c5601ab5b7
+  - name: redis
+    version: 25.3.12
+    repository: https://charts.bitnami.com/bitnami
+    sha256: 957e7221ff320886990603788a56de5e6d3d25f22da8dded996c000908a4f3e7
+  - name: airflow
+    version: 1.20.0
+    repository: https://airflow.apache.org
+    sha256: 29740c59c42960f14ac710069686a70220c011e210b6ca7d7f4d0f748da0917a

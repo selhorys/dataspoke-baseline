@@ -1203,10 +1203,17 @@ API preserves it**. Two classes of hop matter:
   that header rather than replace it with the peer it sees — ingress-nginx
   discards it by default (`use-forwarded-headers: false`).
 
-DataSpoke asserts neither of these on the operator's ingress path; they are
-operator prerequisites. The dev managed-mode nginx-ingress Service leaves
-`externalTrafficPolicy` at its `Cluster` default, so dev rate-limit buckets are
-per node rather than per client.
+DataSpoke asserts neither of these on the operator's ingress path in prod or
+in shared dev mode; they are operator prerequisites there. The dev
+**managed**-mode nginx-ingress Service is the one exception: it sets
+`externalTrafficPolicy: Local`
+([HELM_CHART.md §Ingress](HELM_CHART.md#ingress)), so the client's real
+source address reaches the controller. That is necessary but not sufficient
+for per-client bucketing — `config.trustedProxyIps` (above) still has to name
+only the actual controller proxy addresses before the API honours the
+forwarded address instead of its loopback-only default. `Local` preserves an
+L4 source address; it does not validate forwarded headers, configure proxy
+trust, or guarantee that an upstream topology preserves the address.
 
 **The same trust gate governs `X-Forwarded-Proto`, which makes the value
 OAuth-affecting.** When the peer is trusted, the API takes its request scheme

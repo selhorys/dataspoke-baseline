@@ -20,6 +20,14 @@ controller:
     default: true
   service:
     type: LoadBalancer
+    # Cluster (chart default) spreads the LB's traffic across every node,
+    # including ones with no controller endpoint — on Autopilot, a node
+    # dropped or added by routine scale-in/out still sits in that spread
+    # window, and a connection routed through it gets a mid-flight RST/reset
+    # instead of reaching the controller pod. Local sends traffic only to
+    # nodes that actually run a controller endpoint; client-source-IP
+    # preservation is a side effect, not the reason for this setting.
+    externalTrafficPolicy: Local
   resources:
     requests:
       cpu: 100m
@@ -33,6 +41,14 @@ controller:
   # admission-create/patch hook Jobs that block install.
   admissionWebhooks:
     enabled: false
+  # Keeps the controller pod (and the node hosting it) out of
+  # cluster-autoscaler's scale-down candidate set — the same guard already
+  # applied to every stateful/critical DataSpoke workload (see HELM_CHART.md
+  # §Eviction resilience). Complements externalTrafficPolicy: Local above:
+  # that setting narrows the LB to endpoint-having nodes, this keeps the one
+  # endpoint-having node from being reclaimed out from under it.
+  podAnnotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
 
 # TCP services — maps LoadBalancer ports to in-cluster services.
 # The ingress-nginx chart creates a ConfigMap called "tcp-services" from

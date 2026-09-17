@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Coding-agent dispatch for prauto (Claude Code and Codex).
 # Source this file — do not execute directly.
 # Requires: helpers.sh + quota.sh sourced, config loaded, agent CLIs available.
@@ -12,6 +13,17 @@ ANALYSIS_ALLOWED_TOOLS='Read,Write,Glob,Grep,Bash(git log *),Bash(git diff *),Ba
 IMPLEMENTATION_ALLOWED_TOOLS='Read,Write,Edit,Glob,Grep,Agent,Workflow,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(git add *),Bash(git commit *),Bash(uv run pytest *),Bash(uv run python3 *),Bash(uv run ruff *),Bash(uv run mypy *),Bash(uv sync *),Bash(npm run *),Bash(npx prettier *),Bash(npx tsc *),Bash(npx eslint *),Bash(pnpm *)'
 
 DENY_TOOLS='Bash(git push *),Bash(rm -rf *),Bash(sudo *),Bash(kubectl *),Bash(helm *),Bash(curl *),Bash(wget *),Bash(gh *),Read(.prauto/config.local.env),Read(.prauto/state/*),WebFetch,WebSearch'
+# FIX_DENY_TOOLS_EXTRA — appended to DENY_TOOLS's --disallowedTools value for
+# the integration and E2E fix sessions. `--allowedTools` is not itself an
+# enforced removal under `--dangerously-skip-permissions` (everything is
+# already permission-approved regardless of the allow list), so keeping
+# `Agent`/`Workflow` out of a fix session's tool vocabulary — those sessions
+# must verify foreground, turn-bounded, within a single session, never by
+# delegating and ending the turn early (see prompts/integration-fix.md and
+# prompts/e2e-fix.md) — has to go through the hard `--disallowedTools` block
+# instead. `Task` is included alongside `Agent`/`Workflow` as the same class of
+# delegation tool. Claude-only: Codex has no equivalent tool-enforcement flag.
+FIX_DENY_TOOLS_EXTRA='Agent,Workflow,Task'
 
 # ACTIVE_AGENT — the agent selected for this wake (`claude` or `codex`).
 # AGENT_SESSION_ID / AGENT_OUTPUT / AGENT_STATUS — set by invoke_agent/resume_agent.
@@ -205,12 +217,16 @@ $(cat "$stderr_file" 2>/dev/null || printf '')"
   fi
 }
 
-# invoke_agent <prompt> <allowed_tools> <max_turns> [budget]
+# invoke_agent <prompt> <allowed_tools> <max_turns> [budget] [deny_tools]
 # Dispatch a fresh session under ACTIVE_AGENT. Claude receives a harness-created
 # id; Codex records only the native `thread.started` id. Sets AGENT_SESSION_ID,
-# AGENT_OUTPUT, AGENT_STATUS.
+# AGENT_OUTPUT, AGENT_STATUS. deny_tools defaults to DENY_TOOLS; a caller that
+# needs a stricter block (e.g. a fix session appending FIX_DENY_TOOLS_EXTRA)
+# passes its own combined value — see DENY_TOOLS's declaration comment for why
+# this, not allowed_tools, is the only Claude-enforced removal, and why this is
+# Claude-only (Codex receives no tool flags at all, below).
 invoke_agent() {
-  local prompt="$1" allowed_tools="$2" max_turns="$3" budget="${4:-}"
+  local prompt="$1" allowed_tools="$2" max_turns="$3" budget="${4:-}" deny_tools="${5:-$DENY_TOOLS}"
   local system_file=""
   [[ "$ACTIVE_AGENT" == "claude" ]] && system_file=$(prepare_system_prompt)
   local session_id=""
@@ -253,7 +269,7 @@ invoke_agent() {
       --session-id "$session_id"
       --max-turns "$max_turns"
       --allowedTools "$allowed_tools"
-      --disallowedTools "$DENY_TOOLS"
+      --disallowedTools "$deny_tools"
       --dangerously-skip-permissions)
     [[ -n "$budget" ]] && cmd+=(--max-budget-usd "$budget")
   fi
@@ -325,12 +341,13 @@ ${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
   fi
 }
 
-# resume_agent <prompt> <allowed_tools> <max_turns> <session_id> [budget]
+# resume_agent <prompt> <allowed_tools> <max_turns> <session_id> [budget] [deny_tools]
 # Resume an existing session under ACTIVE_AGENT. Same agent as the original —
 # a session cannot migrate agents; agent-switch is only reachable via
-# abandon+restart. Sets AGENT_OUTPUT, AGENT_STATUS.
+# abandon+restart. Sets AGENT_OUTPUT, AGENT_STATUS. deny_tools defaults to
+# DENY_TOOLS, same override contract as invoke_agent.
 resume_agent() {
-  local prompt="$1" allowed_tools="$2" max_turns="$3" session_id="$4" budget="${5:-}"
+  local prompt="$1" allowed_tools="$2" max_turns="$3" session_id="$4" budget="${5:-}" deny_tools="${6:-$DENY_TOOLS}"
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
     if [[ "$session_id" != "${PAUSED_SESSION_ID:-}" ]] || \
        ! codex_pause_marker_is_trusted "${CUR_ISSUE_NUMBER:-}"; then
@@ -363,7 +380,7 @@ resume_agent() {
       --output-format json
       --max-turns "$max_turns"
       --allowedTools "$allowed_tools"
-      --disallowedTools "$DENY_TOOLS"
+      --disallowedTools "$deny_tools"
       --dangerously-skip-permissions)
     [[ -n "$budget" ]] && cmd+=(--max-budget-usd "$budget")
   fi
@@ -497,26 +514,41 @@ encode_regression_evidence() {
   printf '%s' "$payload" | base64 | tr -d '\n'
 }
 
-# run_integration_fix_session <issue_number> <branch> <failed_stages> <test_output>
-# This is the single, turn-bounded post-PR repair loop. The executor—not the
-# worker—will repeat exactly failed_stages after pushing the committed head.
+# run_integration_fix_session <issue_number> <branch> <failed_stages> <test_output> <mode>
+# The single, turn-bounded integration repair loop shared by Stage 3 (pre-PR,
+# mode=pre-pr — no PR exists yet; the executor reruns the failed stage(s)
+# itself rather than consuming this session's structured record) and Stage 5
+# (post-PR readiness gate, mode=post-pr — the record is validated pass
+# evidence for the executor's targeted retry). The executor — never the
+# worker — pushes and independently repeats exactly failed_stages against the
+# committed head afterward; mode only changes what the prompt tells the worker
+# about that context.
 run_integration_fix_session() {
-  local issue_number="$1" branch="$2" failed_stages="$3" test_output="$4" evidence_base64
+  local issue_number="$1" branch="$2" failed_stages="$3" test_output="$4" mode="${5:-post-pr}" evidence_base64
   if [[ ${#test_output} -gt 30000 ]]; then test_output="${test_output:0:30000}
 ... (truncated)"; fi
   evidence_base64=$(encode_regression_evidence "$failed_stages" "$test_output") || {
     warn "Could not serialize targeted regression evidence."
     AGENT_STATUS=error; AGENT_OUTPUT="Targeted regression evidence serialization failed."; return 0
   }
+  local mode_context
+  if [[ "$mode" == "pre-pr" ]]; then
+    mode_context="No PR exists yet for this issue — this is the pre-PR integration fix loop, which runs before the branch is ever pushed to a PR. After this session ends, the executor keeps the dev-env lock it already holds (no reacquire), redeploys the branch's API from your committed head only when it changed \`src/api/\`, \`src/backend/\`, or \`src/shared/\`, and reruns BOTH integration groups — not only the ones named as failed below — as a fresh attempt. It does not read or validate the structured JSON record below as pass evidence for this loop — only its own rerun decides whether this attempt passed — so report an unresolved stage honestly rather than withholding it because the record could not be emitted."
+  else
+    mode_context="A PR already exists and is open for this issue — this is the post-PR readiness gate's fix session. After this session ends, the executor rebuilds and redeploys only the branch artifacts required by the recorded failed stages, reacquires the dev-env lock, and reruns exactly those stages against your committed head. A successful targeted retry — validated against the structured JSON record below — is what allows the executor to mark the PR review-ready."
+  fi
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/integration-fix.md" \
     "number=${issue_number}" "branch=${branch}" "failed_stages=${failed_stages}" "evidence_base64=${evidence_base64}" \
+    "mode_context=${mode_context}" \
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
   invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX:-200}" \
-    "${PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"
+    "${PRAUTO_CLAUDE_MAX_BUDGET_INTEGRATION_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}" \
+    "${DENY_TOOLS},${FIX_DENY_TOOLS_EXTRA}"
 }
 
 # run_e2e_fix_session <issue_number> <branch> <test_output>
+# Pre-PR only (Stage 4 report-only fix attempt); no post-PR caller exists.
 run_e2e_fix_session() {
   local issue_number="$1" branch="$2" test_output="$3" evidence_base64
   if [[ ${#test_output} -gt 30000 ]]; then test_output="${test_output:0:30000}
@@ -530,7 +562,8 @@ run_e2e_fix_session() {
     "number=${issue_number}" "branch=${branch}" "evidence_base64=${evidence_base64}" \
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
   invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_E2E_FIX:-${PRAUTO_CLAUDE_MAX_TURNS_INTEGRATION_FIX:-50}}" \
-    "${PRAUTO_CLAUDE_MAX_BUDGET_E2E_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}"
+    "${PRAUTO_CLAUDE_MAX_BUDGET_E2E_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}" \
+    "${DENY_TOOLS},${FIX_DENY_TOOLS_EXTRA}"
 }
 
 # generate_squash_commit_message <issue_number> <issue_title> <issue_body> <pr_number> <diff_stat> <diff>

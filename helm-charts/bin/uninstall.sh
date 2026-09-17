@@ -31,6 +31,13 @@ CHART_DIR="$HELM_CHARTS_DIR/dataspoke"
 # shellcheck source=lib/helpers.sh
 source "$SCRIPT_DIR/lib/helpers.sh"
 
+# _cleanup_run_with_timeout_state (lib/helpers.sh) is a no-op unless the
+# --components frontend path below is mid-`_build_chart_deps`; wired
+# unconditionally, same reasoning as install.sh's own EXIT/INT/TERM traps.
+trap _cleanup_run_with_timeout_state EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -105,7 +112,13 @@ if [[ -n "$COMPONENTS_CSV" ]]; then
         fi
       fi
       info "Disabling frontend subchart (frontend.enabled=false)..."
-      helm dependency build "$CHART_DIR" >/dev/null 2>&1 || true
+      # This intentional fail-open path preserves the old frontend-disable
+      # behavior, but invokes the resolver in this shell so its EXIT/INT/TERM
+      # cleanup state remains reachable; a subshell could orphan its timeout
+      # process group when the outer uninstaller is interrupted.
+      if ! _build_chart_deps "$CHART_DIR"; then
+        warn "helm dependency build for '${CHART_DIR}' failed or timed out — continuing; the helm upgrade below may fail if charts/ is stale or incomplete."
+      fi
       helm upgrade dataspoke "$CHART_DIR" \
         --namespace "${NS}" \
         --reuse-values \

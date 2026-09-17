@@ -226,7 +226,24 @@ info "kubectl, helm, and python3 are available."
 # ---------------------------------------------------------------------------
 INSTALL_TMPDIR="$(mktemp -d -t dataspoke-install.XXXX)"
 chmod 700 "$INSTALL_TMPDIR"
-trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
+
+# _install_cleanup_on_exit runs on every exit path, normal or signalled.
+# _cleanup_run_with_timeout_state (lib/helpers.sh) reaps a `_run_with_timeout`
+# background job that may still be running: that job is its OWN process
+# group (`set -m`), so a caller that kills THIS script's process group —
+# Ctrl-C, or .prauto killing install.sh's group when ITS OWN outer
+# provisioning timeout fires — does not reach it by signal propagation alone.
+# The INT/TERM traps below turn those signals into a plain `exit`, which is
+# what actually runs this EXIT trap (a bare, untrapped fatal signal does
+# not reliably fire it) — so the escaped background job gets cleaned up on
+# the way out instead of being orphaned.
+_install_cleanup_on_exit() {
+  _cleanup_run_with_timeout_state
+  rm -rf "${INSTALL_TMPDIR}"
+}
+trap _install_cleanup_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------------------------------------------------------------------------
 # Airflow SimpleAuthManager passwords-file path (prod only)
@@ -315,28 +332,6 @@ _wait_all() {
   if (( failed > 0 )); then
     error "${failed} background task(s) failed — see output above."
   fi
-}
-
-# _build_chart_deps <chart_dir>
-# `helm dependency build` does not re-package an unchanged-version file://
-# dependency, so edits to a local subchart's templates would otherwise ship a
-# stale package. Drop the local subchart archives first so the build re-packages
-# them from the current source. This forces a full re-resolve, so the remote OCI
-# deps (bitnami postgresql/redis) get re-pulled from Docker's CDN — a fetch that
-# intermittently resets the connection. Retry the build to ride out those
-# transient resets rather than failing the whole install on one bad pull.
-_build_chart_deps() {
-  local chart_dir="$1"
-  rm -f "${chart_dir}"/charts/frontend-*.tgz "${chart_dir}"/charts/event-consumer-*.tgz
-  local attempt
-  for attempt in 1 2 3 4 5; do
-    if helm dependency build "${chart_dir}"; then
-      return 0
-    fi
-    warn "  helm dependency build failed (attempt ${attempt}/5) — retrying in 5s..."
-    sleep 5
-  done
-  error "helm dependency build for '${chart_dir}' failed after 5 attempts."
 }
 
 # ---------------------------------------------------------------------------

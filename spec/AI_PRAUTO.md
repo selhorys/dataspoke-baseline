@@ -383,14 +383,18 @@ state from human-readable prose when the required structured event is absent.
 |-------|-------|-----------|
 | Analysis | Read + Write (plan file only) + limited git | `PRAUTO_MAX_TURNS_ANALYSIS` |
 | Implementation | Read + Write + Edit + subagents + workflow + limited Bash (git; `uv sync`/`uv run` pytest, python3, ruff, mypy; `npm run`, `npx prettier`, `npx tsc`, `npx eslint`, `pnpm`) | `PRAUTO_MAX_TURNS_IMPLEMENTATION` |
-| Integration fix | Same as implementation | `PRAUTO_MAX_TURNS_INTEGRATION_FIX` |
+| Integration fix / E2E fix | Same allowed-tools list as implementation; Claude sessions additionally add `Agent`, `Workflow`, and `Task` to `--disallowedTools` (see the denylist note below). The repair contract requires foreground verification within the bounded session; only the Claude delegation-tool denial is mechanically enforced. | `PRAUTO_MAX_TURNS_INTEGRATION_FIX` / `PRAUTO_MAX_TURNS_E2E_FIX` |
 | PR review | Same as implementation | `PRAUTO_MAX_TURNS_IMPLEMENTATION` |
 | Squash commit / Feedback response | No tools (text only) | 1 |
 
 **Denylist (all phases)**: `git push`, `rm -rf`, `sudo`, `kubectl`, `helm`, `curl`, `wget`,
-`gh`, `Read(.prauto/config.local.env)`, `Read(.prauto/state/*)`, `WebFetch`, `WebSearch`. It binds
-the parent session only — see [Security Model](#security-model) for what it does and does not
-enforce.
+`gh`, `Read(.prauto/config.local.env)`, `Read(.prauto/state/*)`, `WebFetch`, `WebSearch`. Integration
+and E2E fix sessions add `Agent`, `Workflow`, and `Task` on top of this list for Claude. Those
+Claude `--disallowedTools` entries enforce that a fixed repair session cannot invoke the
+corresponding delegation tools. The allowed-tools list (`--allowedTools`) is not itself a removal
+under `--dangerously-skip-permissions`, so it is a manifest rather than a security boundary. Tool
+flags bind the parent session only; Codex has no equivalent per-session tool-deny mechanism — see
+[Security Model](#security-model) for what this does and does not enforce.
 
 **Branch-based continuity**: On restart, the prompt instructs the agent to check for existing
 commits on the branch and continue from there.
@@ -483,6 +487,13 @@ and the same regression retries on a later heartbeat.
 Provisioning cost does not count against `PRAUTO_MAX_RETRIES_PER_JOB` — standing up a cluster is
 not an attempt at the issue, and charging it would abandon jobs for infrastructure latency that
 says nothing about the work.
+
+`install.sh` itself runs under a separate wall-clock backstop (`PRAUTO_PROVISION_TIMEOUT_SECS`,
+default 3600s) that terminates its managed process tree when provisioning wedges. A fired
+backstop is reported and handled exactly like any other provisioning failure (above). Provisioning
+output is retained in a private, bounded local log so an unattended run has observable progress;
+it is not published to GitHub or another external surface because it can contain operational
+details not suitable for a PR record.
 
 **Autopilot abort mode**: on GKE Autopilot, a GMS scale-up timeout aborts `install.sh` before the
 DataHub ingress+PAT step. The resume is `--from-component datahub`, not `dataspoke-infra`. Note
@@ -600,6 +611,23 @@ api-wired (`tests/integration/api_wired/`) targets as **two separate groups**, n
 mixed run puts competing Airflow load on the cluster and flakes on timing. The split binds every
 integration invocation, Stage 5 included. Failures feed the worker's fix loop up to
 `PRAUTO_INTEGRATION_FIX_MAX_RETRIES`.
+
+A session-start health-gate abort (`require_server`, same as above) on either group is checked
+first and is likewise infrastructure-blocked here — never branch-attributable or a flake — and
+ends the loop without dispatching a worker. Otherwise, before dispatching a worker, the executor
+classifies every failed group against the deterministic environmental-flake exception's conditions
+1, 2, 3, and 5 below (cluster-dependent stage, allowlisted transport signature, a passing
+post-stage health probe, no assertion/contract-mismatch failure — condition 4 does not apply, since
+no fix is being classified). When every failed group qualifies, the executor reruns the groups
+itself on the next iteration instead of dispatching a worker, bounded separately by
+`PRAUTO_INTEGRATION_FLAKE_RERUNS` (default 2) so flake reruns never consume the fix-loop budget;
+exhausting it with flake-only failures ends the loop without dispatching a worker, the same as an
+ordinary exhausted retry budget. A worker's structured verification record is never read as pass
+evidence in this loop — only Stage 5's targeted retry consumes it. Any non-qualifying (non-flake)
+failure dispatches a worker as before; after a dispatched fix session, the executor keeps the lock,
+redeploys the branch API when the committed fix touched `src/api/`, `src/backend/`, or
+`src/shared/`, and re-probes health before the next iteration rather than trusting a now-stale
+pre-loop check.
 
 **Stage 4 -- E2E (Playwright, pre-PR)** *(executor; worker for fixes)*: runs when the selector
 identifies an affected E2E target, including the `src/frontend/`, `tests/e2e/`, or `src/api/`
@@ -789,7 +817,11 @@ an oversight to be patched by trimming the list.
 subagent's own definition governs its tools. The project's generators (`backend`, `test`,
 `k8s-helm`) each declare unrestricted `Bash` with no denylist, so granting subagent delegation
 means delegated work reaches `kubectl`, `helm`, `git push`, and `curl` directly — no reach-around
-needed. The parent denylist binds the parent session and nothing beyond it. The same holds for
+needed. Integration and E2E fix sessions narrow this differently only for Claude: their invocation
+adds `Agent`, `Workflow`, and `Task` to `--disallowedTools`, so that session cannot invoke those
+delegation tools. This is Claude-only defense-in-depth; Codex has no equivalent per-session tool
+deny mechanism. It constrains delegation, not general shell reach-around or a child process created
+by another route. The parent denylist binds the parent session and nothing beyond it. The same holds for
 `Read(.prauto/config.local.env)`: a subagent reads that file directly, exposing
 `ANTHROPIC_API_KEY` and `GH_TOKEN`. That denial was never the real boundary regardless — both are
 already exported into every child's environment — so delegation widens an existing exposure

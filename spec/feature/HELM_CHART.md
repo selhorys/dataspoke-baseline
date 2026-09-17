@@ -410,6 +410,21 @@ same image-digest pod annotation, so one push rolls both Deployments together. S
 | redis | `bitnami/redis` | ~25.3.0 | `redis.enabled` |
 | airflow | `apache-airflow/airflow` | ~1.20.0 (ships Airflow 3.1.8) | `airflow.enabled` |
 
+Dependency resolution is bounded and isolates host registry credentials. Local
+subcharts are regenerated from their declared source for each resolution. The
+repository carries a versioned dependency-integrity manifest that maps every
+remote dependency's locked name, version, and trusted source to its pinned
+SHA-256 archive digest. Before reuse, the resolver must verify the cached
+archive byte-for-byte against that manifest and confirm that its dependency
+identity agrees with `Chart.lock`. `Chart.lock` alone records no
+archive-content digest; a lock match, cache stamp, and archive filename are
+therefore never cache evidence. If the manifest entry is absent or inconsistent,
+the cached archive fails verification, or a freshly acquired archive cannot be
+verified against the pinned digest and trusted source, resolution fails closed
+after a bounded re-acquisition attempt. Interrupted resolution may leave
+temporary chart artifacts; the deployment subsystem removes only its recognized
+temporary artifacts before a subsequent resolution.
+
 The API is configured under the `api.*` values block (not a subchart) and gated
 by `api.enabled` against the umbrella's own templates.
 
@@ -438,7 +453,7 @@ Each component has a `<component>.enabled` toggle.
 
 ### Eviction resilience
 
-Every workload component except the Airflow statsd relay ships a
+Every core DataSpoke workload component except the Airflow statsd relay ships a
 PodDisruptionBudget paired with a
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` pod annotation:
 `templates/api-pdb.yaml`, `subcharts/{frontend,event-consumer}/templates/pdb.yaml`,
@@ -453,12 +468,21 @@ mechanism because it is a non-critical metrics relay whose loss costs
 observability, not correctness, and holding a node out of scale-down for it is
 not worth the price.
 
+The managed nginx-ingress controller and the dev-lock peripheral are outside
+that core workload set. They carry only the `safe-to-evict: "false"` annotation,
+not a PDB: the controller is a single development ingress endpoint managed by
+its upstream chart, while dev-lock is a single-replica development coordination
+service. The advisory annotation reduces ordinary autoscaler churn without
+claiming Eviction-API protection that a one-replica PDB could not provide
+without blocking routine development maintenance. Their availability contract
+is therefore annotation-only, unlike the PDB-plus-annotation core workloads.
+
 **The annotation and the PDB are two independent mechanisms with different
 audiences** — not a belt-and-braces pair on one path:
 
 | Mechanism | Honoured by | Blocks | Limit |
 |---|---|---|---|
-| `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` | cluster-autoscaler only | node scale-down, unconditionally — the autoscaler drops the node from its candidate set without simulating a drain, so no PDB arithmetic can be relaxed into permitting it | `kubectl drain`, node-pool upgrades, the descheduler, and every other Eviction-API caller never read it |
+| `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` | cluster-autoscaler implementations that honor the annotation | voluntary node scale-down for the annotated pod; it is not a Kubernetes scheduling or eviction guarantee | `kubectl drain`, node-pool upgrades, the descheduler, provider-specific eviction, and every other Eviction-API caller need not read it |
 | PodDisruptionBudget | the Eviction API — and cluster-autoscaler, which simulates the drain against live PDBs before removing a node | `kubectl drain`, node-pool and node-repair upgrades, any other Eviction-API caller — **and** scale-down, for as long as the budget admits no disruption | it is relaxable per workload: a budget widened to let drains through stops constraining scale-down at the same moment |
 
 Both cover the same set: frontend, api, event-consumer, the postgresql primary,
@@ -2197,6 +2221,17 @@ segments carry `__*_NS__` placeholders rendered from `.env` at install (see
 §Namespace Sourcing).
 Kafka services advertise `<INGRESS_IP>:<port>` as their EXTERNAL listener so
 host-side producers/consumers reach them through the controller.
+The controller's Service sets `externalTrafficPolicy: Local`: the load balancer
+therefore selects nodes with a local ready controller endpoint rather than
+relying on cross-node forwarding. This also preserves source addresses for an
+L4 load balancer, which is relevant to the API proxy-trust contract in
+[AUTH.md §Client-IP attribution for rate limiting](AUTH.md#client-ip-attribution-for-rate-limiting).
+The controller and `dev-lock` request the cluster-autoscaler
+`safe-to-evict: "false"` annotation to reduce voluntary scale-down disruption.
+That annotation is advisory to the autoscaler and neither setting guarantees
+connection continuity: endpoint readiness, load-balancer behavior, planned
+disruption, and provider-specific eviction policy remain outside this chart's
+control.
 
 In **shared** mode the operator's controller serves the virtual hosts over
 `http` or `https` per `DATASPOKE_KUBE_INGRESS_SCHEME` — a TLS-terminating

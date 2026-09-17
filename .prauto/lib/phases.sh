@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Phase handlers for prauto.
 # Source this file — do not execute directly.
 # Requires: helpers.sh, state.sh, quota.sh, issues.sh, agent.sh, git-ops.sh, pr.sh
@@ -26,6 +27,23 @@ HEARTBEAT_STAGE_PASSES=""
 # pass is evidence only for the artifact it actually exercised.
 DEPLOYED_API_SHA=""
 DEPLOYED_FRONTEND_SHA=""
+
+# Process-group id of the install.sh run provision_dev_env most recently
+# backgrounded. Set immediately after it is backgrounded and cleared just
+# after wait_with_group_backstop returns. heartbeat.sh's EXIT trap reads it:
+# install.sh's job runs in its
+# OWN process group (created by `set -m`), so if the heartbeat process itself
+# is killed while still blocked inside that wait, control jumps straight to
+# the trap without ever reaching the post-wait clear — the group would
+# otherwise be silently orphaned and keep running (and, with it, helm and any
+# credential-helper grandchild) after the heartbeat that launched it is gone.
+PROVISION_PGID=""
+PROVISION_LEADER_PID=""
+# A gated wrapper uses FD 9 only until the parent verifies its private PGID.
+# heartbeat.sh closes that FD on INT/TERM/EXIT so an unverified wrapper exits
+# before it can exec a provisioning or health-check command.
+CONTAINMENT_GATE_FD_OPEN=false
+CONTAINMENT_GATE_WRAPPER_PID=""
 
 # checkpoint_branch <issue_number> <branch>
 # Persist committed progress before a worker worktree is removed, then expose
@@ -186,27 +204,245 @@ with_dev_env() {
   )
 }
 
+# private_process_group_for_leader <leader_pid>
+# Print a verified private process-group id for a job-control child. A process
+# group is safe to signal only when its PGID equals its leader PID: that proves
+# it cannot be the heartbeat's group or an inherited caller group.
+private_process_group_for_leader() {
+  local leader_pid="$1"
+  [[ "$leader_pid" =~ ^[0-9]+$ ]] || return 1
+  # The job-control launch makes the child its own group leader.  A successful
+  # group-directed signal-zero probe for that same numeric id proves that the
+  # leader owns a live group with PGID == PID; otherwise no process can lead a
+  # group named by this still-live PID. Unlike ps(1), this works in restricted
+  # test/runtime sandboxes as well as on macOS.
+  kill -0 "$leader_pid" 2>/dev/null || return 1
+  kill -0 -"$leader_pid" 2>/dev/null || return 1
+  printf '%s' "$leader_pid"
+}
+
+# managed_process_group_is_live <pgid>
+# Test group membership rather than the leader's liveness: the leader can exit
+# while a credential helper or other descendant remains in its private group.
+managed_process_group_is_live() {
+  local pgid="$1"
+  [[ "$pgid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 -"$pgid" 2>/dev/null
+}
+
+# wait_with_group_backstop <timeout_secs> <leader_pid> <verified_pgid>
+# Shared TERM-then-KILL wall-clock backstop for a command already backgrounded
+# under `set -m`. The caller passes its leader PID plus a verified private
+# PGID. Blocks until the whole group exits or the timeout fires; on timeout it
+# group-kills the whole process tree (TERM, a short grace window, then KILL)
+# so descendants — e.g. helm's `docker-credential-desktop` helper — cannot
+# outlive it the way a plain `kill <pid>` would. Returns the command's exit
+# code, or 124 on timeout. It never falls back to bare-PID signalling.
+wait_with_group_backstop() {
+  local timeout_secs="$1" leader_pid="$2" pgid="$3"
+  [[ "$leader_pid" =~ ^[0-9]+$ && "$pgid" =~ ^[0-9]+$ ]] || return 2
+  local deadline=$(( $(date +%s) + timeout_secs )) rc=0
+  while managed_process_group_is_live "$pgid"; do
+    if (( $(date +%s) >= deadline )); then
+      kill -TERM -"$pgid" 2>/dev/null || true
+      sleep 2
+      managed_process_group_is_live "$pgid" && kill -9 -"$pgid" 2>/dev/null || true
+      wait "$leader_pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+  done
+  wait "$leader_pid" || rc=$?
+  return "$rc"
+}
+
+# prune_old_provision_logs <log_dir>
+# Provisioning logs are unscrubbed local transcripts of a real install.sh run
+# (see spec/AI_PRAUTO.md §Provisioning) — never posted anywhere, but not kept
+# forever either. Keeps the newest 4 so this run's own new file makes 5 total.
+prune_old_provision_logs() {
+  local log_dir="$1"
+  [[ -d "$log_dir" ]] || return 0
+  local -a old_logs=()
+  while IFS= read -r f; do old_logs+=("$f"); done < <(ls -1t "${log_dir}"/provision-* 2>/dev/null | tail -n +5)
+  [[ "${#old_logs[@]}" -gt 0 ]] && rm -f "${old_logs[@]}"
+  return 0
+}
+
 # provision_dev_env <env_file>
 # Provision the worker's dev cluster with a full dev-profile install, from the
 # repo checkout only (never the worktree). Returns 0 on a completed install, 1
-# when provisioning could not complete.
+# when provisioning could not complete (including a timeout) — handled exactly
+# like any other provisioning failure by every caller (see
+# spec/AI_PRAUTO.md §Provisioning).
+#
+# install.sh runs under a wall-clock backstop (PRAUTO_PROVISION_TIMEOUT_SECS,
+# default 3600) using the same group-kill mechanics as run_health_check
+# (wait_with_group_backstop) rather than quota.sh's run_with_timeout: that
+# helper only kills the process group when `setsid` is available, which macOS
+# does not guarantee, and install.sh can wedge on a `helm dependency build` ->
+# docker-credential-helper grandchild that a single-process TERM/KILL would
+# leave running. install.sh itself may background helm under its own `set -m`
+# job and TERM that group from its own EXIT trap, so this function's backstop
+# gives install.sh's whole tree the same TERM-then-grace-then-KILL treatment
+# rather than an immediate KILL that could cut its trap off mid-cleanup.
+# Output is written only to a per-run, mode-600 log file under the state dir.
+# The heartbeat emits fixed safe lifecycle messages, never raw or tailed log
+# text: provisioning output can contain operational details inappropriate for
+# stdout, stderr, GitHub comments, or scheduler logs. The private log is
+# mandatory: falling back to an unprotected stdout-only transcript would
+# violate the private-log contract.
+#
+# PROVISION_PGID (declared near the top of this file) is set the moment the
+# process is backgrounded and cleared immediately after its wait — see its
+# declaration comment for why heartbeat.sh's EXIT trap needs it.
 provision_dev_env() {
   local env_file="$1"
   [[ -z "${REPO_DIR:-}" ]] && { warn "REPO_DIR is not set. Cannot provision."; return 1; }
   local install_script="${REPO_DIR}/helm-charts/bin/install.sh"
   [[ -f "$install_script" ]] || { warn "install.sh not found. Cannot provision."; return 1; }
 
-  info "Provisioning the dev cluster (install.sh --profile dev)..."
-  local provision_output provision_exit=0
-  provision_output=$(bash "$install_script" --profile dev --env-file "$env_file" 2>&1) || provision_exit=$?
-  if [[ "$provision_exit" -ne 0 ]]; then
-    warn "Cluster provisioning failed (exit ${provision_exit}):"
-    warn "$provision_output"
+  local timeout="${PRAUTO_PROVISION_TIMEOUT_SECS:-3600}"
+  if [[ ! "$timeout" =~ ^[0-9]+$ ]] || [[ "$timeout" -lt 1 ]]; then
+    [[ -n "${PRAUTO_PROVISION_TIMEOUT_SECS:-}" ]] && \
+      warn "Invalid PRAUTO_PROVISION_TIMEOUT_SECS='${PRAUTO_PROVISION_TIMEOUT_SECS}'; using the default (3600s)."
+    timeout=3600
+  fi
+  local log_dir="${STATE_DIR:-${PRAUTO_DIR}/state}"
+  if ! mkdir -p "$log_dir" 2>/dev/null; then
+    warn "Could not create the private provisioning-log directory. Cannot provision."
     return 1
   fi
+  prune_old_provision_logs "$log_dir"
+  local prov_log=""
+  # BSD mktemp (macOS) expands Xs only at the end of its template. Keep the
+  # random suffix terminal so the same private-log path works on macOS and
+  # GNU systems; the provision-* retention glob intentionally has no suffix
+  # dependency.
+  prov_log=$(mktemp "${log_dir}/provision-XXXXXX" 2>/dev/null) || {
+    warn "Could not create a private provisioning log. Cannot provision."
+    return 1
+  }
+  if ! chmod 600 "$prov_log" 2>/dev/null; then
+    warn "Could not protect the provisioning log. Cannot provision."
+    rm -f "$prov_log"
+    return 1
+  fi
+
+  # Write the durable marker (and set the in-memory globals) BEFORE launching
+  # install.sh rather than after a successful exit. A cluster install.sh has
+  # only partially built is exactly the case this exists for: if this
+  # heartbeat is killed mid-install, both its own EXIT trap and a later
+  # heartbeat's recover_orphaned_dev_env must still find evidence to tear it
+  # down. This function only ever runs when the caller (dev_env_healthy) has
+  # already decided provisioning is needed, so it never marks — and therefore
+  # never tears down — a pre-existing healthy cluster prauto did not start
+  # provisioning.
   DEV_ENV_PROVISIONED=true
   DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
   write_dev_env_state_marker "$env_file"
+
+  info "Provisioning the dev cluster (install.sh --profile dev)..."
+  local pid pgid rc=0 gate_dir gate_fifo
+  # Start an inert gated wrapper, not install.sh itself. It cannot exec the
+  # provisioning command until this parent has verified the wrapper's private
+  # process group and writes "start" to its FIFO. If verification fails, close
+  # the FIFO instead: the wrapper reads EOF and exits without cluster work.
+  gate_dir=$(mktemp -d "${TMPDIR:-/tmp}/prauto-provision-gate.XXXXXX") || {
+    warn "Could not create the provisioning containment gate. Cannot provision."
+    return 1
+  }
+  gate_fifo="${gate_dir}/start"
+  if ! mkfifo "$gate_fifo"; then
+    rmdir "$gate_dir" 2>/dev/null || true
+    warn "Could not create the provisioning containment gate. Cannot provision."
+    return 1
+  fi
+  # O_RDWR makes the FIFO open non-blocking before the wrapper starts. It also
+  # lets heartbeat cleanup close the only writer in the signal window, causing
+  # the inert wrapper to receive EOF rather than wait indefinitely.
+  exec 9<>"$gate_fifo"
+  CONTAINMENT_GATE_FD_OPEN=true
+  set -m
+  # Keep the transcript private and bounded while preserving both the opening
+  # diagnostics and the final failure context. The byte-stream filter reads
+  # fixed-size chunks, retains at most 12 KiB for short output and 6 KiB from
+  # each end for larger output, and never buffers an entire line. pipefail is
+  # required so the installer's exit status, rather than the filter's,
+  # controls this job.
+  ( exec 9>&-; IFS= read -r permit < "$gate_fifo"; [[ "$permit" == start ]] || exit 0; set -o pipefail; LC_ALL=C bash "$install_script" --profile dev --env-file "$env_file" </dev/null 2>&1 | python3 -c '
+import sys
+
+LIMIT = 12000
+HALF = 6000
+CHUNK = 4096
+prefix = bytearray()
+suffix = bytearray()
+total = 0
+written = 0
+
+while True:
+    chunk = sys.stdin.buffer.read(CHUNK)
+    if not chunk:
+        break
+    total += len(chunk)
+    if written < LIMIT:
+        visible = chunk[: LIMIT - written]
+        sys.stdout.buffer.write(visible)
+        sys.stdout.buffer.flush()
+        written += len(visible)
+    if len(prefix) < HALF:
+        prefix.extend(chunk[: HALF - len(prefix)])
+    suffix.extend(chunk)
+    if len(suffix) > HALF:
+        del suffix[:-HALF]
+
+if total > LIMIT:
+    # The first 12 KiB were streamed so the private log is useful while the
+    # installer is still running. Once EOF proves that the stream was larger,
+    # replace the provisional middle with the retained tail. Both buffers are
+    # fixed-size, so even a giant single line cannot grow memory without bound.
+    sys.stdout.buffer.seek(0)
+    sys.stdout.buffer.write(prefix)
+    sys.stdout.buffer.write(suffix)
+    sys.stdout.buffer.truncate()
+    sys.stdout.buffer.flush()
+' >"$prov_log" 2>&1 ) &
+  pid=$!
+  CONTAINMENT_GATE_WRAPPER_PID="$pid"
+  set +m
+  if ! pgid=$(private_process_group_for_leader "$pid"); then
+    exec 9>&-
+    CONTAINMENT_GATE_FD_OPEN=false
+    wait "$pid" 2>/dev/null || true
+    CONTAINMENT_GATE_WRAPPER_PID=""
+    rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+    warn "Could not verify a private provisioning process group. Provisioning was not started."
+    return 1
+  fi
+  PROVISION_PGID="$pgid"
+  PROVISION_LEADER_PID="$pid"
+  # Store the verified group before authorizing the exec, so a signal that
+  # arrives immediately after this write still group-terminates the command.
+  printf 'start\n' >&9
+  exec 9>&-
+  CONTAINMENT_GATE_FD_OPEN=false
+  CONTAINMENT_GATE_WRAPPER_PID=""
+  rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+
+  rc=0
+  wait_with_group_backstop "$timeout" "$pid" "$pgid" || rc=$?
+  PROVISION_PGID=""
+  PROVISION_LEADER_PID=""
+
+  if [[ "$rc" -eq 124 ]]; then
+    warn "Cluster provisioning timed out after ${timeout}s. The private provisioning log was retained locally."
+    return 1
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    warn "Cluster provisioning failed (exit ${rc}). The private provisioning log was retained locally."
+    return 1
+  fi
   # install.sh rewrites the env file in place (e.g. a fresh LB IP for
   # DATASPOKE_DEV_LOCK_URL); re-resolve so DEV_ENV_FILE/DEV_LOCK_URL reflect it.
   if ! resolve_dev_env; then
@@ -299,34 +535,68 @@ HEALTH_CHECK_OUTPUT=""
 run_health_check() {
   local script="$1" env_file="$2"
   local timeout="${PRAUTO_HEALTH_CHECK_TIMEOUT_SECS:-300}"
-  local tmpdir out pid deadline rc=0
+  local tmpdir out pid rc=0
 
   HEALTH_CHECK_OUTPUT=""
   tmpdir="$(mktemp -d)" || { HEALTH_CHECK_OUTPUT="Could not create a temp dir."; return 2; }
   out="${tmpdir}/output"
 
+  local gate_dir gate_fifo pgid
+  gate_dir=$(mktemp -d "${TMPDIR:-/tmp}/prauto-health-gate.XXXXXX") || {
+    HEALTH_CHECK_OUTPUT="Could not create a health-check containment gate."
+    rm -rf "$tmpdir"
+    return 2
+  }
+  gate_fifo="${gate_dir}/start"
+  if ! mkfifo "$gate_fifo"; then
+    rmdir "$gate_dir" 2>/dev/null || true
+    HEALTH_CHECK_OUTPUT="Could not create a health-check containment gate."
+    rm -rf "$tmpdir"
+    return 2
+  fi
+  exec 9<>"$gate_fifo"
+  CONTAINMENT_GATE_FD_OPEN=true
   set -m
-  TMPDIR="$tmpdir" bash "$script" --env-file "$env_file" --keep-lock </dev/null >"$out" 2>&1 &
+  ( exec 9>&-; IFS= read -r permit < "$gate_fifo"; [[ "$permit" == start ]] || exit 0; exec env TMPDIR="$tmpdir" bash "$script" --env-file "$env_file" --keep-lock </dev/null >"$out" 2>&1 ) &
   pid=$!
+  CONTAINMENT_GATE_WRAPPER_PID="$pid"
   set +m
-
-  deadline=$(( $(date +%s) + timeout ))
-  while kill -0 "$pid" 2>/dev/null; do
-    if (( $(date +%s) >= deadline )); then
-      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-      sleep 2
-      kill -0 "$pid" 2>/dev/null && { kill -9 -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true; }
-      wait "$pid" 2>/dev/null || true
-      HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)
+  rc=0
+  pgid=$(private_process_group_for_leader "$pid") || {
+    HEALTH_CHECK_OUTPUT="Could not verify a private health-check process group."
+    exec 9>&-
+    CONTAINMENT_GATE_FD_OPEN=false
+    wait "$pid" 2>/dev/null || true
+    CONTAINMENT_GATE_WRAPPER_PID=""
+    rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+    rm -rf "$tmpdir"
+    return 2
+  }
+  # Publish the verified group before authorizing the health-check command. If
+  # the heartbeat is signalled while the command is running, its EXIT trap can
+  # now terminate and reap this whole private group rather than waiting on a
+  # wedged leader or leaving descendants behind.
+  PROVISION_PGID="$pgid"
+  PROVISION_LEADER_PID="$pid"
+  printf 'start\n' >&9
+  exec 9>&-
+  CONTAINMENT_GATE_FD_OPEN=false
+  CONTAINMENT_GATE_WRAPPER_PID=""
+  rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+  wait_with_group_backstop "$timeout" "$pid" "$pgid" || rc=$?
+  # Do not clear the shared containment state until the group wait/backstop has
+  # completed; heartbeat cleanup owns it while this function is blocked.
+  if [[ "$rc" -eq 124 ]]; then
+    HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)
 [health-check did not finish within ${timeout}s and was stopped]"
-      rm -rf "$tmpdir"
-      return 1
-    fi
-    sleep 1
-  done
-
-  wait "$pid" || rc=$?
+    PROVISION_PGID=""
+    PROVISION_LEADER_PID=""
+    rm -rf "$tmpdir"
+    return 1
+  fi
   HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)"
+  PROVISION_PGID=""
+  PROVISION_LEADER_PID=""
   rm -rf "$tmpdir"
   return "$rc"
 }
@@ -1208,7 +1478,7 @@ targeted_failure_comment_evidence() {
 # pushed branch head.  Sets TARGETED_REGRESSION_EXIT: 0 pass, 1 code failure,
 # 2 setup/infrastructure block.
 run_targeted_post_pr_regression() {
-  local issue_number="$1" branch="$2" output exit_code=0
+  local issue_number="$1" branch="$2" output exit_code=0 targeted_head
   TARGETED_REGRESSION_EXIT=0
   POST_PR_TARGETED_PASSES=""; POST_PR_TARGETED_FAILURES=""; POST_PR_TARGETED_EVIDENCE=""
   POST_PR_TARGETED_FAILED_TEST_DETAILS=""
@@ -1221,6 +1491,19 @@ run_targeted_post_pr_regression() {
     return 0
   fi
   require_pushed_head "$branch" || { TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "pushed branch head could not be verified" "$branch"; return 0; }
+  # All success evidence below is executor-observed. Bind the entire targeted
+  # run to an already-pushed revision before any command starts, then repeat
+  # this check after the selected stages complete. A test runner may create
+  # ignored artifacts, so cleanliness is checked before the worker's push;
+  # it is not a meaningful post-test criterion. An agent attestation is only
+  # an admission ticket to this executor retry; it can never supply pass
+  # evidence or bridge a moved head.
+  targeted_head=$(current_head)
+  if [[ -z "$targeted_head" ]]; then
+    TARGETED_REGRESSION_EXIT=2
+    regression_blocked "$issue_number" "targeted regression could not resolve the executor head" "$branch"
+    return 0
+  fi
 
   # Local checks: dependency sync is setup, while every selected check is a
   # branch-attributable target. Do not rerun an unrelated successful gate.
@@ -1302,6 +1585,17 @@ run_targeted_post_pr_regression() {
       release_required_dev_lock
     fi
   fi
+
+  # Do not turn successful command exits into a pass if the local or remote
+  # branch moved while the executor was testing. This is deliberately an
+  # infrastructure block, not a branch failure: the recorded stage result no
+  # longer proves the exact pushed head and must be rerun on a later heartbeat.
+  if [[ "$TARGETED_REGRESSION_EXIT" -eq 0 ]] && \
+     { [[ "$(current_head)" != "$targeted_head" ]] || ! require_pushed_head "$branch"; }; then
+    TARGETED_REGRESSION_EXIT=2
+    regression_blocked "$issue_number" "targeted regression lost its exact clean pushed-head binding" "$branch"
+    return 0
+  fi
 }
 
 # run_post_pr_regression <issue> <branch>
@@ -1365,7 +1659,7 @@ ${POST_PR_FAILED_TEST_DETAILS:-- No failing test identifiers were recorded.}"; t
     regression_blocked "$issue_number" "required regression failure notice could not be posted" "$branch"; POST_PR_REGRESSION_SUMMARY_MODE=false; return 1
   fi
   info "Initial full regression failed; invoking one targeted worker fix loop."
-  run_integration_fix_session "$issue_number" "$branch" "$POST_PR_FAILED_STAGES" "$POST_PR_FAILURE_EVIDENCE"
+  run_integration_fix_session "$issue_number" "$branch" "$POST_PR_FAILED_STAGES" "$POST_PR_FAILURE_EVIDENCE" post-pr
   checkpoint_branch "$issue_number" "$branch"
     # A PR already exists by this point, so derive_phase_from_github will always
     # report "pr" on the next wake — a phase the quota-resume dispatch in
@@ -1514,12 +1808,46 @@ run_integration_test_fix() {
     fi
   fi
 
-  local attempt quota_paused=false
-  for (( attempt = 1; attempt <= max_retries; attempt++ )); do
+  local max_flake_reruns="${PRAUTO_INTEGRATION_FLAKE_RERUNS:-2}"
+  if [[ ! "$max_flake_reruns" =~ ^[0-9]+$ ]]; then
+    [[ -n "${PRAUTO_INTEGRATION_FLAKE_RERUNS:-}" ]] && \
+      warn "Invalid PRAUTO_INTEGRATION_FLAKE_RERUNS='${PRAUTO_INTEGRATION_FLAKE_RERUNS}'; using the default (2)."
+    max_flake_reruns=2
+  fi
+
+  # attempt only advances when a worker is (or would be) dispatched; a flake-only
+  # rerun (below) repeats the groups without spending a fix attempt. flake_reruns
+  # is a separate, smaller budget for exactly that case. is_flake_rerun lets the
+  # single top-of-loop heartbeat comment note a rerun instead of a second,
+  # duplicate comment. need_pre_probe is set after a worker session (whether or
+  # not it redeployed) so the NEXT iteration re-checks cluster health before
+  # trusting it — the fix session's own wall-clock time can make the last
+  # confirmed-healthy check stale by the time that iteration actually runs.
+  local attempt=1 quota_paused=false
+  local flake_reruns=0
+  local is_flake_rerun=false
+  local need_pre_probe=false
+  while [[ "$attempt" -le "$max_retries" ]]; do
+    if [[ "$need_pre_probe" == true ]]; then
+      need_pre_probe=false
+      if ! dev_env_probe_healthy "$DEV_ENV_FILE"; then
+        warn "Dev-env unhealthy ahead of attempt ${attempt} (stale since the last fix session/redeploy). Ending the integration test fix loop without dispatching a worker."
+        curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
+          -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+        return 0
+      fi
+    fi
+
+    # Exactly one comment per loop iteration: a flake rerun folds its
+    # (fixed-string, numbers-only) note into this same comment instead of
+    # posting a second one — see the flake-classification block below, which
+    # only sets is_flake_rerun and logs locally.
+    local attempt_comment="prauto(${PRAUTO_WORKER_ID}): Heartbeat — integration test fix loop: attempt ${attempt}/${max_retries}"
+    [[ "$is_flake_rerun" == true ]] && attempt_comment="${attempt_comment}, flake rerun ${flake_reruns}/${max_flake_reruns}"
+    is_flake_rerun=false
+    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" --body "$attempt_comment" 2>/dev/null || true
+
     info "Integration test fix loop: attempt ${attempt}/${max_retries}"
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — integration test fix loop: attempt ${attempt}/${max_retries}" \
-      2>/dev/null || true
     local tested_head
     tested_head=$(executor_test_head)
     run_integration_groups "$DEV_ENV_FILE"
@@ -1533,11 +1861,71 @@ run_integration_test_fix() {
     [[ "$INTEG_EXIT" -eq 0 ]] && { info "Integration tests passed on attempt ${attempt}."; break; }
 
     info "Integration tests failed (spot: ${INTEG_SPOT_EXIT}, api-wired: ${INTEG_API_WIRED_EXIT})."
+
+    # A session-start health-gate abort (require_server failed before any test
+    # ran) is an infrastructure condition, never a branch failure or a flake.
+    # Checked explicitly, before flake classification, so it gets its own
+    # correctly-labeled outcome (spec/AI_PRAUTO.md's cluster-abort handling)
+    # rather than merely falling through: it extracts no per-test failures, so
+    # stage_failures_are_transport_flakes below would reject it as non-flake
+    # too, but silently landing in the ordinary worker-dispatch path would
+    # spend a fix attempt at a cluster that cannot run tests at all.
+    local health_abort=""
+    [[ "$INTEG_SPOT_EXIT" -ne 0 ]] && is_cluster_health_abort "$INTEG_SPOT_OUTPUT" && health_abort="Integration (spot)"
+    if [[ "$INTEG_API_WIRED_EXIT" -ne 0 ]] && is_cluster_health_abort "$INTEG_API_WIRED_OUTPUT"; then
+      health_abort="${health_abort:+${health_abort}, }Integration (api-wired)"
+    fi
+    if [[ -n "$health_abort" ]]; then
+      warn "Integration harness health gate aborted before any test ran (${health_abort}). Ending the integration test fix loop without dispatching a worker (infrastructure)."
+      curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
+        -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+      return 0
+    fi
+
+    # Environmental transport-flake convergence (spec/AI_PRAUTO.md's flake
+    # exception, conditions 1/2/3/5 — no fix-path condition 4 applies here,
+    # since no fix is being classified): every failed group's own failures must
+    # be allowlisted transport signatures with no disqualifier, and the
+    # post-stage health probe (never provisions) must pass. When both hold, the
+    # executor reruns the groups itself on the next iteration instead of
+    # dispatching a worker. This never reads worker attestation as pass
+    # evidence — only Stage 5's targeted retry does that.
+    local flake_only=true
+    [[ "$INTEG_SPOT_EXIT" -ne 0 ]] && { stage_failures_are_transport_flakes "Integration (spot)" "$INTEG_SPOT_OUTPUT" || flake_only=false; }
+    [[ "$INTEG_API_WIRED_EXIT" -ne 0 ]] && { stage_failures_are_transport_flakes "Integration (api-wired)" "$INTEG_API_WIRED_OUTPUT" || flake_only=false; }
+    if [[ "$flake_only" == true ]] && dev_env_probe_healthy "$DEV_ENV_FILE"; then
+      local flake_stage_names="" flake_categories=""
+      if [[ "$INTEG_SPOT_EXIT" -ne 0 ]]; then
+        flake_stage_names="Integration (spot)"
+        flake_categories="Integration (spot): $(stage_transport_flake_categories "Integration (spot)" "$INTEG_SPOT_OUTPUT")"
+      fi
+      if [[ "$INTEG_API_WIRED_EXIT" -ne 0 ]]; then
+        flake_stage_names="${flake_stage_names:+${flake_stage_names}, }Integration (api-wired)"
+        flake_categories="${flake_categories:+${flake_categories}; }Integration (api-wired): $(stage_transport_flake_categories "Integration (api-wired)" "$INTEG_API_WIRED_OUTPUT")"
+      fi
+      # Logged only, not posted: the next iteration's single top-of-loop
+      # comment above already announces the rerun with fixed strings and
+      # numeric counters, so the free-form stage/category text stays local
+      # instead of duplicating into a second public comment.
+      if [[ "$flake_reruns" -lt "$max_flake_reruns" ]]; then
+        flake_reruns=$((flake_reruns + 1))
+        info "Environmental transport flake in ${flake_stage_names} (${flake_categories}) — rerunning without a fix session (flake rerun ${flake_reruns}/${max_flake_reruns})."
+        is_flake_rerun=true
+        continue
+      fi
+      info "Flake-only integration failures in ${flake_stage_names} exhausted the flake rerun budget (${max_flake_reruns}). Proceeding without dispatching a worker."
+      break
+    fi
+
     if [[ "$attempt" -lt "$max_retries" ]]; then
       local failed_stages=""
       [[ "$INTEG_SPOT_EXIT" -ne 0 ]] && failed_stages="Integration (spot)"
       [[ "$INTEG_API_WIRED_EXIT" -ne 0 ]] && failed_stages="${failed_stages:+${failed_stages}, }Integration (api-wired)"
-      run_integration_fix_session "$issue_number" "$branch" "$failed_stages" "$INTEG_OUTPUT"
+      local pre_fix_head post_fix_head
+      pre_fix_head=$(current_head)
+      run_integration_fix_session "$issue_number" "$branch" "$failed_stages" "$INTEG_OUTPUT" pre-pr
+      post_fix_head=$(current_head)
+      [[ "$post_fix_head" == "$pre_fix_head" ]] && info "fix session produced no commit"
       checkpoint_branch "$issue_number" "$branch"
       # No PR exists yet at this point in the pipeline, so the next wake still
       # derives phase "implementation" and the quota-resume dispatch in
@@ -1548,9 +1936,26 @@ run_integration_test_fix() {
         quota_paused=true
         break
       fi
+      # A commit that touches src/api/, src/backend/, or src/shared/ must be
+      # redeployed before the rerun below, or the rerun would exercise the
+      # unchanged pre-fix image while DEPLOYED_API_SHA no longer matches the
+      # commit it actually tests, and the rerun would never be able to record
+      # a pass. deploy_branch_api builds from the worktree's current
+      # (already-committed) source directly, so it needs no push and runs
+      # regardless of whether checkpoint_branch's best-effort push succeeded.
+      if [[ "$post_fix_head" != "$pre_fix_head" ]] && diff_touches src/api/ src/backend/ src/shared/; then
+        if ! deploy_branch_api "$DEV_ENV_FILE"; then
+          warn "Branch API redeploy after the fix session failed. Skipping the rest of the integration test fix loop."
+          curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
+            -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+          return 0
+        fi
+      fi
+      need_pre_probe=true
     else
       info "Max integration fix retries reached. Proceeding with current state."
     fi
+    attempt=$((attempt + 1))
   done
 
   curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \

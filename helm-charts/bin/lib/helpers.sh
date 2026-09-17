@@ -502,6 +502,397 @@ helm_repo_add_if_missing() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Chart dependency build — shared by install.sh and uninstall.sh (both
+# source this file already), so the two entry points cannot drift on the
+# timeout/isolation/staleness handling below.
+# ---------------------------------------------------------------------------
+
+# Tracks a `_run_with_timeout` background job's pid, and the scratch
+# DOCKER_CONFIG dir _build_chart_deps creates for it, so a caller's EXIT trap
+# can reach both even when the CALLING script itself is killed (Ctrl-C, or an
+# outer supervisor's group-kill) while the job is still running. `set -m`
+# puts that job in its own process group, separate from the calling script's,
+# so a signal sent to the calling script's group does not reach it by
+# propagation alone — see _cleanup_run_with_timeout_state. Empty when nothing
+# is in flight.
+_TIMEOUT_CHILD_PID=""
+_TIMEOUT_CHILD_PGID=""
+_TIMEOUT_DOCKER_CONFIG_DIR=""
+_TIMEOUT_GROUP_ISOLATION_CHECKED=false
+
+_timeout_group_has_members() {
+  local pgid="$1"
+  [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 1
+  # A negative signal target addresses the whole process group.  Unlike a
+  # leader-only `kill -0 $pid`, this stays true after a shell exits while one
+  # of its descendants still owns the group.
+  kill -0 -- "-${pgid}" 2>/dev/null
+}
+
+_terminate_timeout_group() {
+  local pgid="$1"
+  [[ "$pgid" =~ ^[1-9][0-9]*$ ]] || return 1
+  _timeout_group_has_members "$pgid" || return 0
+  # A negative target is a process group. There is intentionally no bare-PID
+  # fallback: if job control failed to make a verified private group, a bare
+  # kill could leave grandchildren alive (or target the caller's own group).
+  kill -TERM -- "-${pgid}" 2>/dev/null || warn "Could not send TERM to timed process group ${pgid}."
+  sleep 0.2
+  # Never clear ownership just because the leader was reaped. Reissue KILL
+  # while the group exists, then wait through any re-parenting window. A
+  # process group that cannot be proven empty remains this supervisor's
+  # responsibility; returning would permit a later dependency attempt to run
+  # beside leaked descendants.
+  while _timeout_group_has_members "$pgid"; do
+    kill -KILL -- "-${pgid}" 2>/dev/null || warn "Could not send KILL to timed process group ${pgid}."
+    sleep 0.1
+  done
+  return 0
+}
+
+_require_timeout_group_isolation() {
+  [[ "${_TIMEOUT_GROUP_ISOLATION_CHECKED}" == true ]] && return 0
+  local probe_pid
+  set -m
+  sleep 1 &
+  probe_pid=$!
+  set +m
+  # The probe is bounded independently and is the capability check performed
+  # immediately before the first real timed launch. If job control cannot
+  # create this private group, no caller command has been accepted yet.
+  if ! _timeout_group_has_members "$probe_pid"; then
+    wait "$probe_pid" 2>/dev/null || true
+    warn "Timed process-group isolation is unavailable; refusing dependency resolution."
+    return 1
+  fi
+  # Let the bounded probe finish normally: killing a job-control job causes
+  # bash to print a distracting asynchronous "Terminated" notification.
+  wait "$probe_pid" 2>/dev/null || true
+  _TIMEOUT_GROUP_ISOLATION_CHECKED=true
+}
+
+# _cleanup_run_with_timeout_state
+# install.sh and uninstall.sh each wire this into their own EXIT trap
+# (composed with whatever else that trap already does), paired with `trap
+# 'exit 130' INT` / `trap 'exit 143' TERM` so a signal actually runs the EXIT
+# trap instead of just killing the script outright. A no-op when nothing is
+# in flight, so it is always safe to call unconditionally.
+_cleanup_run_with_timeout_state() {
+  if [[ -n "${_TIMEOUT_CHILD_PGID}" ]]; then
+    _terminate_timeout_group "${_TIMEOUT_CHILD_PGID}" || warn "Timed dependency process group ${_TIMEOUT_CHILD_PGID} did not terminate cleanly."
+  fi
+  if [[ -n "${_TIMEOUT_CHILD_PID}" ]]; then
+    wait "${_TIMEOUT_CHILD_PID}" 2>/dev/null || true
+    _TIMEOUT_CHILD_PID=""
+  fi
+  _TIMEOUT_CHILD_PGID=""
+  if [[ -n "${_TIMEOUT_DOCKER_CONFIG_DIR}" ]]; then
+    rm -rf "${_TIMEOUT_DOCKER_CONFIG_DIR}"
+    _TIMEOUT_DOCKER_CONFIG_DIR=""
+  fi
+}
+
+# _run_with_timeout <secs> <command...>
+# Run <command...> with a wall-clock backstop. macOS ships no timeout(1), so
+# this uses the same background+deadline+TERM-then-KILL idiom as
+# health-check.sh's `_bounded` and .prauto/lib/phases.sh's `run_health_check`:
+# `set -m` around the launch makes the child a process-group leader. The group
+# identity is verified before tracking; the deadline remains in force until
+# both that leader and every remaining group member have exited. Prints
+# nothing of its own; stdout/stderr are the command's. Returns 124 on timeout,
+# the command's own exit code otherwise.
+_run_with_timeout() {
+  local secs="$1"; shift
+  [[ "$secs" =~ ^[1-9][0-9]*$ ]] || error "_run_with_timeout: <secs> must be a positive integer, got '${secs}'"
+  local pid pgid deadline rc=0 group_alive
+
+  _require_timeout_group_isolation || return 1
+
+  set -m
+  "$@" &
+  pid=$!
+  set +m
+  # With bash job control the job's process-group ID is its initial leader's
+  # PID. Do not query only that leader: a fast wrapper can exit before `ps`
+  # observes it while a descendant is still alive in the same group.
+  pgid="$pid"
+  if ! _timeout_group_has_members "$pgid"; then
+    warn "Private process-group verification changed after the isolation check; refusing unsafe bare-PID supervision."
+    return 125
+  fi
+  _TIMEOUT_CHILD_PID="$pid"
+  _TIMEOUT_CHILD_PGID="$pgid"
+
+  deadline=$(( $(date +%s) + secs ))
+  while :; do
+    group_alive=false
+    _timeout_group_has_members "$pgid" && group_alive=true
+    if [[ "$group_alive" == false ]]; then
+      break
+    fi
+    if (( $(date +%s) >= deadline )); then
+      _terminate_timeout_group "$pgid" || warn "Timed command process group ${pgid} did not terminate cleanly."
+      wait "$pid" 2>/dev/null || true
+      _TIMEOUT_CHILD_PID=""
+      _TIMEOUT_CHILD_PGID=""
+      return 124
+    fi
+    sleep 1
+  done
+
+  wait "$pid" || rc=$?
+  _TIMEOUT_CHILD_PID=""
+  _TIMEOUT_CHILD_PGID=""
+  return "$rc"
+}
+
+# _chart_yaml_local_deps <chart_dir>
+# Print "<name> <relative-dir>" for every dependency in <chart_dir>/Chart.yaml
+# whose repository is a file:// URL (DataSpoke's own subcharts) — the
+# authoritative source for which local subcharts exist and what Helm calls
+# them, rather than assuming every directory under subcharts/ is one (a
+# renamed or removed subchart directory would otherwise silently stop
+# matching, or an unrelated directory would silently start being packaged).
+# A new dependency entry is any `- <key>: ...` line (the list marker, not
+# specifically `- name:` — Chart.yaml is hand-authored and a dependency's
+# keys can be written in any order, unlike Chart.lock's generated shape), and
+# `name:`/`repository:` are read wherever they appear up to the next `-`
+# item, so field order within a block does not matter. Scoped to the
+# top-level `dependencies:` list so it cannot be fooled by an unrelated
+# `- name:` elsewhere in the file (e.g. a `maintainers:` list). Values may be
+# quoted or bare, as Helm's Chart.yaml schema allows either.
+_chart_yaml_local_deps() {
+  local chart_dir="$1"
+  local file="${chart_dir}/Chart.yaml"
+  [[ -f "$file" ]] || return 1
+  awk '
+    function extract_value(line,    val) {
+      val = line
+      sub(/^[^:]*:[[:space:]]*/, "", val)
+      gsub(/^"|"$/, "", val)
+      return val
+    }
+    function flush() {
+      if (started && name != "" && repo ~ /^file:\/\//) {
+        sub(/^file:\/\//, "", repo)
+        print name, repo
+      }
+      started = 0; name = ""; repo = ""
+    }
+    /^dependencies:/ { in_deps = 1; next }
+    in_deps && /^[^[:space:]]/ { flush(); in_deps = 0 }
+    in_deps && /^[[:space:]]*-[[:space:]]*/ {
+      flush(); started = 1
+      item = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", item)
+      if (item ~ /^name:/)       { name = extract_value(item) }
+      else if (item ~ /^repository:/) { repo = extract_value(item) }
+      next
+    }
+    in_deps && started && /^[[:space:]]*name:/       { name = extract_value($0) }
+    in_deps && started && /^[[:space:]]*repository:/ { repo = extract_value($0) }
+    END { flush() }
+  ' "$file"
+}
+
+# _chart_lock_remote_deps <chart_dir>
+# Print "<name> <version> <repository>" for every dependency in <chart_dir>/Chart.lock
+# whose repository is NOT file:// (i.e. the ones `helm dependency build`
+# actually has to fetch over the network) — one triple per line on stdout.
+# Returns 1 with no output when Chart.lock is absent. Field order within a
+# block is not assumed: a record is finalized (and its repository checked)
+# only when the NEXT `- name:` is seen, or at end of file, so `repository:`
+# and `version:` may appear in either order. An entry that reaches its end
+# without every name, version, and repository field prints a sentinel triple
+# instead of being silently dropped, so a
+# malformed or unexpectedly-shaped lock entry forces the caller to rebuild
+# rather than being read as "nothing to fetch".
+_chart_lock_remote_deps() {
+  local chart_dir="$1"
+  local lock="${chart_dir}/Chart.lock"
+  [[ -f "$lock" ]] || return 1
+  awk '
+    function flush() {
+      if (started) {
+        if (name == "" || version == "" || repo == "") {
+          print "__INCOMPLETE__ __INCOMPLETE__ __INCOMPLETE__"
+        } else if (repo !~ /^file:\/\//) {
+          print name, version, repo
+        }
+      }
+      started = 0; name = ""; repo = ""; version = ""
+    }
+    /^- name:/ { flush(); started = 1; name = $3 }
+    /^  repository:/ { repo = $2 }
+    /^  version:/ { version = $2 }
+    END { flush() }
+  ' "$lock"
+}
+
+_sha256_file() {
+  local file="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  else
+    error "Neither shasum nor sha256sum is available — cannot verify chart dependency archive integrity."
+  fi
+}
+
+# _integrity_manifest_digest <chart_dir> <name> <version> <repository>
+# Emit the unique pinned digest for the exact locked tuple.  The tiny, strict
+# parser intentionally accepts only this repository-controlled manifest shape;
+# malformed, duplicate, or incomplete entries never become cache evidence.
+_integrity_manifest_digest() {
+  local chart_dir="$1" name="$2" version="$3" repository="$4"
+  local manifest="${chart_dir}/dependency-integrity.yaml"
+  [[ -f "$manifest" ]] || return 1
+  awk -v wanted_name="$name" -v wanted_version="$version" -v wanted_repo="$repository" '
+    function flush() {
+      if (started && name == wanted_name && version == wanted_version && repository == wanted_repo && sha ~ /^[0-9a-f]{64}$/) {
+        matches++; digest = sha
+      }
+      started = 0; name = ""; version = ""; repository = ""; sha = ""
+    }
+    /^[[:space:]]*-[[:space:]]+name:[[:space:]]*/ { flush(); started = 1; sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/, ""); name = $0; next }
+    started && /^[[:space:]]+version:[[:space:]]*/ { sub(/^[[:space:]]+version:[[:space:]]*/, ""); version = $0; next }
+    started && /^[[:space:]]+repository:[[:space:]]*/ { sub(/^[[:space:]]+repository:[[:space:]]*/, ""); repository = $0; next }
+    started && /^[[:space:]]+sha256:[[:space:]]*/ { sub(/^[[:space:]]+sha256:[[:space:]]*/, ""); sha = $0; next }
+    END { flush(); if (matches == 1) print digest; else exit 1 }
+  ' "$manifest"
+}
+
+_remote_dependency_archive_verified() {
+  local chart_dir="$1" name="$2" version="$3" repository="$4"
+  local expected actual archive
+  expected="$(_integrity_manifest_digest "$chart_dir" "$name" "$version" "$repository")" || return 1
+  archive="${chart_dir}/charts/${name}-${version}.tgz"
+  [[ -f "$archive" ]] || return 1
+  actual="$(_sha256_file "$archive")" || return 1
+  [[ "$actual" == "$expected" ]]
+}
+
+_remote_dependency_cache_verified() {
+  local chart_dir="$1" name version repository saw_remote=false
+  [[ -f "${chart_dir}/Chart.lock" ]] || return 1
+  while read -r name version repository; do
+    [[ -n "$name" ]] || continue
+    [[ "$name" != "__INCOMPLETE__" ]] || return 1
+    saw_remote=true
+    _remote_dependency_archive_verified "$chart_dir" "$name" "$version" "$repository" || return 1
+  done < <(_chart_lock_remote_deps "$chart_dir")
+  "$saw_remote"
+}
+
+# Remove only archive paths named by complete remote Chart.lock entries.
+# This happens before re-acquisition so Helm cannot retain an archive that
+# failed our byte check.  An incomplete lock fails closed without cleanup.
+_clear_locked_remote_dependency_archives() {
+  local chart_dir="$1" name version repository
+  while read -r name version repository; do
+    [[ -n "$name" ]] || continue
+    [[ "$name" != "__INCOMPLETE__" ]] || return 1
+    rm -f "${chart_dir}/charts/${name}-${version}.tgz"
+  done < <(_chart_lock_remote_deps "$chart_dir")
+}
+
+_package_local_chart_deps() {
+  local chart_dir="$1" dep_name dep_relpath dep_path
+  while read -r dep_name dep_relpath; do
+    [[ -n "$dep_name" ]] || continue
+    dep_path="${chart_dir}/${dep_relpath}"
+    [[ -d "$dep_path" ]] || { warn "Chart.yaml declares local dependency '${dep_name}' at '${dep_relpath}', but it is missing."; return 1; }
+    rm -f "${chart_dir}/charts/${dep_name}"-*.tgz
+    helm package "$dep_path" -d "${chart_dir}/charts/" >/dev/null || return 1
+  done < <(_chart_yaml_local_deps "$chart_dir")
+}
+
+# _build_chart_deps <chart_dir>
+# Rebuilds <chart_dir>/charts/ to match the chart's declared dependencies
+# without re-downloading remote charts that have not changed since the last
+# successful build here.
+#
+# Local file:// subcharts (from _chart_yaml_local_deps) are repackaged
+# directly with `helm package` — a local, network-free operation — on every
+# call, so template/config edits always ship instead of a stale cached tgz.
+# Each one's OLD tgz is removed first, by its Chart.yaml-declared name:
+# `helm package` does not overwrite a differently-VERSIONED archive of the
+# same chart, so a version bump with no matching removal would leave both
+# the old and the new tgz in charts/ and Helm would load whichever sorts
+# first.
+#
+# A remote archive is reusable only when its exact Chart.lock
+# name/version/repository tuple occurs exactly once in the committed
+# dependency-integrity.yaml and its bytes match that entry's SHA-256.  A
+# filename, Chart.lock digest, or local stamp is never cache evidence.  Any
+# missing or inconsistent manifest entry, malformed lock entry, missing
+# archive, or byte mismatch re-acquires under the bounded path below; the
+# freshly acquired result is checked against the same manifest before success.
+#
+# That build call is wrapped in _run_with_timeout
+# (DATASPOKE_CHART_DEPS_TIMEOUT_SECS, default 180s) so a hung
+# docker-credential helper (e.g. Docker Desktop off, `credsStore` pointed at
+# a dead helper — bitnami resolves through the OCI registry, which
+# challenges with 401 and sends helm to the local credential store) cannot
+# wedge the whole install; a timeout counts as a failed attempt and the
+# existing 5x retry loop below proceeds exactly as on any other failure. The
+# call also gets its own throwaway DOCKER_CONFIG (empty config.json — no
+# credsStore, no credHelpers) so it never reaches host docker credentials in
+# the first place; this is scoped to the one `helm` invocation, not exported
+# for the caller's whole process, because install.sh also runs `docker
+# build`/`push` later (API/frontend images) that DOES need the real
+# DOCKER_CONFIG (gcloud credHelpers).
+#
+# Also clears any `tmpcharts-*` directories at the start — helm's own
+# temp-and-rename staging dir next to charts/, left behind when a previous
+# `helm dependency build` was killed (by a timeout here, an interrupted
+# install, etc.) before it could clean up after itself.
+_build_chart_deps() {
+  local chart_dir="$1"
+  rm -rf "${chart_dir}"/tmpcharts-*
+
+  if _remote_dependency_cache_verified "$chart_dir"; then
+    _package_local_chart_deps "$chart_dir" || return 1
+    return 0
+  fi
+
+  _clear_locked_remote_dependency_archives "$chart_dir" || {
+    warn "Chart.lock has incomplete remote dependency entries; refusing dependency resolution."
+    return 1
+  }
+
+  local timeout="${DATASPOKE_CHART_DEPS_TIMEOUT_SECS:-180}"
+  [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || error "DATASPOKE_CHART_DEPS_TIMEOUT_SECS must be a positive integer, got '${timeout}'"
+  local docker_config_dir
+  docker_config_dir="$(mktemp -d)" || { warn "Could not create a temp DOCKER_CONFIG dir for helm dependency build."; return 1; }
+  _TIMEOUT_DOCKER_CONFIG_DIR="$docker_config_dir"
+  echo '{}' > "${docker_config_dir}/config.json"
+
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if DOCKER_CONFIG="$docker_config_dir" _run_with_timeout "$timeout" helm dependency build "${chart_dir}" \
+      && _remote_dependency_cache_verified "$chart_dir"; then
+      rm -rf "$docker_config_dir"
+      _TIMEOUT_DOCKER_CONFIG_DIR=""
+      _package_local_chart_deps "$chart_dir" && return 0
+      warn "  local chart dependency packaging failed after remote dependency resolution."
+      return 1
+    fi
+    warn "  helm dependency build failed, timed out, or produced archives outside the integrity manifest (attempt ${attempt}/5) — retrying in 5s..."
+    # A completed Helm command can still have left an archive that failed our
+    # manifest check. Remove the known locked paths before the next attempt so
+    # Helm must fetch rather than treating that bad local file as satisfied.
+    _clear_locked_remote_dependency_archives "$chart_dir" || break
+    sleep 5
+  done
+  rm -rf "$docker_config_dir"
+  _TIMEOUT_DOCKER_CONFIG_DIR=""
+  warn "helm dependency build for '${chart_dir}' failed integrity-checked resolution after 5 attempts."
+  return 1
+}
+
 # env_file_set_var <key> <value> [env_file]
 # The single idempotent `.env` rewriter: replace every existing `<key>=` line
 # with `<key>=<value>`, or append the assignment when the key is absent.
