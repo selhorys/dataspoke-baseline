@@ -641,9 +641,15 @@ the selected Playwright target.
 - Ordering is a constraint, not a preference. Two reasons compound: the frontend deploy rolls the
   API pod, and `--components api` would delete the cluster frontend if it ran second. E2E must
   land strictly after the integration groups and never run concurrently with them.
-- `PRAUTO_E2E_FIX_MAX_RETRIES` defaults to `1`, which is **report-only**: the executor invokes a fix
-  session only on a non-final attempt, so a single attempt runs the suite and reports the result
-  without fixing. Raising it buys fix attempts at a full rebuild + redeploy each.
+- Before dispatching a fix session, a failed run is classified against the same deterministic
+  environmental-flake exception as [Stage 3](#stage-3----integration-fix-loop-pre-pr) — Playwright
+  crosses the same cluster ingress far more times per test than one integration call, so it is at
+  least as exposed to transient transport drops. A qualifying failure is rerun by the executor
+  itself, bounded separately by `PRAUTO_E2E_FLAKE_RERUNS` (default 2) so flake reruns never consume
+  the fix-loop budget below.
+- `PRAUTO_E2E_FIX_MAX_RETRIES` defaults to `3`: the executor invokes a fix session only on a
+  non-final attempt, buying up to 2 fix passes before the stage reports its result without further
+  fixing. Raising it buys more fix attempts at a full rebuild + redeploy each.
 
 **Stage 5 -- Full regression and targeted-retry readiness gate (post-PR)** *(executor; worker for
 fixes)*: every code-affecting PR first runs the complete static-gate and unit-test command

@@ -124,11 +124,16 @@ check_quota() {
     claude auth status >/dev/null 2>&1 || { warn "Claude auth check failed."; return 1; }
     local out_file="${STATE_DIR}/.quota-check-$$.out"
     local stderr_file="${STATE_DIR}/.quota-check-$$.stderr"
-    # Budget must clear the project's system-prompt cache-creation cost (~$0.08)
-    # or the probe always reports budget_exhausted; 0.25 leaves headroom.
+    # Budget must clear the project's system-prompt cache-creation cost or the
+    # probe always reports budget_exhausted (misread below as "no agent
+    # available", pausing the issue on a fictitious quota exhaustion). This
+    # repo's account-level MCP/skill/subagent config alone caches ~$0.44 of
+    # tool-definition tokens per fresh session; --strict-mcp-config drops that
+    # to ~$0.24 (CLAUDE.md/AGENTS.md project docs still load — --add-dir
+    # behavior, not MCP). 0.5 leaves headroom for that project-doc growth.
     if run_with_timeout "$quota_timeout" \
-        claude -p "Reply with exactly: OK" \
-          --output-format json --max-turns 1 --max-budget-usd 0.25 --allowedTools "" \
+        claude -p "Reply with exactly: OK" --strict-mcp-config \
+          --output-format json --max-turns 1 --max-budget-usd 0.5 --allowedTools "" \
           >"$out_file" 2>"$stderr_file"; then
       # Claude emits auth/api/budget failures as an is_error result object while
       # still exiting 0, so the exit code is not a success signal. Inspect the

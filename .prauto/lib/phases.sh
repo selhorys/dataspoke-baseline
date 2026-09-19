@@ -2070,7 +2070,8 @@ run_e2e_test_fix() {
   fi
 
   local lock_owner="prauto-${PRAUTO_WORKER_ID}"
-  local max_retries="${PRAUTO_E2E_FIX_MAX_RETRIES:-1}"
+  local max_retries="${PRAUTO_E2E_FIX_MAX_RETRIES:-3}"
+  local max_flake_reruns="${PRAUTO_E2E_FLAKE_RERUNS:-2}"
   if ! resolve_dev_env; then info "Dev-env file not found. Skipping E2E stage."; return 0; fi
   if ! dev_env_healthy "$DEV_ENV_FILE"; then info "Dev-env unhealthy. Skipping E2E stage."; return 0; fi
   local lock_url="$DEV_LOCK_URL"
@@ -2086,11 +2087,18 @@ run_e2e_test_fix() {
   if [[ "$lock_code" != "200" ]]; then info "Could not acquire dev-env lock. Skipping E2E."; return 0; fi
   info "Dev-env lock acquired for E2E stage."
 
-  local attempt e2e_output e2e_exit=0 deployed=false quota_paused=false
-  for (( attempt = 1; attempt <= max_retries; attempt++ )); do
+  # attempt only advances when a real (non-flake) run happens; a flake-only
+  # rerun (below) repeats the suite without spending a fix attempt, mirroring
+  # run_integration_test_fix's flake_reruns/is_flake_rerun split — see that
+  # function's comment for why a plain `for` loop cannot express this.
+  local attempt=1 e2e_output e2e_exit=0 deployed=false quota_paused=false
+  local flake_reruns=0 is_flake_rerun=false
+  while [[ "$attempt" -le "$max_retries" ]]; do
+    local attempt_comment="prauto(${PRAUTO_WORKER_ID}): Heartbeat — E2E stage: attempt ${attempt}/${max_retries}"
+    [[ "$is_flake_rerun" == true ]] && attempt_comment="${attempt_comment}, flake rerun ${flake_reruns}/${max_flake_reruns}"
+    is_flake_rerun=false
     info "E2E stage: attempt ${attempt}/${max_retries}"
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — E2E stage: attempt ${attempt}/${max_retries}" 2>/dev/null || true
+    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" --body "$attempt_comment" 2>/dev/null || true
 
     if ! deploy_branch_frontend "$DEV_ENV_FILE"; then warn "Skipping E2E — frontend deploy failed."; break; fi
     if ! pnpm -C tests/e2e install --frozen-lockfile >/dev/null 2>&1; then warn "Skipping E2E — pnpm install failed."; break; fi
@@ -2118,6 +2126,27 @@ run_e2e_test_fix() {
     fi
 
     info "E2E tests failed (exit ${e2e_exit})."
+
+    # Environmental transport-flake convergence, same allowlist/exception as
+    # run_integration_test_fix (stage_failures_are_transport_flakes/
+    # stage_transport_flake_categories already handle "E2E" as a playwright
+    # stage). A Playwright run crosses the same GKE ingress far more times per
+    # test than one integration call, so it is at least as exposed to
+    # transient laptop<->cluster drops; without this check a flake here would
+    # burn a fix-worker dispatch (a full rebuild + redeploy) on infrastructure
+    # noise instead of source code — the same pattern that used to make the
+    # integration loop hang before it got this exception.
+    if stage_failures_are_transport_flakes "E2E" "$e2e_output" && dev_env_probe_healthy "$DEV_ENV_FILE"; then
+      if [[ "$flake_reruns" -lt "$max_flake_reruns" ]]; then
+        flake_reruns=$((flake_reruns + 1))
+        info "Environmental transport flake in E2E ($(stage_transport_flake_categories "E2E" "$e2e_output")) — rerunning without a fix session (flake rerun ${flake_reruns}/${max_flake_reruns})."
+        is_flake_rerun=true
+        continue
+      fi
+      info "Flake-only E2E failures exhausted the flake rerun budget (${max_flake_reruns}). Proceeding without dispatching a worker."
+      break
+    fi
+
     if [[ "$attempt" -lt "$max_retries" ]]; then
       run_e2e_fix_session "$issue_number" "$branch" "$(tail_chars "$e2e_output" 28000)"
       checkpoint_branch "$issue_number" "$branch"
@@ -2133,6 +2162,7 @@ run_e2e_test_fix() {
     else
       info "Max E2E fix retries reached."
     fi
+    attempt=$((attempt + 1))
   done
 
   curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
