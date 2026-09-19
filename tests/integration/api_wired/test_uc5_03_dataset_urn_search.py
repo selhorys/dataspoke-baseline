@@ -27,15 +27,9 @@ DUMMY_DATA_DATAHUB_TOPICS: frozenset[str] = frozenset(
     {"imazon.orders.events", "imazon.shipping.updates"}
 )
 
-_TITLE_URN = (
-    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
-)
-_EDITIONS_URN = (
-    "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
-)
-_ORDERS_URN = (
-    "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)"
-)
+_TITLE_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
+_EDITIONS_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.editions,DEV)"
+_ORDERS_URN = "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.orders.events,DEV)"
 _SHIPPING_URN = (
     "urn:li:dataset:(urn:li:dataPlatform:kafka,example_kafka.imazon.shipping.updates,DEV)"
 )
@@ -45,8 +39,7 @@ _INGESTION_URL = "/api/v1/spoke/ingestion"
 _METAGEN_URL = "/api/v1/spoke/metagen"
 _GOVERNANCE_URL = "/api/v1/spoke/governance/metric"
 _TITLE_CONF_URL = (
-    f"/api/v1/spoke/common/data/{urllib.parse.quote(_TITLE_URN, safe='')}"
-    "/attr/validation/conf"
+    f"/api/v1/spoke/common/data/{urllib.parse.quote(_TITLE_URN, safe='')}/attr/validation/conf"
 )
 
 # Consumed by the api-wired purge fixture; the source fixture below owns sources.
@@ -76,9 +69,13 @@ async def _registry_synced(
     deadline = time.time() + 180.0
     seen: set[str] = set()
     while time.time() < deadline:
-        sync = await api_client.post("/internal/activities/ingestion/sync", headers=internal_headers)
+        sync = await api_client.post(
+            "/internal/activities/ingestion/sync", headers=internal_headers
+        )
         if sync.status_code == 200:
-            catalog = await api_client.get(_CATALOG_URL, headers=admin_headers, params={"limit": 500})
+            catalog = await api_client.get(
+                _CATALOG_URL, headers=admin_headers, params={"limit": 500}
+            )
             if catalog.status_code == 200:
                 seen = {row["dataset_urn"] for row in catalog.json()["datasets"]}
                 if required <= seen:
@@ -108,7 +105,9 @@ async def _assert_casefolded_page(
     body = response.json()
     rows = body[content_key]
     urns = [row if isinstance(row, str) else row["dataset_urn"] for row in rows]
-    assert expected_urn in urns, f"case-insensitive search {needle!r} omitted {expected_urn!r}: {urns}"
+    assert expected_urn in urns, (
+        f"case-insensitive search {needle!r} omitted {expected_urn!r}: {urns}"
+    )
     assert all(needle.casefold() in urn.casefold() for urn in urns), (
         f"search returned non-matching URNs: needle={needle!r}, rows={urns}"
     )
@@ -151,7 +150,10 @@ async def test_uc5_dataset_urn_search_across_dataset_lists(
         validation = await api_client.put(
             _TITLE_CONF_URL,
             headers=admin_headers,
-            json={"description": "search fixture", "variables": [{"name": "row_cnt", "description": ""}]},
+            json={
+                "description": "search fixture",
+                "variables": [{"name": "row_cnt", "description": ""}],
+            },
         )
         assert validation.status_code in (200, 201), validation.text
 
@@ -178,7 +180,12 @@ async def test_uc5_dataset_urn_search_across_dataset_lists(
             json={
                 "mode": "PASSIVE",
                 "name": f"urn-search-{uuid.uuid4().hex[:8]}",
-                "recipe": {"source": {"type": "kafka", "config": {"topic_patterns": {"allow": ["^imazon\\..*$"]}}}},
+                "recipe": {
+                    "source": {
+                        "type": "kafka",
+                        "config": {"topic_patterns": {"allow": ["^imazon\\..*$"]}},
+                    }
+                },
             },
         )
         assert source.status_code == 201, source.text
@@ -186,15 +193,21 @@ async def test_uc5_dataset_urn_search_across_dataset_lists(
         mapping_url = f"{_INGESTION_URL}/sources/{source_id}/datasets"
         deadline = time.time() + 180.0
         while time.time() < deadline:
-            sync = await api_client.post("/internal/activities/ingestion/sync", headers=internal_headers)
+            sync = await api_client.post(
+                "/internal/activities/ingestion/sync", headers=internal_headers
+            )
             assert sync.status_code == 200, sync.text
-            mappings = await api_client.get(mapping_url, headers=admin_headers, params={"limit": 100})
+            mappings = await api_client.get(
+                mapping_url, headers=admin_headers, params={"limit": 100}
+            )
             assert mappings.status_code == 200, mappings.text
             if _ORDERS_URN in {row["dataset_urn"] for row in mappings.json()["datasets"]}:
                 break
             await asyncio.sleep(5)
         else:
-            raise AssertionError("PASSIVE source did not map the seeded orders topic within 180 seconds")
+            raise AssertionError(
+                "PASSIVE source did not map the seeded orders topic within 180 seconds"
+            )
 
         metric = await api_client.post(
             _GOVERNANCE_URL,
@@ -206,7 +219,10 @@ async def test_uc5_dataset_urn_search_across_dataset_lists(
                 "metric_type": "doc-health",
                 "title": "URN search metric",
                 "description": "scope fixture",
-                "metrics": [{"name": "total", "color": "#2563EB", "idx": 1}, {"name": "doc_health", "color": "#16A34A", "idx": 2}],
+                "metrics": [
+                    {"name": "total", "color": "#2563EB", "idx": 1},
+                    {"name": "doc_health", "color": "#16A34A", "idx": 2},
+                ],
                 "metric_conf": {},
                 "schedule_tier": "daily",
                 "dataset_filter": f"dataset_urn = '{_TITLE_URN}'",
@@ -214,14 +230,63 @@ async def test_uc5_dataset_urn_search_across_dataset_lists(
         )
         assert metric.status_code == 201, metric.text
 
-        await _assert_casefolded_page(api_client, admin_headers, _CATALOG_URL, "datasets", "TiTlE_MaStEr", _TITLE_URN)
-        await _assert_casefolded_page(api_client, admin_headers, _VALIDATION_URL, "validations", "TiTlE_MaStEr", _TITLE_URN, {"coverage": "covered"})
-        await _assert_casefolded_page(api_client, admin_headers, _VALIDATION_URL, "validations", "EdItIoNs", _EDITIONS_URN, {"coverage": "uncovered"})
-        await _assert_casefolded_page(api_client, admin_headers, _VALIDATION_URL, "validations", "CaTaLoG", _TITLE_URN, {"coverage": "both"})
-        await _assert_casefolded_page(api_client, admin_headers, mapping_url, "datasets", "ImAzOn.OrDeRs", _ORDERS_URN)
-        await _assert_casefolded_page(api_client, admin_headers, f"{_INGESTION_URL}/unmanaged", "dataset_urns", "EdItIoNs", _EDITIONS_URN)
-        await _assert_casefolded_page(api_client, admin_headers, f"{_GOVERNANCE_URL}/{metric_id}/dataset", "datasets", "TiTlE_MaStEr", _TITLE_URN)
-        await _assert_casefolded_page(api_client, admin_headers, f"{_METAGEN_URL}/uncovered", "datasets", "EdItIoNs", _EDITIONS_URN)
+        await _assert_casefolded_page(
+            api_client, admin_headers, _CATALOG_URL, "datasets", "TiTlE_MaStEr", _TITLE_URN
+        )
+        await _assert_casefolded_page(
+            api_client,
+            admin_headers,
+            _VALIDATION_URL,
+            "validations",
+            "TiTlE_MaStEr",
+            _TITLE_URN,
+            {"coverage": "covered"},
+        )
+        await _assert_casefolded_page(
+            api_client,
+            admin_headers,
+            _VALIDATION_URL,
+            "validations",
+            "EdItIoNs",
+            _EDITIONS_URN,
+            {"coverage": "uncovered"},
+        )
+        await _assert_casefolded_page(
+            api_client,
+            admin_headers,
+            _VALIDATION_URL,
+            "validations",
+            "CaTaLoG",
+            _TITLE_URN,
+            {"coverage": "both"},
+        )
+        await _assert_casefolded_page(
+            api_client, admin_headers, mapping_url, "datasets", "ImAzOn.OrDeRs", _ORDERS_URN
+        )
+        await _assert_casefolded_page(
+            api_client,
+            admin_headers,
+            f"{_INGESTION_URL}/unmanaged",
+            "dataset_urns",
+            "EdItIoNs",
+            _EDITIONS_URN,
+        )
+        await _assert_casefolded_page(
+            api_client,
+            admin_headers,
+            f"{_GOVERNANCE_URL}/{metric_id}/dataset",
+            "datasets",
+            "TiTlE_MaStEr",
+            _TITLE_URN,
+        )
+        await _assert_casefolded_page(
+            api_client,
+            admin_headers,
+            f"{_METAGEN_URL}/uncovered",
+            "datasets",
+            "EdItIoNs",
+            _EDITIONS_URN,
+        )
         await _assert_casefolded_page(
             api_client,
             admin_headers,
@@ -234,11 +299,17 @@ async def test_uc5_dataset_urn_search_across_dataset_lists(
     finally:
         if source_id is not None:
             with suppress(Exception):
-                await api_client.delete(f"{_INGESTION_URL}/sources/{source_id}", headers=admin_headers)
+                await api_client.delete(
+                    f"{_INGESTION_URL}/sources/{source_id}", headers=admin_headers
+                )
         if metagen_conf_id is not None:
             with suppress(Exception):
-                await api_client.delete(f"{_METAGEN_URL}/conf/{metagen_conf_id}", headers=admin_headers)
+                await api_client.delete(
+                    f"{_METAGEN_URL}/conf/{metagen_conf_id}", headers=admin_headers
+                )
         with suppress(Exception):
-            await api_client.delete(f"{_GOVERNANCE_URL}/{metric_id}/attr/conf", headers=admin_headers)
+            await api_client.delete(
+                f"{_GOVERNANCE_URL}/{metric_id}/attr/conf", headers=admin_headers
+            )
         with suppress(Exception):
             await api_client.delete(_TITLE_CONF_URL, headers=admin_headers)

@@ -14,6 +14,7 @@ import pytest
 from src.api.dependencies import get_ontogen_service
 from src.api.main import app
 from src.shared.exceptions import (
+    EntityNotFoundError,
     PreconditionFailedError,
 )
 from tests.unit.api.conftest import auth_headers
@@ -262,6 +263,195 @@ async def test_post_run_body_too_large_returns_413(client, mock_svc: AsyncMock) 
         },
     )
     assert resp.status_code == 413
+
+
+# ── Node detail — member_datasets ────────────────────────────────────────────
+
+
+def _make_node_row(*, node_id: str = "book", dataset_maps: list | None = None) -> MagicMock:
+    row = MagicMock()
+    row.id = node_id
+    row.name = "Book"
+    row.description = "A book entity"
+    row.confidence_score = 0.9
+    row.status = "approved"
+    row.run_id = None
+    row.created_at = datetime.now(tz=UTC)
+    row.updated_at = datetime.now(tz=UTC)
+    row.dataset_maps = dataset_maps if dataset_maps is not None else []
+    return row
+
+
+def _make_dataset_map(
+    *,
+    dataset_urn: str,
+    confidence_score: float = 0.9,
+    status: str = "approved",
+    is_primary: bool = False,
+) -> MagicMock:
+    dm = MagicMock()
+    dm.dataset_urn = dataset_urn
+    dm.confidence_score = confidence_score
+    dm.status = status
+    dm.is_primary = is_primary
+    return dm
+
+
+@pytest.mark.asyncio
+async def test_get_node_detail_returns_member_datasets(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /result/node/{node_id} returns member_datasets: every seeded
+    dataset_node_map membership appears exactly once, each as a
+    {dataset_urn, confidence_score, status, is_primary} object with the
+    correct field values.
+
+    Spec: spec/API.md §Ontology Generation — 'GET /spoke/ontogen/result/node/{node_id}
+    — Get node detail (incl. member datasets)'. Spec defines the membership
+    payload shape but not a specific ordering, so this test does not pin one.
+    """
+    dm_z = _make_dataset_map(
+        dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.z_dataset,DEV)",
+        confidence_score=0.7,
+        status="approved",
+        is_primary=False,
+    )
+    dm_primary = _make_dataset_map(
+        dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.m_dataset,DEV)",
+        confidence_score=0.95,
+        status="approved",
+        is_primary=True,
+    )
+    dm_a = _make_dataset_map(
+        dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.a_dataset,DEV)",
+        confidence_score=0.6,
+        status="llm_pending",
+        is_primary=False,
+    )
+    node = _make_node_row(node_id="book", dataset_maps=[dm_z, dm_primary, dm_a])
+    mock_svc.get_node = AsyncMock(return_value=node)
+
+    resp = await client.get(f"{_BASE}/result/node/book", headers=auth_headers())
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    expected = [
+        {
+            "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.z_dataset,DEV)",
+            "confidence_score": 0.7,
+            "status": "approved",
+            "is_primary": False,
+        },
+        {
+            "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.m_dataset,DEV)",
+            "confidence_score": 0.95,
+            "status": "approved",
+            "is_primary": True,
+        },
+        {
+            "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.a_dataset,DEV)",
+            "confidence_score": 0.6,
+            "status": "llm_pending",
+            "is_primary": False,
+        },
+    ]
+    actual = body["member_datasets"]
+    assert len(actual) == len(expected), (
+        f"expected exactly {len(expected)} member_datasets entries; got {actual!r}"
+    )
+    for entry in expected:
+        assert entry in actual, (
+            f"expected membership {entry!r} to appear in member_datasets; got {actual!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_node_detail_returns_empty_member_datasets_when_no_memberships(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /result/node/{node_id} for a node with no dataset_node_map rows
+    serializes member_datasets as an empty list (NodeDetailResponse's default),
+    not an omitted field or null.
+
+    Spec: spec/API.md §Ontology Generation — 'GET /spoke/ontogen/result/node/{node_id}
+    — Get node detail (incl. member datasets)'.
+    """
+    node = _make_node_row(node_id="book", dataset_maps=[])
+    mock_svc.get_node = AsyncMock(return_value=node)
+
+    resp = await client.get(f"{_BASE}/result/node/book", headers=auth_headers())
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["member_datasets"] == [], (
+        "expected member_datasets == [] for a node with no memberships; "
+        f"got {body['member_datasets']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_node_detail_returns_404_when_node_missing(
+    client, mock_svc: AsyncMock
+) -> None:
+    """GET /result/node/{node_id} returns 404 NODE_NOT_FOUND when the service
+    raises EntityNotFoundError for an absent node id.
+
+    Spec: spec/API.md §Error Catalogue — NODE_NOT_FOUND (404, 'Ontology node ID
+    not found').
+    """
+    mock_svc.get_node = AsyncMock(side_effect=EntityNotFoundError("node", "missing"))
+
+    resp = await client.get(f"{_BASE}/result/node/missing", headers=auth_headers())
+
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body.get("error_code") == "NODE_NOT_FOUND", (
+        f"Expected error_code='NODE_NOT_FOUND'; got {body.get('error_code')!r}. "
+        "Spec: spec/API.md §Error Catalogue."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_node_list_route_omits_member_datasets(client, mock_svc: AsyncMock) -> None:
+    """GET /result/node (list) returns the plain NodeResponse shape — no
+    member_datasets — so the list and detail routes don't get conflated.
+
+    Spec: spec/API.md §Ontology Generation — 'GET /spoke/ontogen/result/node —
+    List nodes' is a distinct, narrower shape than 'GET .../result/node/{node_id}
+    — Get node detail (incl. member datasets)'.
+    """
+    node = _make_node_row(
+        node_id="book",
+        dataset_maps=[
+            _make_dataset_map(
+                dataset_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,catalog.a,DEV)"
+            )
+        ],
+    )
+    mock_svc.list_nodes = AsyncMock(return_value=([node], 1))
+
+    resp = await client.get(f"{_BASE}/result/node", headers=auth_headers())
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["nodes"], "expected at least one node row in the list response"
+    for row in body["nodes"]:
+        assert "member_datasets" not in row, (
+            "the LIST route must return NodeResponse, not NodeDetailResponse — "
+            f"got member_datasets on a list row: {row!r}"
+        )
+        assert {
+            "id",
+            "name",
+            "description",
+            "confidence_score",
+            "status",
+            "run_id",
+            "created_at",
+            "updated_at",
+        } <= set(row.keys()), (
+            f"expected the spec-defined NodeResponse content fields on a list row; got {row!r}"
+        )
 
 
 # ── Triple review — dependency gate ──────────────────────────────────────────

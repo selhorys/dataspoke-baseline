@@ -29,7 +29,9 @@ from src.api.schemas.events import EventListResponse, EventResponse
 from src.api.schemas.ontogen import (
     EdgeListResponse,
     EdgeResponse,
+    NodeDetailResponse,
     NodeListResponse,
+    NodeMemberDataset,
     NodeResponse,
     OntogenConfPatchRequest,
     OntogenConfPutRequest,
@@ -172,6 +174,25 @@ def _node_resp(row: object) -> NodeResponse:
         run_id=row.run_id,  # type: ignore[attr-defined]
         created_at=row.created_at,  # type: ignore[attr-defined]
         updated_at=row.updated_at,  # type: ignore[attr-defined]
+    )
+
+
+def _node_detail_resp(row: object) -> NodeDetailResponse:
+    member_maps = sorted(
+        row.dataset_maps,  # type: ignore[attr-defined]
+        key=lambda dm: (not dm.is_primary, dm.dataset_urn),
+    )
+    return NodeDetailResponse(
+        **_node_resp(row).model_dump(),
+        member_datasets=[
+            NodeMemberDataset(
+                dataset_urn=dm.dataset_urn,
+                confidence_score=dm.confidence_score,
+                status=dm.status,
+                is_primary=dm.is_primary,
+            )
+            for dm in member_maps
+        ],
     )
 
 
@@ -474,14 +495,14 @@ async def get_ontogen_nodes(
     )
 
 
-@router.get("/result/node/{node_id}", response_model=NodeResponse)
+@router.get("/result/node/{node_id}", response_model=NodeDetailResponse)
 async def get_ontogen_node(
     node_id: str,
     service: OntogenService = Depends(get_ontogen_service),
-) -> NodeResponse:
+) -> NodeDetailResponse:
     """Get ontology node detail including member datasets."""
     row = await service.get_node(node_id)
-    return _node_resp(row)
+    return _node_detail_resp(row)
 
 
 @router.get("/result/node/{node_id}/event", response_model=EventListResponse)

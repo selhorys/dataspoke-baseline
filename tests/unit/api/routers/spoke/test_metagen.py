@@ -614,7 +614,9 @@ async def test_get_uncovered_forwards_dataset_urn_search_with_scope_flag(
 
 
 @pytest.mark.asyncio
-async def test_get_covered_datasets_forwards_dataset_urn_search(client, mock_svc: AsyncMock) -> None:
+async def test_get_covered_datasets_forwards_dataset_urn_search(
+    client, mock_svc: AsyncMock
+) -> None:
     """Per-conf covered datasets pass the search to the scoped service query.
 
     Spec: API.md §Metadata Generation — the covered-dataset list supports a

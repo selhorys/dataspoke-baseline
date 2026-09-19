@@ -8,7 +8,6 @@ Spec-anchored TTLs (BACKEND.md §Cache Key Conventions):
   - validation:{dataset_urn}:result  → 60s
   - quality:{dataset_urn}:score      → 300s
   - rate_limit:{user_id}             → 60s
-  - ontogen:node/edge/triple:{id}    → 300s
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
