@@ -8,7 +8,8 @@
  *
  *   1. Columns + the never-evaluated row. A metric that has NEVER run has a
  *      scope but no verdicts, so every row reads `unknown` with an em-dash
- *      last-check time — the one state the run-then-read story cannot produce.
+ *      last-check time — the one state the run-then-read story cannot produce
+ *      (`unknown` is opt-in, so the row is read after ticking that toggle).
  *   2. The three-way verdict toggle carries its visible `criterion met:` label and
  *      drives the repeatable `met` query param (observed on the wire), and zero
  *      toggles issue NO request at all.
@@ -24,8 +25,8 @@
  *   between the `Result` and `Event` panels … columns `dataset_urn` (linked to
  *   `/data/[urn]`), `datahub` …, a `met` badge (`true` / `false` / `unknown`), and
  *   `last check time` … em dash when the row is `unknown`. A three-way toggle
- *   group — true / false / unknown, all on by default — drives the repeatable
- *   `met` query param, resetting `offset` on change. With **zero** toggles
+ *   group — true / false / unknown, with true and false selected by default and
+ *   unknown clear — drives the repeatable `met` query param, resetting `offset` on change. With **zero** toggles
  *   selected the client renders the empty state and issues **no request** …
  *   Beneath the table a muted line states the envelope's `attrs_synced_at` as the
  *   scope's freshness".
@@ -163,6 +164,10 @@ test("lists the covered datasets as unknown until the metric has run", async ({
   await openDetail(page);
   const panel = datasetsPanel(page);
 
+  // -- UI gesture: `unknown` is opt-in, and this never-run metric has only unknown rows --
+  // spec: FRONTEND_GOVERNANCE.md §Metrics — true and false selected by default, unknown clear.
+  await panel.getByRole("checkbox", { name: "unknown", exact: true }).check();
+
   // -- UI assertion: the four spec'd column headers --
   for (const col of ["dataset_urn", "datahub", "met criterion", "last check time"]) {
     await expect(
@@ -190,7 +195,8 @@ test("lists the covered datasets as unknown until the metric has run", async ({
 
 // ── Test 2 — the verdict toggle drives the repeatable `met` param ──────────────
 // spec: FRONTEND_GOVERNANCE.md §Metrics — "A three-way toggle group — true /
-//   false / unknown, all on by default — drives the repeatable `met` query param";
+//   false / unknown, with true and false selected by default and unknown clear —
+//   drives the repeatable `met` query param";
 //   "With **zero** toggles selected the client renders the empty state and issues
 //   **no request**: an omitted repeatable param and an empty one are the same HTTP
 //   request, which the API reads as 'all three', so the no-selection case cannot be
@@ -225,9 +231,6 @@ test("the verdict toggles drive the met param, and zero toggles issue no request
 
   await openDetail(page);
   const panel = datasetsPanel(page);
-  await expect(
-    panel.getByRole("columnheader", { name: "dataset_urn", exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
 
   // -- UI assertion: the group's visible label names what the three words qualify --
   const verdictGroup = panel.getByRole("group", {
@@ -237,16 +240,19 @@ test("the verdict toggles drive the met param, and zero toggles issue no request
     timeout: 15_000,
   });
 
-  // -- UI assertion: all three toggles start checked, still named by their verdict --
-  for (const verdict of ["true", "false", "unknown"]) {
+  // -- UI assertion: true and false start checked, unknown clear, each named by its verdict --
+  for (const verdict of ["true", "false"]) {
     await expect(
       panel.getByRole("checkbox", { name: verdict, exact: true }),
     ).toBeChecked();
   }
+  await expect(
+    panel.getByRole("checkbox", { name: "unknown", exact: true }),
+  ).not.toBeChecked();
 
-  // -- Wire assertion: the default read asks for all three verdicts --
+  // -- Wire assertion: the default read asks for true and false only --
   await expect.poll(() => metParams.length, { timeout: 15_000 }).toBeGreaterThan(0);
-  expect(metParams.at(-1)).toEqual(["true", "false", "unknown"]);
+  expect(metParams.at(-1)).toEqual(["true", "false"]);
   // …with the documented sort.
   // spec: FRONTEND_GOVERNANCE.md §Metrics — "The shared Pagination drives
   //   `offset`/`limit` with `sort=dataset_urn`."
@@ -261,11 +267,14 @@ test("the verdict toggles drive the met param, and zero toggles issue no request
   // them.
   const readsBeforeCaptionClick = metParams.length;
   await verdictGroup.getByText("criterion met:", { exact: true }).click();
-  for (const verdict of ["true", "false", "unknown"]) {
+  for (const verdict of ["true", "false"]) {
     await expect(
       panel.getByRole("checkbox", { name: verdict, exact: true }),
     ).toBeChecked();
   }
+  await expect(
+    panel.getByRole("checkbox", { name: "unknown", exact: true }),
+  ).not.toBeChecked();
   // Bounded settle window before an absence assertion — the gestures below prove a
   // toggle in this group does fire a read, so a quiet window here carries signal.
   await page.waitForTimeout(500);
@@ -274,6 +283,12 @@ test("the verdict toggles drive the met param, and zero toggles issue no request
     "clicking the group caption must toggle nothing and fire no read; saw " +
       `${JSON.stringify(metParams.slice(readsBeforeCaptionClick))}`,
   ).toBe(readsBeforeCaptionClick);
+
+  // -- UI gesture: opt in to `unknown` --
+  await panel.getByRole("checkbox", { name: "unknown", exact: true }).check();
+  await expect
+    .poll(() => metParams.at(-1), { timeout: 15_000 })
+    .toEqual(["true", "false", "unknown"]);
 
   // -- UI gesture: drop `false` --
   await panel.getByRole("checkbox", { name: "false", exact: true }).uncheck();

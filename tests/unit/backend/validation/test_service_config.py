@@ -988,7 +988,11 @@ async def test_list_configs_aggregates_correct_latest_per_dataset_across_multipl
     ("dataset_urn", "expects_search"), [("OrDeRs", True), (None, False), ("", False)]
 )
 async def test_list_configs_searches_case_insensitively_before_count_and_page(
-    svc: ValidationService, db: AsyncMock, coverage: str, dataset_urn: str | None, expects_search: bool
+    svc: ValidationService,
+    db: AsyncMock,
+    coverage: str,
+    dataset_urn: str | None,
+    expects_search: bool,
 ) -> None:
     """Every validation coverage mode puts the URN predicate in its count and page SQL.
 
@@ -1014,7 +1018,9 @@ async def test_list_configs_searches_case_insensitively_before_count_and_page(
 
     db.execute = AsyncMock(side_effect=execute)
 
-    rows, total = await svc.list_configs(dataset_urn=dataset_urn, coverage=coverage, offset=5, limit=2)
+    rows, total = await svc.list_configs(
+        dataset_urn=dataset_urn, coverage=coverage, offset=5, limit=2
+    )
 
     assert rows == []
     assert total == 0

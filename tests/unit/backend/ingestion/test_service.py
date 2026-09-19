@@ -606,7 +606,8 @@ class TestListDatasetsForSource:
         assert rows == []
         assert total == 0
         statements = [
-            call.args[0].compile(dialect=postgresql.dialect()) for call in db.execute.await_args_list
+            call.args[0].compile(dialect=postgresql.dialect())
+            for call in db.execute.await_args_list
         ]
         assert len(statements) == 2
         for compiled in statements:

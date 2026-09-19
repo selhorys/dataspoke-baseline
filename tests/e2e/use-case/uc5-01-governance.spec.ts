@@ -1255,18 +1255,21 @@ test.describe("UC5 — dataset_filter worked examples and the Datasets panel", (
 
     // ── Step 5: the verdict toggles narrow the panel ────────────────────────
     // spec: FRONTEND_GOVERNANCE.md §Metrics — "A three-way toggle group — true /
-    //   false / unknown, all on by default — drives the repeatable `met` query
-    //   param"; "With **zero** toggles selected the client renders the empty state
-    //   and issues **no request**".
-    for (const verdict of ["true", "false", "unknown"]) {
+    //   false / unknown, with true and false selected by default and unknown clear —
+    //   drives the repeatable `met` query param"; "With **zero** toggles selected the
+    //   client renders the empty state and issues **no request**".
+    for (const verdict of ["true", "false"]) {
       await expect(
         datasetsSection.getByRole("checkbox", { name: verdict, exact: true })
       ).toBeChecked();
     }
+    await expect(
+      datasetsSection.getByRole("checkbox", { name: "unknown", exact: true })
+    ).not.toBeChecked();
 
     // Narrow to the verdict the run actually produced, so a row remains to see.
     const presentVerdict = covered.datasets[0]!.met;
-    const absentVerdicts = ["true", "false", "unknown"].filter((v) => v !== presentVerdict);
+    const absentVerdicts = ["true", "false"].filter((v) => v !== presentVerdict);
     for (const verdict of absentVerdicts) {
       await datasetsSection
         .getByRole("checkbox", { name: verdict, exact: true })
@@ -1277,7 +1280,7 @@ test.describe("UC5 — dataset_filter worked examples and the Datasets panel", (
     ).toBeVisible({ timeout: 15_000 });
 
     // -- Backend probe: the same narrowing over REST --
-    // spec: API.md §Metric — "Repeatable `met` query param (default: all three)".
+    // spec: API.md §Metric — "Repeatable `met` query param (default: all three)"; the UI defaults to true + false.
     const narrowed = await adminApi.get(`${DATASET_PATH}?met=${presentVerdict}&limit=200`);
     expect(narrowed.status()).toBe(200);
     const narrowedBody = (await narrowed.json()) as {
