@@ -982,6 +982,55 @@ async def test_list_configs_aggregates_correct_latest_per_dataset_across_multipl
     assert item_b.latest_score == score_b
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coverage", ["covered", "uncovered", "both"])
+@pytest.mark.parametrize(
+    ("dataset_urn", "expects_search"), [("OrDeRs", True), (None, False), ("", False)]
+)
+async def test_list_configs_searches_case_insensitively_before_count_and_page(
+    svc: ValidationService, db: AsyncMock, coverage: str, dataset_urn: str | None, expects_search: bool
+) -> None:
+    """Every validation coverage mode puts the URN predicate in its count and page SQL.
+
+    The fake routes results by the emitted statement rather than execution position.
+    This is an offline statement-level proof of the API contract; real-row filtering
+    belongs to the deferred integration suite.
+
+    Spec: API.md §Validation — ``dataset_urn`` is a case-insensitive substring
+    filter for ``covered``, ``uncovered``, and ``both``, applied before total count
+    and offset/limit pagination.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    empty_result = MagicMock()
+    empty_result.scalars.return_value.all.return_value = []
+    empty_result.all.return_value = []
+
+    async def execute(statement):
+        sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+        return count_result if "count(" in sql else empty_result
+
+    db.execute = AsyncMock(side_effect=execute)
+
+    rows, total = await svc.list_configs(dataset_urn=dataset_urn, coverage=coverage, offset=5, limit=2)
+
+    assert rows == []
+    assert total == 0
+    statements = [
+        statement.compile(dialect=postgresql.dialect())
+        for statement in (call.args[0] for call in db.execute.await_args_list)
+    ]
+    scoped = [compiled for compiled in statements if "dataset" in str(compiled).lower()]
+    assert len(scoped) >= 2, "backstop: expected independently built count and page queries"
+    if expects_search:
+        assert all(" ilike " in str(compiled).lower() for compiled in scoped[:2])
+        assert all("%OrDeRs%" in compiled.params.values() for compiled in scoped[:2])
+    else:
+        assert all(" ilike " not in str(compiled).lower() for compiled in scoped[:2])
+
+
 # ── _latest_results_by_urn tiebreak (regression: GH #194) ──────────────────────
 
 

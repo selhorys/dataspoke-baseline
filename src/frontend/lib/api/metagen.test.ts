@@ -64,7 +64,7 @@ vi.mock("@/lib/api/client", () => ({
   },
 }));
 
-import { useMetagenConfEvents, useMetagenEvents } from "./metagen";
+import { useMetagenConfEvents, useMetagenCoveredDatasets, useMetagenDatasets, useMetagenEvents, useMetagenUncovered } from "./metagen";
 
 function makeWrapper() {
   const qc = new QueryClient({
@@ -91,6 +91,34 @@ function queryOf(url: string): URLSearchParams {
 const CONF_ID = "7c9f1b2e-0000-4000-8000-000000000abc";
 const FROM = "2024-03-01T00:00:00.000Z";
 const TO = "2024-03-15T23:59:59.999Z";
+
+describe("dataset URN list searches", () => {
+  it("serializes dataset_urn for covered datasets", async () => {
+    const { result } = renderHook(
+      () => useMetagenCoveredDatasets(CONF_ID, false, { dataset_urn: "orders" }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(queryOf(lastUrl()).get("dataset_urn")).toBe("orders");
+  });
+
+  it("serializes dataset_urn for uncovered and result datasets", async () => {
+    const uncovered = renderHook(
+      () => useMetagenUncovered(false, { dataset_urn: "orders" }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(uncovered.result.current.isSuccess).toBe(true));
+    expect(queryOf(lastUrl()).get("dataset_urn")).toBe("orders");
+    uncovered.unmount();
+    vi.clearAllMocks();
+    const result = renderHook(
+      () => useMetagenDatasets({ dataset_urn: "orders" }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.result.current.isSuccess).toBe(true));
+    expect(queryOf(lastUrl()).get("dataset_urn")).toBe("orders");
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

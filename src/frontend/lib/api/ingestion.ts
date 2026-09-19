@@ -243,12 +243,14 @@ export function useRunIngestionSource(id: string) {
 interface PageParams {
   offset?: number;
   limit?: number;
+  dataset_urn?: string;
 }
 
 function buildPageQuery(params: PageParams): string {
   const sp = new URLSearchParams();
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.dataset_urn) sp.set("dataset_urn", params.dataset_urn);
   const qs = sp.toString();
   return qs ? `?${qs}` : "";
 }

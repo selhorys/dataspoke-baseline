@@ -13,6 +13,7 @@ import { MetagenConfView } from "@/components/metagen/conf-view";
 import { RunDialog } from "@/components/metagen/run-dialog";
 import { MetagenEventTable } from "@/components/metagen/metagen-event-table";
 import { MetagenCoveredTable } from "@/components/metagen/covered-table";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import {
   useMetagenConf,
   useUpdateMetagenConf,
@@ -56,6 +57,7 @@ export default function MetagenConfDetailPage({
   const [coveredOffset, setCoveredOffset] = useState(0);
   const [coveredLimit, setCoveredLimit] = useState(DEFAULT_PAGE_SIZE);
   const [coveredIncludeDisallowed, setCoveredIncludeDisallowed] = useState(false);
+  const [coveredDatasetUrn, setCoveredDatasetUrn] = useState("");
 
   const tz = useDisplayTz();
   const { selection: sel, setSelection: setSel } = usePersistedRangeState(
@@ -80,6 +82,7 @@ export default function MetagenConfDetailPage({
   } = useMetagenCoveredDatasets(id, coveredIncludeDisallowed, {
     offset: coveredOffset,
     limit: coveredLimit,
+    dataset_urn: coveredDatasetUrn || undefined,
   });
 
   // Sync the dataset_filter editor when the conf loads.
@@ -273,6 +276,7 @@ export default function MetagenConfDetailPage({
       {/* Covered datasets */}
       <section className="rounded-lg border p-5">
         <h2 className="mb-3 text-sm font-medium">Covered datasets</h2>
+        <DatasetUrnSearch value={coveredDatasetUrn} onSubmit={(value) => { setCoveredDatasetUrn(value); setCoveredOffset(0); }} />
         <MetagenCoveredTable
           rows={covered?.datasets ?? []}
           isLoading={coveredLoading}

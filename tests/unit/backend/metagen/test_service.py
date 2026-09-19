@@ -2167,3 +2167,97 @@ async def test_list_uncovered_boundary_blocked_only_with_include_disallowed(
     assert "metagen_boundary.is_enabled" in incl_sql, (
         f"include_disallowed must admit boundary-blocked datasets; got:\n{incl_sql}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dataset_urn", "expects_search"), [("OrDeRs", True), (None, False), ("", False)]
+)
+async def test_list_uncovered_urn_search_is_in_count_and_page_after_coverage_scope(
+    svc, db, datahub, dataset_urn: str | None, expects_search: bool
+) -> None:
+    """Uncovered search keeps coverage scope and narrows both SQL-paged reads.
+
+    Spec: API.md §Metadata Generation — ``dataset_urn`` is a case-insensitive
+    substring filter after uncovered scope and before total/page pagination.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    confs_result = _make_result([])
+    count_result = _make_result(scalar=0)
+    empty_result = _make_result([])
+
+    async def execute(statement):
+        sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+        if "metagen_config" in sql:
+            return confs_result
+        if "count(" in sql:
+            return count_result
+        return empty_result
+
+    db.execute = AsyncMock(side_effect=execute)
+    rows, total = await svc.list_uncovered(dataset_urn=dataset_urn, offset=4, limit=3)
+
+    assert rows == []
+    assert total == 0
+    scoped = [
+        call.args[0].compile(dialect=postgresql.dialect())
+        for call in db.execute.await_args_list
+        if "dataset_registry" in str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+    ]
+    assert len(scoped) == 2, "backstop: uncovered count and page must both execute"
+    for compiled in scoped:
+        sql = str(compiled).lower()
+        if expects_search:
+            assert " ilike " in sql
+            assert "%OrDeRs%" in compiled.params.values()
+        else:
+            assert " ilike " not in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dataset_urn", "expects_search"), [("OrDeRs", True), (None, False), ("", False)]
+)
+async def test_list_covered_urn_search_is_in_count_and_page_after_conf_scope(
+    svc, db, dataset_urn: str | None, expects_search: bool
+) -> None:
+    """Covered-dataset search composes with the selected conf's scope predicate.
+
+    Spec: API.md §Metadata Generation — per-conf ``dataset_urn`` search is
+    case-insensitive and applied before count/pagination.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    conf = _make_conf_row(dataset_filter="origin = 'PROD'")
+    count_result = _make_result(scalar=0)
+    empty_result = _make_result([])
+
+    async def execute(statement):
+        sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+        if "count(" in sql:
+            return count_result
+        return empty_result
+
+    db.execute = AsyncMock(side_effect=execute)
+    svc._load_conf_row = AsyncMock(return_value=conf)
+    rows, total = await svc.list_covered_datasets(
+        str(conf.id), dataset_urn=dataset_urn, offset=1, limit=9
+    )
+
+    assert rows == []
+    assert total == 0
+    scoped = [
+        call.args[0].compile(dialect=postgresql.dialect())
+        for call in db.execute.await_args_list
+        if "dataset_registry" in str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+    ]
+    assert len(scoped) == 2, "backstop: covered count and page must both execute"
+    for compiled in scoped:
+        sql = str(compiled).lower()
+        assert "dataspoke.dataset_registry.origin" in sql
+        if expects_search:
+            assert " ilike " in sql
+            assert "%OrDeRs%" in compiled.params.values()
+        else:
+            assert " ilike " not in sql

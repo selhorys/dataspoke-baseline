@@ -44,7 +44,7 @@ vi.mock("@/lib/api/client", () => ({
   },
 }));
 
-import { useValidationResults } from "./validation";
+import { useValidationList, useValidationResults } from "./validation";
 
 function makeWrapper() {
   const qc = new QueryClient({
@@ -68,6 +68,17 @@ const sampleUrn =
 beforeEach(() => {
   vi.clearAllMocks();
   mockApiFetch.mockResolvedValue({ results: [], variables: [] });
+});
+
+describe("useValidationList — dataset URN search", () => {
+  it("serializes dataset_urn with paging and coverage", async () => {
+    const { result } = renderHook(
+      () => useValidationList({ dataset_urn: "orders", offset: 0, limit: 20, coverage: "covered" }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(new URLSearchParams(lastUrl().split("?")[1]).get("dataset_urn")).toBe("orders");
+  });
 });
 
 // ---------------------------------------------------------------------------

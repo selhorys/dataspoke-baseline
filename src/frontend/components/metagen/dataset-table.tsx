@@ -24,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { useMetagenDatasets } from "@/lib/api/metagen";
@@ -145,12 +145,10 @@ export function MetagenDatasetTable({ confs }: MetagenDatasetTableProps) {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
-        <Input
-          className="h-8 w-64 text-xs"
-          placeholder="Filter by dataset URN…"
+        <DatasetUrnSearch
           value={datasetUrnFilter}
-          onChange={(e) => {
-            setDatasetUrnFilter(e.target.value);
+          onSubmit={(value) => {
+            setDatasetUrnFilter(value);
             setOffset(0);
           }}
         />

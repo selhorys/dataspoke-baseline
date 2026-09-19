@@ -589,6 +589,53 @@ async def test_get_uncovered_include_disallowed_true_forwarded(client, mock_svc:
     assert resp.json()["datasets"][0]["reason"] == "boundary_blocked"
 
 
+@pytest.mark.asyncio
+async def test_get_uncovered_forwards_dataset_urn_search_with_scope_flag(
+    client, mock_svc: AsyncMock
+) -> None:
+    """Uncovered search composes with the include-disallowed scope predicate.
+
+    Spec: API.md §Metadata Generation — ``dataset_urn`` is a case-insensitive
+    substring filter applied after coverage/boundary scope and before pagination.
+    """
+    mock_svc.list_uncovered = AsyncMock(return_value=([], 0))
+
+    response = await client.get(
+        f"{_BASE}/uncovered?include_disallowed=true&dataset_urn=Orders&offset=2&limit=4",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    kwargs = mock_svc.list_uncovered.await_args.kwargs
+    assert kwargs["include_disallowed"] is True
+    assert kwargs["dataset_urn"] == "Orders"
+    assert kwargs["offset"] == 2
+    assert kwargs["limit"] == 4
+
+
+@pytest.mark.asyncio
+async def test_get_covered_datasets_forwards_dataset_urn_search(client, mock_svc: AsyncMock) -> None:
+    """Per-conf covered datasets pass the search to the scoped service query.
+
+    Spec: API.md §Metadata Generation — the covered-dataset list supports a
+    case-insensitive ``dataset_urn`` substring filter before pagination.
+    """
+    mock_svc.list_covered_datasets = AsyncMock(return_value=([], 0))
+
+    response = await client.get(
+        f"{_BASE}/conf/{_CONF_ID}/dataset?dataset_urn=Orders&offset=6&limit=8",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    args = mock_svc.list_covered_datasets.await_args.args
+    kwargs = mock_svc.list_covered_datasets.await_args.kwargs
+    assert args == (_CONF_ID,)
+    assert kwargs["dataset_urn"] == "Orders"
+    assert kwargs["offset"] == 6
+    assert kwargs["limit"] == 8
+
+
 # ── GET /item ─────────────────────────────────────────────────────────────────
 
 

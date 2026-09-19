@@ -1101,6 +1101,30 @@ async def test_get_validation_list_ignores_removed_query_param(
     )
 
 
+@pytest.mark.asyncio
+async def test_get_validation_list_forwards_dataset_urn_search_for_all_coverage_modes(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The validation list keeps coverage selection while forwarding URN search.
+
+    Spec: API.md §Validation — ``dataset_urn`` is a case-insensitive substring
+    filter for ``covered``, ``uncovered``, and ``both`` before pagination.
+    """
+    mock_svc.list_configs = AsyncMock(return_value=([], 0))
+
+    for coverage in ("covered", "uncovered", "both"):
+        response = await client.get(
+            f"{_VALIDATION_BASE}?coverage={coverage}&dataset_urn=Orders&offset=4&limit=2",
+            headers=auth_headers(),
+        )
+        assert response.status_code == 200, response.text
+        kwargs = mock_svc.list_configs.await_args.kwargs
+        assert kwargs["coverage"] == coverage
+        assert kwargs["dataset_urn"] == "Orders"
+        assert kwargs["offset"] == 4
+        assert kwargs["limit"] == 2
+
+
 # ── DatasetUrnPath URL encoding ───────────────────────────────────────────────
 
 

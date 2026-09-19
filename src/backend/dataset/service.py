@@ -79,6 +79,7 @@ class DatasetService:
 
     async def list_datasets(
         self,
+        dataset_urn: str | None = None,
         offset: int = 0,
         limit: int = 20,
         order_by: Any = None,
@@ -101,6 +102,8 @@ class DatasetService:
         base_q = select(DatasetRegistry.dataset_urn).where(
             DatasetRegistry.datahub_registered.is_(True)
         )
+        if dataset_urn:
+            base_q = base_q.where(DatasetRegistry.dataset_urn.ilike(f"%{dataset_urn}%"))
 
         count_q = select(func.count()).select_from(base_q.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0

@@ -17,6 +17,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { RecipeYamlEditor } from "@/components/ingestion/recipe-yaml-editor";
 import { SecretRefAuthoringGuide } from "@/components/ingestion/secret-ref-authoring-guide";
 import { SourceDatasetTable } from "@/components/ingestion/source-dataset-table";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import { IngestionRunPanel } from "@/components/ingestion/ingestion-run-panel";
 import { IngestionEventTable } from "@/components/ingestion/ingestion-event-table";
 import { sourceBodyToYaml } from "@/components/ingestion/recipe-yaml";
@@ -58,6 +59,7 @@ export default function IngestionSourceDetailPage({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [datasetOffset, setDatasetOffset] = useState(0);
   const [datasetLimit, setDatasetLimit] = useState(DEFAULT_PAGE_SIZE);
+  const [datasetUrn, setDatasetUrn] = useState("");
   const [eventOffset, setEventOffset] = useState(0);
   const [eventLimit, setEventLimit] = useState(DEFAULT_PAGE_SIZE);
   // Persisted selection; resolving via useMemo keeps the events query key
@@ -76,6 +78,7 @@ export default function IngestionSourceDetailPage({
   const { data: datasets } = useIngestionSourceDatasets(id, {
     offset: datasetOffset,
     limit: datasetLimit,
+    dataset_urn: datasetUrn || undefined,
   });
 
   const { data: events } = useIngestionSourceEvents(id, {
@@ -288,6 +291,7 @@ export default function IngestionSourceDetailPage({
       {/* 2. Datasets */}
       <section className="space-y-3 rounded-lg border p-5">
         <h2 className="text-sm font-medium">Datasets</h2>
+        <DatasetUrnSearch value={datasetUrn} onSubmit={(value) => { setDatasetUrn(value); setDatasetOffset(0); }} />
         <SourceDatasetTable rows={datasets?.datasets ?? []} />
         <Pagination
           offset={datasetOffset}

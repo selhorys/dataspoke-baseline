@@ -165,7 +165,8 @@ calls no write route. This is the UI rendering of
 ## Unmanaged View (`/ingestion/unmanaged`)
 
 A plain paginated table of DataHub datasets covered by no source
-(`GET /spoke/ingestion/unmanaged`). This is the "what's being ingested in an unmanaged way?"
+(`GET /spoke/ingestion/unmanaged`). A `dataset_urn` input and explicit **Search** button submit
+the optional backend query; submitting or clearing it resets `offset` to zero. This is the "what's being ingested in an unmanaged way?"
 answer; each row links to its dataset page, and its second column is `datahub` — the shared
 [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (rendered only when
 the DataHub URL resolves non-empty). Reached via the sidebar `unmanaged` submenu.
@@ -186,7 +187,8 @@ panel (narrow with `event_major_type=INGESTION`); wrapper-origin rows carry a "w
 
 - `IngestionSourceList` — the source list with the `mode` filter (wrappers are hidden by the backend).
 - `RecipeYamlEditor` — YAML recipe view/editor; read-only for `DATAHUB_MANAGED`, secrets masked.
-- `SourceDatasetTable` — the source→dataset mapping table.
+- `SourceDatasetTable` — the source→dataset mapping table, with a `dataset_urn` input and
+  explicit **Search** button that submit the optional backend query and reset `offset` on submit or clear.
 - `IngestionRunPanel` — dry-run / run trigger with status (`ACTIVE_CUSTOM_MANAGED` only).
 - `SecretRefHelper` — the available-references list (`GET /spoke/ingestion/secrets`) plus the
   `SecretRefAuthoringGuide`, shown in the Create page.
@@ -200,7 +202,8 @@ panel (narrow with `event_major_type=INGESTION`); wrapper-origin rows carry a "w
 - `IngestionSummaryCard` — the per-dataset reverse-lookup display (owning source link / mode /
   latest-run time and status), composed by the unified
   [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page.
-- `UnmanagedDatasetTable` — the unmanaged-bucket list, with a `datahub` deep-link second column.
+- `UnmanagedDatasetTable` — the unmanaged-bucket list, with a `datahub` deep-link second column
+  and the submitted `dataset_urn` search control.
 
 Every paged table on these pages — `IngestionSourceList`, `SourceDatasetTable`,
 `IngestionEventTable`, and `UnmanagedDatasetTable` — uses

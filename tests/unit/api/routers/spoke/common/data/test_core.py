@@ -135,6 +135,28 @@ async def test_get_data_events_returns_200_with_events_key(client, mock_svc: Asy
     assert body["total_count"] == 0
 
 
+@pytest.mark.asyncio
+async def test_get_data_list_forwards_dataset_urn_search_and_pagination(
+    client, mock_svc: AsyncMock
+) -> None:
+    """The catalog sends its submitted URN substring to the SQL-paged service.
+
+    Spec: API.md §Data Resource — ``dataset_urn`` is a case-insensitive substring
+    filter applied before ``total_count`` and offset/limit pagination.
+    """
+    mock_svc.list_datasets = AsyncMock(return_value=([], 0))
+
+    response = await client.get(
+        f"{_BASE}?dataset_urn=Orders&offset=20&limit=10", headers=auth_headers()
+    )
+
+    assert response.status_code == 200, response.text
+    kwargs = mock_svc.list_datasets.await_args.kwargs
+    assert kwargs["dataset_urn"] == "Orders"
+    assert kwargs["offset"] == 20
+    assert kwargs["limit"] == 10
+
+
 # ── event_major_type → prefix mapping (router layer) ──────────────────────────
 
 

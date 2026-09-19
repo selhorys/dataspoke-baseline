@@ -31,6 +31,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DatahubDatasetLink } from "@/components/datahub-dataset-link";
@@ -63,7 +64,8 @@ interface MetricDatasetTableProps {
 
 export function MetricDatasetTable({ metricId }: MetricDatasetTableProps) {
   const tz = useDisplayTz();
-  const [verdicts, setVerdicts] = useState<MetricVerdict[]>([...METRIC_VERDICTS]);
+  const [verdicts, setVerdicts] = useState<MetricVerdict[]>(["true", "false"]);
+  const [datasetUrn, setDatasetUrn] = useState("");
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
 
@@ -72,7 +74,7 @@ export function MetricDatasetTable({ metricId }: MetricDatasetTableProps) {
 
   const { data, isLoading, error } = useMetricDatasets(
     metricId,
-    { met: verdicts, offset, limit, sort: "dataset_urn" },
+    { met: verdicts, offset, limit, sort: "dataset_urn", dataset_urn: datasetUrn || undefined },
     { enabled: hasSelection },
   );
 
@@ -109,6 +111,13 @@ export function MetricDatasetTable({ metricId }: MetricDatasetTableProps) {
           </label>
         ))}
       </div>
+      <DatasetUrnSearch
+        value={datasetUrn}
+        onSubmit={(value) => {
+          setDatasetUrn(value);
+          setOffset(0);
+        }}
+      />
 
       {error && <QueryErrorState error={error} context="Failed to load covered datasets" />}
 

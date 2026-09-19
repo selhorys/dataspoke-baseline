@@ -642,6 +642,31 @@ async def test_get_metric_datasets_met_param_is_repeatable(
 
 
 @pytest.mark.asyncio
+async def test_get_metric_datasets_forwards_dataset_urn_with_verdict_filter(
+    client, mock_service: AsyncMock
+) -> None:
+    """Metric scope filtering composes URN search with selected verdict states.
+
+    Spec: API.md §Metric — ``dataset_urn`` is applied after metric scope and
+    alongside ``met``, before count and pagination.
+    """
+    mock_service.list_metric_datasets = AsyncMock(return_value=([], 0, None))
+
+    response = await client.get(
+        _METRIC_DATASET_URL.format(metric_id="ingestion-freshness")
+        + "?met=true&dataset_urn=Orders&offset=1&limit=3",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    kwargs = mock_service.list_metric_datasets.await_args.kwargs
+    assert kwargs["met"] == ["true"]
+    assert kwargs["dataset_urn"] == "Orders"
+    assert kwargs["offset"] == 1
+    assert kwargs["limit"] == 3
+
+
+@pytest.mark.asyncio
 async def test_get_metric_datasets_without_met_defaults_to_all_three(
     client, mock_service: AsyncMock
 ) -> None:

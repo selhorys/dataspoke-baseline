@@ -514,6 +514,7 @@ class ValidationService:
 
     async def list_configs(
         self,
+        dataset_urn: str | None = None,
         offset: int = 0,
         limit: int = 20,
         order_by: Any = None,
@@ -537,18 +538,21 @@ class ValidationService:
         Every branch is SQL-paginated.
         """
         if coverage == "uncovered":
-            return await self._list_uncovered(offset, limit)
+            return await self._list_uncovered(dataset_urn, offset, limit)
         if coverage == "both":
-            return await self._list_both(offset, limit)
-        return await self._list_covered(offset, limit, order_by)
+            return await self._list_both(dataset_urn, offset, limit)
+        return await self._list_covered(dataset_urn, offset, limit, order_by)
 
     async def _list_covered(
         self,
+        dataset_urn: str | None,
         offset: int,
         limit: int,
         order_by: Any,
     ) -> tuple[list[ValidationListItem], int]:
         base = select(ValidationConfig)
+        if dataset_urn:
+            base = base.where(ValidationConfig.dataset_urn.ilike(f"%{dataset_urn}%"))
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
@@ -583,6 +587,7 @@ class ValidationService:
 
     async def _list_uncovered(
         self,
+        dataset_urn: str | None,
         offset: int,
         limit: int,
     ) -> tuple[list[ValidationListItem], int]:
@@ -595,6 +600,8 @@ class ValidationService:
             DatasetRegistry.datahub_registered.is_(True),
             DatasetRegistry.dataset_urn.not_in(conf_subq),
         )
+        if dataset_urn:
+            base = base.where(DatasetRegistry.dataset_urn.ilike(f"%{dataset_urn}%"))
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0
@@ -618,6 +625,7 @@ class ValidationService:
 
     async def _list_both(
         self,
+        dataset_urn: str | None,
         offset: int,
         limit: int,
     ) -> tuple[list[ValidationListItem], int]:
@@ -639,6 +647,8 @@ class ValidationService:
             )
             .where(DatasetRegistry.datahub_registered.is_(True))
         )
+        if dataset_urn:
+            base = base.where(DatasetRegistry.dataset_urn.ilike(f"%{dataset_urn}%"))
 
         count_q = select(func.count()).select_from(base.subquery())
         total_count = (await self._db.execute(count_q)).scalar() or 0

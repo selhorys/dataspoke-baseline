@@ -6,14 +6,17 @@ import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { UnmanagedDatasetTable } from "@/components/ingestion/unmanaged-dataset-table";
 import { PageHeader } from "@/components/page-header";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import { useIngestionUnmanaged } from "@/lib/api/ingestion";
 
 export default function UnmanagedDatasetsPage() {
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
+  const [datasetUrn, setDatasetUrn] = useState("");
   const { data, isLoading, error } = useIngestionUnmanaged({
     offset,
     limit,
+    dataset_urn: datasetUrn || undefined,
   });
 
   const totalCount = data?.total_count ?? 0;
@@ -27,6 +30,8 @@ export default function UnmanagedDatasetsPage() {
         ingested in an unmanaged way?&quot; answer. The registry is refreshed
         hourly. This view is read-only.
       </p>
+
+      <DatasetUrnSearch value={datasetUrn} onSubmit={(value) => { setDatasetUrn(value); setOffset(0); }} />
 
       {error && (
         <QueryErrorState error={error} context="Failed to load unmanaged datasets" />

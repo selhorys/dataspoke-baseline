@@ -28,6 +28,7 @@ router = APIRouter(
 
 @router.get("", response_model=ValidationListResponse)
 async def get_validation(
+    dataset_urn: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
@@ -53,6 +54,7 @@ async def get_validation(
         None,
     )
     items, total_count = await service.list_configs(
+        dataset_urn=dataset_urn,
         offset=offset,
         limit=limit,
         order_by=order_by,

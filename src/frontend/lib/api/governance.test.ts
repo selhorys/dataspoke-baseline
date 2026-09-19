@@ -277,6 +277,15 @@ describe("useMetricDatasets — the covered-dataset read", () => {
     expect(queryOf(lastUrl()).getAll("met")).toEqual(["false"]);
   });
 
+  it("serializes the submitted dataset_urn alongside paging", async () => {
+    const { result } = renderHook(
+      () => useMetricDatasets(METRIC_ID, { met: ["true"], dataset_urn: "orders", offset: 0, limit: 20 }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(queryOf(lastUrl()).get("dataset_urn")).toBe("orders");
+  });
+
   it("sorts by dataset_urn even when the caller passes no sort", async () => {
     const { result } = renderHook(() => useMetricDatasets(METRIC_ID, { met: ["true"] }), {
       wrapper: makeWrapper(),

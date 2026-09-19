@@ -17,6 +17,7 @@ import { useValidationList } from "@/lib/api/validation";
 import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { PageHeader } from "@/components/page-header";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import { formatDateTime } from "@/lib/format-time";
 import { useDisplayTz } from "@/lib/preferences/timezone";
 import { scoreBadgeVariant, scoreLabel } from "@/lib/validation-score";
@@ -29,6 +30,7 @@ export default function ValidationListPage() {
   const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [showCovered, setShowCovered] = useState(true);
   const [showUncovered, setShowUncovered] = useState(false);
+  const [datasetUrn, setDatasetUrn] = useState("");
   const tz = useDisplayTz();
 
   // Map the two checkboxes to the server-side coverage filter. With neither box
@@ -44,7 +46,7 @@ export default function ValidationListPage() {
           : null;
 
   const { data, isLoading, error } = useValidationList(
-    { offset, limit, coverage: coverage ?? undefined },
+    { offset, limit, coverage: coverage ?? undefined, dataset_urn: datasetUrn || undefined },
     { enabled: coverage !== null },
   );
 
@@ -84,6 +86,8 @@ export default function ValidationListPage() {
           </label>
         </div>
       </div>
+
+      <DatasetUrnSearch value={datasetUrn} onSubmit={(value) => { setDatasetUrn(value); setOffset(0); }} />
 
       {error && <QueryErrorState error={error} context="Failed to load validation configs" />}
 

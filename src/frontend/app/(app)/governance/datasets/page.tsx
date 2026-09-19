@@ -26,6 +26,7 @@ import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { PageHeader } from "@/components/page-header";
 import { DatahubDatasetLink } from "@/components/datahub-dataset-link";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import { modeBadgeVariant, modeLabel } from "@/lib/ingestion-mode-variant";
 import { useDatasetList } from "@/lib/api/datasets";
 
@@ -34,14 +35,17 @@ const EM_DASH = <span className="text-muted-foreground">—</span>;
 export default function GovernanceDatasetsPage() {
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
+  const [datasetUrn, setDatasetUrn] = useState("");
 
-  const { data, isLoading, error } = useDatasetList({ offset, limit });
+  const { data, isLoading, error } = useDatasetList({ offset, limit, dataset_urn: datasetUrn || undefined });
 
   const rows = data?.datasets ?? [];
 
   return (
     <div className="space-y-4">
       <PageHeader title="Datasets" />
+
+      <DatasetUrnSearch value={datasetUrn} onSubmit={(value) => { setDatasetUrn(value); setOffset(0); }} />
 
       {error && <QueryErrorState error={error} context="Failed to load datasets" />}
 

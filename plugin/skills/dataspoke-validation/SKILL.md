@@ -17,6 +17,10 @@ Two modes against a deployed DataSpoke. If `dataspoke-api` reports no access, se
 2. **manage** — operate the validation slot directly: read/register/edit a conf, post/query
    results, browse the cross-dataset view.
 
+## Example invocation
+
+> /dataspoke-api Based on dataspoke validation config, validation codes should be written in this pipeline for table 'example_v1'. guide me the process. I want the EDA is done based on the data after 2026.06.01 (around 3 months ago).
+
 Default to **routine** whenever there is pipeline code in play — including when the user never
 says the word "validation" but asks for a row-count check, a null check, a freshness check, or
 "make sure the write looks right."

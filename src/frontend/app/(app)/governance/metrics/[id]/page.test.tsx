@@ -302,7 +302,7 @@ describe("metric detail — the Datasets panel", () => {
       { met: string[]; sort: string },
     ];
     expect(metricId).toBe(METRIC_ID);
-    expect(params.met).toEqual(["true", "false", "unknown"]);
+    expect(params.met).toEqual(["true", "false"]);
     expect(params.sort).toBe("dataset_urn");
   });
 

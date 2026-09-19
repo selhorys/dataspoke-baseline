@@ -818,6 +818,7 @@ class MetricsService:
         metric_id: str,
         *,
         met: list[str] | None = None,
+        dataset_urn: str | None = None,
         offset: int = 0,
         limit: int = 20,
         order_by: Any = None,
@@ -862,6 +863,8 @@ class MetricsService:
             .outerjoin(MetricDatasetResult, verdict_join)
             .where(*in_scope)
         )
+        if dataset_urn:
+            base = base.where(DatasetRegistry.dataset_urn.ilike(f"%{dataset_urn}%"))
 
         # Tri-state filter. `met IS NULL` is the left-join miss — in scope, never
         # evaluated. Selecting all three states adds no predicate.

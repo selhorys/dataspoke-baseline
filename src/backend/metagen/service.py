@@ -877,6 +877,7 @@ class MetagenService:
         self,
         *,
         include_disallowed: bool = False,
+        dataset_urn: str | None = None,
         offset: int = 0,
         limit: int = 20,
         order_by: Any = None,
@@ -950,6 +951,8 @@ class MetagenService:
             base = base.where(sa.or_(sa.not_(matched), sa.not_(writable)))
         else:
             base = base.where(sa.not_(matched))
+        if dataset_urn:
+            base = base.where(DatasetRegistry.dataset_urn.ilike(f"%{dataset_urn}%"))
 
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0
@@ -973,6 +976,7 @@ class MetagenService:
         conf_id: str,
         *,
         include_disallowed: bool = False,
+        dataset_urn: str | None = None,
         offset: int = 0,
         limit: int = 20,
         order_by: Any = None,
@@ -1019,6 +1023,8 @@ class MetagenService:
         )
         if not include_disallowed:
             base = base.where(sa.not_(blocked))
+        if dataset_urn:
+            base = base.where(DatasetRegistry.dataset_urn.ilike(f"%{dataset_urn}%"))
 
         count_q = select(func.count()).select_from(base.subquery())
         total = (await self._db.execute(count_q)).scalar() or 0

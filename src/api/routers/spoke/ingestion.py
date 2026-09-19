@@ -251,6 +251,7 @@ async def post_ingestion_source_run(
 @router.get("/sources/{id}/datasets", response_model=IngestionSourceDatasetsResponse)
 async def get_ingestion_source_datasets(
     id: str,
+    dataset_urn: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
@@ -275,7 +276,11 @@ async def get_ingestion_source_datasets(
         IngestionSourceDataset.dataset_urn.asc(),
     )
     datasets, total_count = await service.list_datasets_for_source(
-        source_id=id, offset=offset, limit=limit, order_by=order_by
+        source_id=id,
+        dataset_urn=dataset_urn,
+        offset=offset,
+        limit=limit,
+        order_by=order_by,
     )
     return IngestionSourceDatasetsResponse(
         offset=offset,
@@ -351,6 +356,7 @@ async def get_ingestion_source_event(
 
 @router.get("/unmanaged", response_model=IngestionUnmanagedResponse)
 async def get_ingestion_unmanaged(
+    dataset_urn: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
@@ -371,6 +377,8 @@ async def get_ingestion_unmanaged(
         DatasetRegistry.datahub_registered.is_(True),
         DatasetRegistry.dataset_urn.not_in(mapped_subq),
     )
+    if dataset_urn:
+        base_q = base_q.where(DatasetRegistry.dataset_urn.ilike(f"%{dataset_urn}%"))
 
     count_q = select(func.count()).select_from(base_q.subquery())
     total_count = (await db.execute(count_q)).scalar() or 0

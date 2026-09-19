@@ -43,7 +43,8 @@ checkboxes — **covered** (default checked) and **uncovered** (default unchecke
 filters the row set by mapping to the `coverage` query param: covered-only →
 `coverage=covered` (the default current view), both checked → `coverage=both`,
 uncovered-only → `coverage=uncovered`, and neither checked → an empty result.
-Toggling a checkbox resets pagination. Uncovered rows (registered datasets with no
+Toggling a checkbox resets pagination. A `dataset_urn` input and explicit **Search** button
+submit the optional backend query and reset `offset` to zero on submit or clear. Uncovered rows (registered datasets with no
 validation slot) carry null conf/result fields, so their description, variable count,
 `data_time`, and `score` cells render "—". The list is read-only for every role and
 paged by the shared [Pagination](FRONTEND_BASIC.md#shared-component-notes) control
@@ -88,12 +89,14 @@ range) drives the `Quality Score` and `Variables` sections, both reading
 `attr/validation/result`. In `date` granularity the RangePicker drives
 `?from=&until=&limit=` — this endpoint names its end-bound param `until` rather
 than `to` (see [RangePicker](FRONTEND_BASIC.md#shared-component-notes)).
-The `Quality Score` section renders a `score` line chart with a fixed `[0, 1]` y-domain:
+The `Quality Score` section renders a `score` line chart with a fixed `[0, 1]` y-domain and
+sufficient top-domain or plot-area padding that a marker at `1.0` is never clipped:
 its straight line is dark gray, and its visible dots are green for scores `>= 1.0` and pink
 for scores `< 1.0`; the active dot remains enlarged. The `Variables` section renders **small
 multiples** — one auto-scaled, full-width straight-line chart per declared variable stacked in a
 single column (one chart per row), each captioned with the variable's name and description so
-differing value scales do not flatten each other. Hovering a point on the `Quality Score` chart
+differing value scales do not flatten each other. Each variable chart reserves or adapts its left
+axis and plot margin to keep long numeric Y-axis tick labels fully visible. Hovering a point on the `Quality Score` chart
 shows `score_note` in the tooltip when the underlying (grain-collapsed) result carries one.
 A single [ChartGrainPicker](FRONTEND_BASIC.md#shared-component-notes) sits in the
 `Quality Score` heading row and governs the `Quality Score` chart and every `Variables`

@@ -155,6 +155,7 @@ interface MetricDatasetParams {
   offset?: number;
   limit?: number;
   sort?: string;
+  dataset_urn?: string;
 }
 
 function buildMetricDatasetUrl(metricId: string, params: MetricDatasetParams): string {
@@ -162,6 +163,7 @@ function buildMetricDatasetUrl(metricId: string, params: MetricDatasetParams): s
   for (const verdict of params.met ?? []) sp.append("met", verdict);
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.dataset_urn) sp.set("dataset_urn", params.dataset_urn);
   sp.set("sort", params.sort ?? "dataset_urn");
   return `/spoke/governance/metric/${metricId}/dataset?${sp.toString()}`;
 }

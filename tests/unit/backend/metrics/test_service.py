@@ -1888,6 +1888,49 @@ async def test_dataset_view_reads_scope_from_the_registry_and_left_joins_verdict
     assert "dataspoke.dataset_registry.origin" in page_sql, (
         "the metric's own filter must be pushed into the query, not applied afterwards"
     )
+
+
+@pytest.mark.parametrize(
+    ("dataset_urn", "expects_search"), [("OrDeRs", True), (None, False), ("", False)]
+)
+async def test_dataset_view_urn_search_composes_with_scope_and_verdict_filter(
+    service, db, dataset_urn: str | None, expects_search: bool
+) -> None:
+    """Metric search narrows count and page without changing the scope watermark.
+
+    Spec: API.md §Metric — ``dataset_urn`` is a case-insensitive substring filter
+    applied after metric scope and verdict selection, before count/pagination; the
+    scope-level ``attrs_synced_at`` watermark remains independent of page filters.
+    """
+    row = _make_definition_row(dataset_filter="origin = 'PROD'")
+    statements = _dataset_view_session(db, row, [])
+
+    records, total, _synced = await service.list_metric_datasets(
+        row.id, met=["true"], dataset_urn=dataset_urn, offset=2, limit=6
+    )
+
+    assert records == []
+    assert total == 0
+    compiled = [_compile_one(statement) for statement in statements]
+    count_sql, count_params = next((sql, params) for sql, params in compiled if "count(" in sql)
+    page_sql, page_params = _page_query(statements)
+    for sql, params in ((count_sql, count_params), (page_sql, page_params)):
+        assert "dataspoke.dataset_registry.origin" in sql
+        assert "dataspoke.metric_dataset_results.met is true" in sql
+        if expects_search:
+            assert " ilike " in sql
+            assert "%OrDeRs%" in params.values()
+        else:
+            assert " ilike " not in sql
+
+    watermark_sql, watermark_params = next(
+        (sql, params)
+        for sql, params in compiled
+        if "max(dataspoke.dataset_registry.attrs_synced_at)" in sql
+    )
+    assert "dataspoke.dataset_registry.origin" in watermark_sql
+    assert " ilike " not in watermark_sql
+    assert "%OrDeRs%" not in watermark_params.values()
     # Polarity, not just the column: `is_(False)` would render the exact complement
     # of the metric's scope — every dataset DataHub does not know about.
     assert "dataspoke.dataset_registry.datahub_registered is true" in page_sql, (

@@ -288,6 +288,7 @@ async def get_metric_datasets(
         list[Literal["true", "false", "unknown"]] | None,
         Query(description="Repeatable verdict filter; defaults to all three states"),
     ] = None,
+    dataset_urn: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
@@ -302,6 +303,7 @@ async def get_metric_datasets(
     rows, total_count, attrs_synced_at = await service.list_metric_datasets(
         metric_id,
         met=list(met) if met else None,
+        dataset_urn=dataset_urn,
         offset=offset,
         limit=limit,
         order_by=order_by,

@@ -100,7 +100,7 @@ export function ValidationScoreChart({
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={data} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
+      <LineChart data={data} margin={{ top: 16, right: 16, bottom: 0, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
         <XAxis
           type="number"
@@ -115,6 +115,7 @@ export function ValidationScoreChart({
         />
         <YAxis
           domain={[0, 1]}
+          padding={{ top: 12, bottom: 0 }}
           tick={{ fontSize: 11 }}
           tickLine={false}
           axisLine={false}

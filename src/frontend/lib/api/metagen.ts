@@ -183,13 +183,14 @@ export function useMetagenConfEvents(
 export function useMetagenCoveredDatasets(
   confId: string,
   includeDisallowed: boolean,
-  params: { offset?: number; limit?: number } = {},
+  params: { offset?: number; limit?: number; dataset_urn?: string } = {},
 ) {
   function buildUrl(): string {
     const sp = new URLSearchParams();
     if (includeDisallowed) sp.set("include_disallowed", "true");
     if (params.offset !== undefined) sp.set("offset", String(params.offset));
     if (params.limit !== undefined) sp.set("limit", String(params.limit));
+    if (params.dataset_urn) sp.set("dataset_urn", params.dataset_urn);
     const qs = sp.toString();
     return `/spoke/metagen/conf/${encodeURIComponent(confId)}/dataset${qs ? `?${qs}` : ""}`;
   }
@@ -207,13 +208,14 @@ export function useMetagenCoveredDatasets(
 /** GET /spoke/metagen/uncovered?include_disallowed=<bool> — polled. */
 export function useMetagenUncovered(
   includeDisallowed: boolean,
-  params: { offset?: number; limit?: number } = {},
+  params: { offset?: number; limit?: number; dataset_urn?: string } = {},
 ) {
   function buildUrl(): string {
     const sp = new URLSearchParams();
     if (includeDisallowed) sp.set("include_disallowed", "true");
     if (params.offset !== undefined) sp.set("offset", String(params.offset));
     if (params.limit !== undefined) sp.set("limit", String(params.limit));
+    if (params.dataset_urn) sp.set("dataset_urn", params.dataset_urn);
     const qs = sp.toString();
     return `/spoke/metagen/uncovered${qs ? `?${qs}` : ""}`;
   }

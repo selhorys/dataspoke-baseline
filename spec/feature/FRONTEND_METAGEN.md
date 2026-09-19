@@ -90,7 +90,9 @@ Below the form a paginated **Covered datasets** table
 `allowed` summary). A read-only "Show boundary-blocked" toggle maps to the
 `?include_disallowed` query param: off (default) shows only writable covered
 datasets; on additionally surfaces boundary-blocked covered rows (each carrying
-its `blocked`/`reason`). The table sits **above** the events panel.
+its `blocked`/`reason`). A `dataset_urn` input and explicit **Search** button submit
+the optional backend query and reset `offset` to zero on submit or clear. The table sits
+**above** the events panel.
 
 Below the Covered datasets table an events table shows this conf's run history
 (`GET /spoke/metagen/conf/{conf_id}/event`), newest first, with a `datetime`
@@ -113,7 +115,9 @@ not per item (`GET /spoke/metagen/dataset`). Columns:
 | last modified at | `last_modified_at` (formatted in the session tz) |
 
 Counts are candidate-level. Two filters sit below the table: a `dataset_urn`
-text input and a `conf_id` select (from `GET /spoke/metagen/conf`). Setting
+text input with an explicit **Search** button, and a `conf_id` select (from `GET /spoke/metagen/conf`). Submitting or clearing the
+dataset search resets `offset` to zero and sends the text to the backend; it does not
+filter the loaded page locally. Setting
 `conf_id` restricts rows to datasets holding a candidate from that conf and
 scopes every count to that conf's candidates. There are no `kind` or `status`
 filters on this surface. Each row links to the owning dataset page
@@ -133,7 +137,8 @@ rows; on additionally shows `boundary_blocked` rows. This is the metagen
 analogue of the ingestion `/ingestion/unmanaged` view. Each row links to its
 dataset page, and its second column is `datahub` — the shared
 [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes) (rendered only when
-the DataHub URL resolves non-empty). Read-only.
+the DataHub URL resolves non-empty). A `dataset_urn` input and explicit **Search** button
+submit the optional backend query and reset `offset` to zero on submit or clear. Read-only.
 
 ## Per-dataset (`/data/[urn]` MetaGen panel)
 

@@ -121,6 +121,15 @@ describe("useIngestionSources — URL construction", () => {
     expect(url).toContain("limit=20");
   });
 
+  it("serializes dataset_urn for source mappings", async () => {
+    const { result } = renderHook(
+      () => useIngestionSourceDatasets("src-1", { offset: 0, limit: 10, dataset_urn: "orders" }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(new URLSearchParams(lastUrl().split("?")[1]).get("dataset_urn")).toBe("orders");
+  });
+
   it("appends mode filter when provided", async () => {
     const { result } = renderHook(
       () => useIngestionSources({ mode: "PASSIVE" }),
@@ -428,6 +437,15 @@ describe("useIngestionUnmanaged — URL construction", () => {
     const url = lastUrl();
     expect(url).toContain("offset=50");
     expect(url).toContain("limit=50");
+  });
+
+  it("serializes dataset_urn for unmanaged datasets", async () => {
+    const { result } = renderHook(
+      () => useIngestionUnmanaged({ offset: 0, limit: 50, dataset_urn: "orders" }),
+      { wrapper: makeWrapper() },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(new URLSearchParams(lastUrl().split("?")[1]).get("dataset_urn")).toBe("orders");
   });
 });
 

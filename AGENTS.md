@@ -63,7 +63,11 @@ In spec, focus on architecture, decisions, and constraints. From spec, remove ve
 
 - Conventional Commits: `<type>: <subject>` (e.g. `feat:`, `fix:`, `docs:`, `refactor:`)
 - **Always run `git diff` (or `git diff --staged`) and base the commit message on the actual diff output**, not on prior conversation context or memory of what was changed
-- Body optional, **max 15 lines, max 100 chars per line** if included
+- A body is required for a commit that touches 20 or more files or spans two or more layers
+  (for example, backend, frontend, specs, tests, workflows, or deployment). The body must explain
+  the material contracts, behavior changes, and verification added; do not merely repeat filenames.
+- Small, single-layer commits may omit the body. When present or required, write 5–15 lines with a
+  maximum of 100 characters per line.
 - The repository has no automatic agent lifecycle or Git `commit-msg` hooks. A narrowly scoped
   Claude Code `PreToolUse` hook requests native approval for recognized `git commit` commands on
   `master`. Codex has no project hook; its parent agent must use the native approval or

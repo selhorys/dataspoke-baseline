@@ -28,6 +28,78 @@ def service(datahub, db, cache):
     return DatasetService(datahub=datahub, db=db, cache=cache)
 
 
+async def test_list_datasets_urn_search_is_case_insensitive_and_precedes_paging(
+    service, db
+) -> None:
+    """Catalog count and page SQL inherit the same case-insensitive URN predicate.
+
+    Spec: API.md §Data Resource — ``dataset_urn`` is a case-insensitive substring
+    filter, applied after registered-only scope and before count/pagination.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    page_result = MagicMock()
+    page_result.all.return_value = []
+
+    async def execute(statement):
+        sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+        return count_result if "count(" in sql else page_result
+
+    db.execute = AsyncMock(side_effect=execute)
+
+    rows, total = await service.list_datasets(dataset_urn="OrDeRs", offset=8, limit=3)
+
+    assert rows == []
+    assert total == 0
+    statements = [
+        call.args[0].compile(dialect=postgresql.dialect()) for call in db.execute.await_args_list
+    ]
+    assert len(statements) == 2, "empty page must stop before coverage lookups"
+    for compiled in statements:
+        sql = str(compiled).lower()
+        assert "datahub_registered is true" in sql
+        assert " ilike " in sql
+        assert "%OrDeRs%" in compiled.params.values()
+
+
+@pytest.mark.parametrize("dataset_urn", [None, ""])
+async def test_list_datasets_omitted_or_empty_urn_search_does_not_add_a_predicate(
+    service, db, dataset_urn: str | None
+) -> None:
+    """Omitted and empty search leave the registered catalog query unchanged.
+
+    Spec: API.md §Data Resource — omitted or empty ``dataset_urn`` is a no-op.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    count_result = MagicMock()
+    count_result.scalar.return_value = 0
+    page_result = MagicMock()
+    page_result.all.return_value = []
+
+    async def execute(statement):
+        return (
+            count_result
+            if "count(" in str(statement.compile(dialect=postgresql.dialect())).lower()
+            else page_result
+        )
+
+    db.execute = AsyncMock(side_effect=execute)
+    if dataset_urn is None:
+        await service.list_datasets()
+    else:
+        await service.list_datasets(dataset_urn=dataset_urn)
+
+    statements = [
+        call.args[0].compile(dialect=postgresql.dialect())
+        for call in db.execute.await_args_list
+    ]
+    assert len(statements) == 2, "backstop: count and page queries must both execute"
+    assert all(" ilike " not in str(statement).lower() for statement in statements)
+
+
 # ── get_summary ───────────────────────────────────────────────────────────────
 
 

@@ -437,6 +437,27 @@ async def test_get_source_datasets_returns_200_with_authority(
     assert row["authority"] == "high"
 
 
+@pytest.mark.asyncio
+async def test_get_source_datasets_forwards_dataset_urn_search(client, mock_svc: AsyncMock) -> None:
+    """A source mapping search is forwarded before its service paginates.
+
+    Spec: API.md §Ingestion — mapping ``dataset_urn`` substring filter is applied
+    before ``total_count`` / ``offset`` / ``limit``.
+    """
+    mock_svc.list_datasets_for_source = AsyncMock(return_value=([], 0))
+
+    response = await client.get(
+        f"{_BASE}/sources/{_SOURCE_ID}/datasets?dataset_urn=Orders&offset=3&limit=7",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    kwargs = mock_svc.list_datasets_for_source.await_args.kwargs
+    assert kwargs["dataset_urn"] == "Orders"
+    assert kwargs["offset"] == 3
+    assert kwargs["limit"] == 7
+
+
 # ── GET /sources/{id}/event ───────────────────────────────────────────────────
 
 
@@ -536,6 +557,55 @@ async def test_get_unmanaged_returns_200_with_urns(client) -> None:
     assert status_code == 200
     assert body["total_count"] == 1
     assert body["dataset_urns"] == [_URN]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expects_search"),
+    [("dataset_urn=Orders", True), ("", False), ("dataset_urn=", False)],
+)
+async def test_get_unmanaged_search_compiles_urn_predicate_before_count_and_page(
+    client, query: str, expects_search: bool
+) -> None:
+    """The DB-direct unmanaged route narrows the base query before paging it.
+
+    Spec: API.md §Ingestion — ``dataset_urn`` is a case-insensitive substring
+    filter applied after the unmanaged-scope predicate and before total/page.
+    """
+    auth_result = MagicMock()
+    auth_result.scalar_one_or_none.return_value = _make_mock_user()
+    count_result = MagicMock()
+    count_result.scalar.return_value = 1
+    page_result = MagicMock()
+    page_result.all.return_value = [(_URN,)]
+    db = AsyncMock()
+    route_db_execute(db, [("users", auth_result), ("count(", count_result)], default=page_result)
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        response = await client.get(
+            f"{_BASE}/unmanaged?{query}&offset=2&limit=5", headers=auth_headers()
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200, response.text
+    from sqlalchemy.dialects import postgresql
+
+    filtered = [
+        call.args[0].compile(dialect=postgresql.dialect())
+        for call in db.execute.await_args_list
+        if "dataset_registry"
+        in str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+    ]
+    assert len(filtered) >= 2, "both count and page must inherit the URN search predicate"
+    for compiled in filtered:
+        sql = str(compiled).lower()
+        assert "datahub_registered is true" in sql
+        if expects_search:
+            assert " ilike " in sql
+            assert "%Orders%" in compiled.params.values()
+        else:
+            assert " ilike " not in sql
 
 
 # ── GET /secrets (Editor-gated) ───────────────────────────────────────────────

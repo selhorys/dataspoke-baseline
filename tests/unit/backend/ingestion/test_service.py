@@ -576,6 +576,78 @@ class TestListDatasetsForSource:
         with pytest.raises(EntityNotFoundError):
             await service.list_datasets_for_source(str(uuid.uuid4()))
 
+    @pytest.mark.asyncio
+    async def test_urn_search_is_case_insensitive_and_precedes_count_and_page(
+        self, service: IngestionService, db: AsyncMock
+    ) -> None:
+        """Source mapping search narrows both SQL queries, after source scope.
+
+        Spec: API.md §Ingestion — mapping ``dataset_urn`` is a case-insensitive
+        substring filter applied after source scope and before total/page.
+        """
+        from sqlalchemy.dialects import postgresql
+
+        source_id = str(uuid.uuid4())
+        service.get_source = AsyncMock(return_value=MagicMock())
+        count_result = MagicMock()
+        count_result.scalar.return_value = 0
+        page_result = MagicMock()
+        page_result.scalars.return_value.all.return_value = []
+
+        async def execute(statement):
+            sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+            return count_result if "count(" in sql else page_result
+
+        db.execute = AsyncMock(side_effect=execute)
+        rows, total = await service.list_datasets_for_source(
+            source_id, dataset_urn="OrDeRs", offset=3, limit=4
+        )
+
+        assert rows == []
+        assert total == 0
+        statements = [
+            call.args[0].compile(dialect=postgresql.dialect()) for call in db.execute.await_args_list
+        ]
+        assert len(statements) == 2
+        for compiled in statements:
+            sql = str(compiled).lower()
+            assert "source_id" in sql
+            assert " ilike " in sql
+            assert "%OrDeRs%" in compiled.params.values()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("dataset_urn", [None, ""])
+    async def test_omitted_or_empty_urn_search_does_not_narrow_source_scope(
+        self, service: IngestionService, db: AsyncMock, dataset_urn: str | None
+    ) -> None:
+        """Missing and empty search preserve the source mapping scope.
+
+        Spec: API.md §Ingestion — omitted or empty ``dataset_urn`` is a no-op.
+        """
+        from sqlalchemy.dialects import postgresql
+
+        service.get_source = AsyncMock(return_value=MagicMock())
+        count_result = MagicMock()
+        count_result.scalar.return_value = 0
+        page_result = MagicMock()
+        page_result.scalars.return_value.all.return_value = []
+
+        async def execute(statement):
+            return (
+                count_result
+                if "count(" in str(statement.compile(dialect=postgresql.dialect())).lower()
+                else page_result
+            )
+
+        db.execute = AsyncMock(side_effect=execute)
+        await service.list_datasets_for_source(str(uuid.uuid4()), dataset_urn=dataset_urn)
+        sql = " ".join(
+            str(call.args[0].compile(dialect=postgresql.dialect())).lower()
+            for call in db.execute.await_args_list
+        )
+        assert "source_id" in sql
+        assert " ilike " not in sql
+
 
 # ── _mirror_execution_requests: DataHub status mapping ───────────────────────
 

@@ -85,13 +85,13 @@ function response(overrides: Partial<MetricDatasetListResponse> = {}): MetricDat
 /** The params the panel handed the read on its most recent render. */
 function lastRequest(): {
   metricId: string;
-  params: { met: string[]; offset: number; limit: number; sort: string };
+  params: { met: string[]; offset: number; limit: number; sort: string; dataset_urn?: string };
   options: { enabled?: boolean };
 } {
   const call = mockUseMetricDatasets.mock.calls.at(-1) as unknown[];
   return {
     metricId: call[0] as string,
-    params: call[1] as { met: string[]; offset: number; limit: number; sort: string },
+    params: call[1] as { met: string[]; offset: number; limit: number; sort: string; dataset_urn?: string },
     options: (call[2] ?? {}) as { enabled?: boolean },
   };
 }
@@ -224,14 +224,15 @@ describe("MetricDatasetTable — three-way verdict toggle", () => {
     }
   });
 
-  it("starts with all three verdicts selected and asks for all three", () => {
+  it("starts with true and false selected while unknown is clear", () => {
     render(<MetricDatasetTable metricId={METRIC_ID} />);
 
-    for (const verdict of ["true", "false", "unknown"]) {
+    for (const verdict of ["true", "false"]) {
       expect(verdictToggle(verdict)).toBeChecked();
     }
+    expect(verdictToggle("unknown")).not.toBeChecked();
     expect(lastRequest().metricId).toBe(METRIC_ID);
-    expect(lastRequest().params.met).toEqual(["true", "false", "unknown"]);
+    expect(lastRequest().params.met).toEqual(["true", "false"]);
   });
 
   it("drops a deselected verdict from the `met` param and keeps the rest", () => {
@@ -240,17 +241,17 @@ describe("MetricDatasetTable — three-way verdict toggle", () => {
     fireEvent.click(verdictToggle("false"));
 
     expect(verdictToggle("false")).not.toBeChecked();
-    expect(lastRequest().params.met).toEqual(["true", "unknown"]);
+    expect(lastRequest().params.met).toEqual(["true"]);
   });
 
   it("re-adds a verdict in the canonical true/false/unknown order", () => {
     render(<MetricDatasetTable metricId={METRIC_ID} />);
 
     fireEvent.click(verdictToggle("true"));
-    expect(lastRequest().params.met).toEqual(["false", "unknown"]);
+    expect(lastRequest().params.met).toEqual(["false"]);
 
     fireEvent.click(verdictToggle("true"));
-    expect(lastRequest().params.met).toEqual(["true", "false", "unknown"]);
+    expect(lastRequest().params.met).toEqual(["true", "false"]);
   });
 
   it("resets the offset when the selection changes", () => {
@@ -267,9 +268,9 @@ describe("MetricDatasetTable — three-way verdict toggle", () => {
     fireEvent.click(screen.getByRole("button", { name: "2" }));
     expect(lastRequest().params.offset).toBe(20);
 
-    fireEvent.click(verdictToggle("unknown"));
+    fireEvent.click(verdictToggle("false"));
     expect(lastRequest().params.offset).toBe(0);
-    expect(lastRequest().params.met).toEqual(["true", "false"]);
+    expect(lastRequest().params.met).toEqual(["true"]);
   });
 
   it("issues no request and shows the empty state when no verdict is selected", () => {
@@ -278,7 +279,7 @@ describe("MetricDatasetTable — three-way verdict toggle", () => {
     // cannot be expressed on the wire and is resolved client-side instead."
     render(<MetricDatasetTable metricId={METRIC_ID} />);
 
-    for (const verdict of ["true", "false", "unknown"]) {
+    for (const verdict of ["true", "false"]) {
       fireEvent.click(verdictToggle(verdict));
     }
 
@@ -291,7 +292,7 @@ describe("MetricDatasetTable — three-way verdict toggle", () => {
     // Backstop for the assertion above: `enabled` is a live function of the
     // selection, not a flag stuck off after the first deselection.
     render(<MetricDatasetTable metricId={METRIC_ID} />);
-    for (const verdict of ["true", "false", "unknown"]) {
+    for (const verdict of ["true", "false"]) {
       fireEvent.click(verdictToggle(verdict));
     }
     expect(lastRequest().options.enabled).toBe(false);
@@ -307,6 +308,24 @@ describe("MetricDatasetTable — three-way verdict toggle", () => {
 // ── Paging ─────────────────────────────────────────────────────────────────────
 
 describe("MetricDatasetTable — pagination and sort", () => {
+  it("applies a submitted search and clears it at offset zero", () => {
+    mockUseMetricDatasets.mockReturnValue({
+      data: response({ total_count: 45 }), isLoading: false, error: null,
+    });
+    render(<MetricDatasetTable metricId={METRIC_ID} />);
+    fireEvent.click(screen.getByRole("button", { name: "2" }));
+    expect(lastRequest().params.offset).toBe(20);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search dataset URN" }), {
+      target: { value: "orders" },
+    });
+    expect(lastRequest().params.dataset_urn).toBeUndefined();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(lastRequest().params).toMatchObject({ dataset_urn: "orders", offset: 0 });
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(lastRequest().params).toMatchObject({ dataset_urn: undefined, offset: 0 });
+  });
   it("requests the dataset_urn sort", () => {
     render(<MetricDatasetTable metricId={METRIC_ID} />);
     expect(lastRequest().params.sort).toBe("dataset_urn");

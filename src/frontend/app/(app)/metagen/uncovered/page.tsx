@@ -7,16 +7,19 @@ import { QueryErrorState } from "@/components/query-error-state";
 import { Pagination, DEFAULT_PAGE_SIZE } from "@/components/pagination";
 import { MetagenUncoveredTable } from "@/components/metagen/uncovered-table";
 import { PageHeader } from "@/components/page-header";
+import { DatasetUrnSearch } from "@/components/dataset-urn-search";
 import { useMetagenUncovered } from "@/lib/api/metagen";
 
 export default function MetagenUncoveredPage() {
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(DEFAULT_PAGE_SIZE);
   const [includeDisallowed, setIncludeDisallowed] = useState(false);
+  const [datasetUrn, setDatasetUrn] = useState("");
 
   const { data, isLoading, error } = useMetagenUncovered(includeDisallowed, {
     offset,
     limit,
+    dataset_urn: datasetUrn || undefined,
   });
 
   const totalCount = data?.total_count ?? 0;
@@ -32,6 +35,8 @@ export default function MetagenUncoveredPage() {
         datasets (matched by a conf but blocked by the per-dataset boundary). This
         view is read-only.
       </p>
+
+      <DatasetUrnSearch value={datasetUrn} onSubmit={(value) => { setDatasetUrn(value); setOffset(0); }} />
 
       <div className="flex items-center gap-2">
         <Checkbox

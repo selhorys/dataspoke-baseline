@@ -86,7 +86,7 @@ each, and which metagen confs cover it" in one cross-dataset table.
 
 | Element | Read | Notes |
 |---|---|---|
-| Dataset table | `GET /spoke/common/data` (paginated `offset`/`limit`/`total_count`, sortable by `dataset_urn`) | One row per registered dataset. Columns below |
+| Dataset table | `GET /spoke/common/data` (paginated `offset`/`limit`/`total_count`, sortable by `dataset_urn`) | One row per registered dataset. A `dataset_urn` input and explicit **Search** button submit the optional backend query; submitting or clearing it resets `offset` to zero. Columns below |
 | Shared Pagination | the standard envelope | [Pagination](FRONTEND_BASIC.md#shared-component-notes) (page-size selector, Prev/Next, numbered pages) |
 
 Columns:
@@ -225,10 +225,12 @@ datasets does this metric cover, and did each meet the criterion". It binds to
 shared [DataHub dataset deep-link](FRONTEND_BASIC.md#shared-component-notes)), a `met`
 badge (`true` / `false` / `unknown`), and `last check time` (shared tz/datetime helper;
 em dash when the row is `unknown`). A three-way toggle group — true / false / unknown,
-all on by default — drives the repeatable `met` query param, resetting `offset` on
-change. The group carries a visible `criterion met:` label immediately before the three
+with true and false selected by default and unknown clear — drives the repeatable `met`
+query param, resetting `offset` on change. The group carries a visible `criterion met:` label immediately before the three
 checkboxes, so the three bare words are readable without relying on the group's accessible
-name; the table's own column header is `met criterion`. With **zero** toggles selected the client renders the empty state and issues **no
+name; the table's own column header is `met criterion`. A `dataset_urn` input and explicit
+**Search** button alongside the group submit the optional backend query and reset `offset` to
+zero on submit or clear. With **zero** toggles selected the client renders the empty state and issues **no
 request**: an omitted repeatable param and an empty one are the same HTTP request, which
 the API reads as "all three", so the no-selection case cannot be expressed on the wire and
 is resolved client-side instead. The

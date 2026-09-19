@@ -19,6 +19,7 @@ interface ValidationListParams {
   sort?: string;
   /** covered (default) | uncovered | both — server-side coverage filter. */
   coverage?: ValidationCoverage;
+  dataset_urn?: string;
 }
 
 function buildListUrl(params: ValidationListParams): string {
@@ -27,6 +28,7 @@ function buildListUrl(params: ValidationListParams): string {
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.sort) sp.set("sort", params.sort);
   if (params.coverage) sp.set("coverage", params.coverage);
+  if (params.dataset_urn) sp.set("dataset_urn", params.dataset_urn);
   const qs = sp.toString();
   return `/spoke/validation${qs ? `?${qs}` : ""}`;
 }

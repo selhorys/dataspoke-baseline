@@ -11,6 +11,7 @@ interface DatasetListParams {
   limit?: number;
   /** dataset_urn | dataset_urn_desc */
   sort?: string;
+  dataset_urn?: string;
 }
 
 function buildListUrl(params: DatasetListParams): string {
@@ -18,6 +19,7 @@ function buildListUrl(params: DatasetListParams): string {
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.sort) sp.set("sort", params.sort);
+  if (params.dataset_urn) sp.set("dataset_urn", params.dataset_urn);
   const qs = sp.toString();
   return `/spoke/common/data${qs ? `?${qs}` : ""}`;
 }

@@ -1180,6 +1180,7 @@ class IngestionService:
     async def list_datasets_for_source(
         self,
         source_id: str,
+        dataset_urn: str | None = None,
         offset: int = 0,
         limit: int = 20,
         order_by: Any = None,
@@ -1192,13 +1193,17 @@ class IngestionService:
         await self.get_source(source_id)  # raises if not found
         uid = uuid.UUID(source_id)
 
-        count_q = select(func.count()).where(IngestionSourceDataset.source_id == uid)
+        filters = [IngestionSourceDataset.source_id == uid]
+        if dataset_urn:
+            filters.append(IngestionSourceDataset.dataset_urn.ilike(f"%{dataset_urn}%"))
+
+        count_q = select(func.count()).where(*filters)
         total_count = (await self._db.execute(count_q)).scalar() or 0
 
         default_order = IngestionSourceDataset.last_seen_at.desc()
         rows_q = (
             select(IngestionSourceDataset)
-            .where(IngestionSourceDataset.source_id == uid)
+            .where(*filters)
             .order_by(order_by if order_by is not None else default_order)
             .offset(offset)
             .limit(limit)

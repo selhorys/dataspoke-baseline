@@ -55,14 +55,17 @@ vi.mock("recharts", () => {
     LineChart: ({
       children,
       data,
+      margin,
     }: {
       children?: React.ReactNode;
       data?: { date: string }[];
+      margin?: { top?: number };
     }) => (
       <div
         data-testid="line-chart"
         data-categories={JSON.stringify((data ?? []).map((d) => d.date))}
         data-points={JSON.stringify(data ?? [])}
+        data-margin-top={String(margin?.top ?? "")}
       >
         {children}
       </div>
@@ -98,8 +101,8 @@ vi.mock("recharts", () => {
       mockScoreTickFormatter = tickFormatter ?? null;
       return <div data-testid="x-axis" data-key={String(dataKey)} data-type={String(type)} data-scale={String(scale)} data-tick-label={tickFormatter?.(ticks?.[0] ?? 0) ?? ""} />;
     },
-    YAxis: ({ domain }: { domain?: [number, number] }) => (
-      <div data-testid="y-axis" data-domain={JSON.stringify(domain ?? null)} />
+    YAxis: ({ domain, padding }: { domain?: [number, number]; padding?: { top?: number; bottom?: number } }) => (
+      <div data-testid="y-axis" data-domain={JSON.stringify(domain ?? null)} data-padding={JSON.stringify(padding ?? null)} />
     ),
     Tooltip: ({
       content,
@@ -230,6 +233,8 @@ describe("ValidationScoreChart — a single grain window renders a visible point
     expect(line).toHaveAttribute("data-stroke", "#3f3f46");
     expect(line).toHaveAttribute("data-type", "linear");
     expect(screen.getByTestId("y-axis")).toHaveAttribute("data-domain", "[0,1]");
+    expect(screen.getByTestId("y-axis")).toHaveAttribute("data-padding", '{"top":12,"bottom":0}');
+    expect(screen.getByTestId("line-chart")).toHaveAttribute("data-margin-top", "16");
     expect(mockScoreDot).not.toBeNull();
     expect(mockActiveScoreDot).not.toBeNull();
     const passing = mockScoreDot!({ payload: plotted()[0] as GrainPoint, cx: 10, cy: 10 }) as React.ReactElement<{ fill: string; r: number }>;

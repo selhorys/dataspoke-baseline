@@ -127,7 +127,7 @@ export function ValidationVariablesChart({
               <ResponsiveContainer width="100%" height={height}>
                 <LineChart
                   data={data}
-                  margin={{ top: 4, right: 12, bottom: 0, left: 0 }}
+                  margin={{ top: 8, right: 12, bottom: 0, left: 20 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis
@@ -145,7 +145,7 @@ export function ValidationVariablesChart({
                     tick={{ fontSize: 10 }}
                     tickLine={false}
                     axisLine={false}
-                    width={44}
+                    width={72}
                     domain={["auto", "auto"]}
                   />
                   <Tooltip

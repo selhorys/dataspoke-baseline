@@ -270,6 +270,7 @@ async def get_metagen_conf_event(
 @router.get("/uncovered", response_model=MetagenUncoveredResponse)
 async def get_metagen_uncovered(
     include_disallowed: bool = Query(default=False),
+    dataset_urn: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
@@ -284,6 +285,7 @@ async def get_metagen_uncovered(
     order_by = parse_sort(sort, {"dataset_urn": DatasetRegistry.dataset_urn}, None)
     rows, total = await service.list_uncovered(
         include_disallowed=include_disallowed,
+        dataset_urn=dataset_urn,
         offset=offset,
         limit=limit,
         order_by=order_by,
@@ -309,6 +311,7 @@ async def get_metagen_uncovered(
 async def get_metagen_conf_covered_datasets(
     conf_id: str,
     include_disallowed: bool = Query(default=False),
+    dataset_urn: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=1000),
     sort: str | None = Query(default=None),
@@ -325,6 +328,7 @@ async def get_metagen_conf_covered_datasets(
     rows, total = await service.list_covered_datasets(
         conf_id,
         include_disallowed=include_disallowed,
+        dataset_urn=dataset_urn,
         offset=offset,
         limit=limit,
         order_by=order_by,
