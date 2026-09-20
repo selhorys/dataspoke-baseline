@@ -44,10 +44,21 @@ if [[ -z "$exec_pid" || ! "$exec_pid" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# 3. Verify it survived its first seconds; if it died, report why.
+# 3. Verify it survived its first seconds.
+#
+# A wake with nothing to do finishes in well under this window — no claimed
+# issue is pending, so the executor logs "Heartbeat complete." and exits 0. That
+# is the single most common outcome, and reporting it as EXITED_IMMEDIATELY
+# trains an operator to ignore the one status line that would matter if the
+# executor really had died on startup. Distinguish the two by what the executor
+# itself logged, not by how quickly it was gone.
 sleep 5
 if ! kill -0 "$exec_pid" 2>/dev/null; then
   tail_text=$(tail -20 "$EXEC_LOG" 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' || true)
+  if grep -q 'Heartbeat complete\.' <<< "$tail_text"; then
+    echo "COMPLETED_NO_WORK pid=$exec_pid"
+    exit 0
+  fi
   echo "EXITED_IMMEDIATELY pid=$exec_pid"
   printf '%s\n' "$tail_text"
   exit 0
@@ -65,6 +76,23 @@ fi
 # daemonize.py opens the log O_APPEND, so it accumulates across runs. Remember where this
 # monitor's output begins and read only from there — an earlier run's `monitor:` line must
 # never be reported as this run's failure reason.
+# Bound the log and mark where this run begins. daemonize.py opens it O_APPEND,
+# so it otherwise grows forever and reads as one undated stream: an operator
+# opening the file sees a months-old `monitor: slack send failed` and concludes
+# reporting is broken right now. The banner makes each run's lines attributable;
+# the trim keeps the file to its most recent runs.
+MONITOR_LOG_MAX_BYTES="${PRAUTO_MONITOR_LOG_MAX_BYTES:-262144}"
+if [[ -f "$MONITOR_LOG" ]]; then
+  monitor_log_bytes=$(wc -c < "$MONITOR_LOG" 2>/dev/null || printf 0)
+  monitor_log_bytes=${monitor_log_bytes//[[:space:]]/}
+  if [[ "${monitor_log_bytes:-0}" -gt "$MONITOR_LOG_MAX_BYTES" ]]; then
+    tail -c "$(( MONITOR_LOG_MAX_BYTES / 2 ))" "$MONITOR_LOG" > "${MONITOR_LOG}.trim" 2>/dev/null \
+      && mv -f "${MONITOR_LOG}.trim" "$MONITOR_LOG" 2>/dev/null || rm -f "${MONITOR_LOG}.trim"
+  fi
+fi
+printf -- '--- monitor run %s (executor pid %s) ---\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exec_pid" >> "$MONITOR_LOG" 2>/dev/null || true
+
 monitor_log_start=0
 [[ -f "$MONITOR_LOG" ]] && monitor_log_start=$(wc -c < "$MONITOR_LOG") && monitor_log_start=${monitor_log_start//[[:space:]]/}
 monitor_log_new() { tail -c +$(( ${monitor_log_start:-0} + 1 )) "$MONITOR_LOG" 2>/dev/null || true; }

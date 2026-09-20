@@ -555,17 +555,17 @@ Because the counter is advanced at dispatch, that attempt is refunded
 ([Retry tracking](#retry-tracking)); a deterministic executor-side fault would otherwise consume an
 attempt on every wake and abandon the job without a line of work attempted.
 
-### Executor-owned review gate
+### Deploys stay executor-owned
 
-In addition to the in-workflow per-stage review, the executor runs a **final adversarial review
-gate** over the worker's committed diff before the PR is opened: a fresh reviewer subagent — a
-separate context that has not seen the worker's session — reads the diff against
-`scaffold/roles/reviewer.md` and returns a verdict. The reviewer is a genuinely separate process,
-not the worker's session. A REVISE verdict feeds up to three fix passes; an ESCALATE
-abandons the job as above. The gate is mandatory for `implementation`; analysis, integration-fix,
-and pr-review do not re-open it.
+Review of generated code happens inside the workflow, per stage: each generator is evaluated by a
+separate reviewer context before later stages build on it
+([The implementation phase runs the AGENTS.md workflow](#the-implementation-phase-runs-the-agentsmd-workflow)).
+That per-stage adversarial pass is the review gate — the executor does not run a second,
+whole-diff review of its own afterwards. A second pass over the merged result would re-read work
+already judged, cost another full review, and add an escalation path without establishing anything
+the per-stage passes do not.
 
-Deploys stay executor-owned. Prauto's analysis phase never emits `k8s-helm` as a stage: that
+Prauto's analysis phase never emits `k8s-helm` as a stage: that
 stage would deploy under whatever its kubeconfig points at, ignoring the worker-cluster binding and
 the api-then-frontend ordering ([Branch image deploys](#branch-image-deploys)), and it carries no
 reviewer. All cluster mutation runs from the executor against `$PRAUTO_DEV_ENV_FILE`.
@@ -1023,8 +1023,8 @@ one of the branch's choosing.
 | `.claude/settings.json` | Permission prompts do not apply — sessions run with permissions auto-approved; the denylist is prauto's own layer |
 | `.claude/agents/` / `.codex/agents/` | The implementation phase delegates to the generator and reviewer subagents; their definitions govern their tools and turns, their bodies point at the canonical role definitions in `scaffold/roles/` |
 | `.claude/workflows/` | `wf-minimal.js` drives the Claude binding's per-stage generate → review cycles (Codex expresses the equivalent orchestration in its worker prompt) |
-| `scaffold/roles/` | Canonical generator/evaluator roles — the executor's final review gate reads `reviewer.md` directly |
-| `scaffold/contracts/` | `reviewer-verdict.schema.json` is the verdict schema the review gate validates against |
+| `scaffold/roles/` | Canonical generator/evaluator roles — the executor snapshots these as each reviewer's pinned authority |
+| `scaffold/contracts/` | `reviewer-verdict.schema.json` is the verdict schema every stage reviewer emits against |
 | `spec/` hierarchy | Analysis phase reads specs per `AGENTS.md` |
 
 Prauto is self-contained — it does not modify `.claude/` files. The scaffold serves

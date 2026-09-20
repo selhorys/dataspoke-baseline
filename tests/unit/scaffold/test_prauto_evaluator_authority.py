@@ -5,7 +5,7 @@ These snippets read the real scaffold/ sources through the library and write int
 a temporary tree; nothing contacts an agent, GitHub, or a cluster.
 
 spec: spec/AI_PRAUTO.md §The implementation phase runs the AGENTS.md workflow;
-§Executor-owned review gate; spec/AI_SCAFFOLD.md (pinned evaluator authority)
+§Pinned evaluator authority capture; spec/AI_SCAFFOLD.md
 """
 
 from __future__ import annotations

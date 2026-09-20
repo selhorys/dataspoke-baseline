@@ -61,7 +61,11 @@ must:
    It prints exactly one status line plus (on early exit) the log tail:
    - `ALREADY_RUNNING pid=N` → the executor is mid-run; report and do not launch again.
    - `STARTED pid=N monitor_pid=M` → report 🚀 started + monitor attached.
-   - `EXITED_IMMEDIATELY pid=N` + log tail → report ⚠️ exited immediately + the reason line
+   - `COMPLETED_NO_WORK pid=N` → the wake finished with nothing pending (no claimed issue to
+     advance, or the only one is already terminal). Report ✅ nothing pending and STOP — this is
+     the most common outcome and is not a fault.
+   - `EXITED_IMMEDIATELY pid=N` + log tail → the executor died during startup and never reached
+     `Heartbeat complete.`; report ⚠️ exited immediately + the reason line
      (e.g. `No coding agent available`, `Claude auth check failed`), then STOP.
    - `LAUNCH_FAILED …` → report the failure verbatim.
    - `MONITOR_FAILED …` / `MONITOR_EXITED_IMMEDIATELY …` → the executor launched but the

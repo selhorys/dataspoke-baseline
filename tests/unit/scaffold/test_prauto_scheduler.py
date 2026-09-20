@@ -506,3 +506,85 @@ def test_launch_ignores_a_stale_monitor_log_line_when_reporting_the_reason(tmp_p
     assert "reason=" not in result.stdout, result.stdout
     assert "slack send failed" not in result.stdout, result.stdout
     _kill(int(m.group(1)))
+
+
+def test_scheduler_reference_values_are_marked_as_not_read_by_code() -> None:
+    """Config that nothing reads must say so, or it reads as a live knob.
+
+    spec: spec/AI_PRAUTO.md §Executor and Scheduler — the Hermes binding is one
+    reference example, and these fields describe the job an operator creates
+    rather than anything the executor consults. Left unmarked, an operator
+    editing the schedule here would reasonably expect a running worker's cadence
+    to change, and nothing would tell them otherwise.
+    """
+    root = Path(__file__).parents[3]
+    config = (root / ".prauto/config.env").read_text()
+
+    declared = {
+        line.split("=", 1)[0]
+        for line in config.splitlines()
+        if line.startswith("PRAUTO_SCHEDULER_HERMES_")
+    }
+    assert declared, "expected the reference scheduler values to be present"
+
+    shell = "\n".join(
+        p.read_text()
+        for p in sorted((root / ".prauto").rglob("*.sh"))
+    )
+    unread = sorted(name for name in declared if name not in shell)
+
+    # Whatever is genuinely unread has to be covered by the note above them.
+    if unread:
+        block_start = config.index("# Scheduler —")
+        block_end = config.index("PRAUTO_SCHEDULER_HERMES_SCHEDULE")
+        note = config[block_start:block_end]
+        assert "no code in .prauto/ reads" in note, (
+            f"these are declared but read by no code, and nothing says so: {unread}"
+        )
+
+
+def test_a_no_work_wake_is_not_reported_as_an_immediate_death() -> None:
+    """The ordinary outcome must not look like a fault.
+
+    spec: spec/AI_PRAUTO.md §Executor Cycle — a wake with no claimed issue to
+    advance logs "Heartbeat complete." and exits. That finishes well inside
+    launch.sh's five-second liveness probe, so probing by liveness alone reports
+    the most common outcome as EXITED_IMMEDIATELY and trains an operator to
+    ignore the status line that matters when the executor really does die.
+    """
+    launch = (Path(__file__).parents[3] / ".prauto/scheduler/launch.sh").read_text()
+
+    assert "COMPLETED_NO_WORK" in launch, "a completed no-work wake has no distinct status"
+    probe = launch[launch.index("# 3. Verify it survived"):launch.index("# 4. Detach the monitor")]
+    assert "Heartbeat complete" in probe, (
+        "the probe still distinguishes by liveness alone rather than by what "
+        "the executor logged"
+    )
+    # Compare the emitting statements, not the names — the comment above them
+    # mentions both.
+    assert probe.index('echo "COMPLETED_NO_WORK') < probe.index('echo "EXITED_IMMEDIATELY'), (
+        "the completion check must run before the death report, or the death "
+        "report wins for every fast wake"
+    )
+
+
+def test_the_monitor_log_marks_run_boundaries_and_is_bounded() -> None:
+    """A shared append-only log must say which run each line belongs to.
+
+    spec: spec/AI_PRAUTO.md §Executor and Scheduler — the monitor posts progress
+    until the coding agent finishes, and its log is the local record of that. The
+    file is opened O_APPEND across runs, so without boundaries an operator
+    reading it attributes an old run's "slack send failed" to the current one and
+    concludes reporting is broken when it is not.
+    """
+    launch = (Path(__file__).parents[3] / ".prauto/scheduler/launch.sh").read_text()
+
+    assert "--- monitor run" in launch, "no run banner is written to the monitor log"
+    assert "MONITOR_LOG_MAX_BYTES" in launch, "the monitor log grows without bound"
+
+    # The banner must precede the offset capture, or launch.sh's own "new lines
+    # this run" reads would include it and report it as monitor output.
+    assert launch.index("--- monitor run") < launch.index("monitor_log_start=0"), (
+        "the run banner is written after the offset capture, so it would be "
+        "read back as this run's monitor output"
+    )

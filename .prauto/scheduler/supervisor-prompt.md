@@ -23,6 +23,8 @@ entire tick.
 
    - ALREADY_RUNNING pid=N           → report "already running", do not launch again.
    - STARTED pid=N monitor_pid=M     → report "🚀 started, monitor attached".
+   - COMPLETED_NO_WORK pid=N         → report "✅ nothing pending", stop. This is the ordinary
+     outcome of a wake with no claimed issue to advance, not a fault.
    - EXITED_IMMEDIATELY pid=N + tail → report "⚠️ exited immediately" + the reason line, stop.
    - LAUNCH_FAILED …                 → report the failure verbatim.
    - MONITOR_FAILED … / MONITOR_EXITED_IMMEDIATELY … → report "⚠️ reporting degraded" + the
