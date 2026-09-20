@@ -977,6 +977,7 @@ fields live in `config.local.env` (gitignored — the repo is public).
 | `prompt` | `PRAUTO_SCHEDULER_HERMES_PROMPT_FILE` | config.env | `.prauto/scheduler/supervisor-prompt.md` — the canonical supervisor procedure |
 | `workdir` | `PRAUTO_SCHEDULER_HERMES_WORKDIR` | config.local.env | the local checkout |
 | `deliver` | `PRAUTO_SCHEDULER_HERMES_DELIVER` | config.local.env | `local` — the supervisor's final response is archived; Slack reporting is explicit via `hermes send` |
+| reporting home | `PRAUTO_SCHEDULER_HERMES_HOME` | config.local.env | optional; the Hermes profile home whose channel directory resolves `PRAUTO_SLACK_TARGET` (defaults to the inherited `HERMES_HOME`, then the default home) |
 
 Create the Hermes job from the table's values using Hermes's cron interface. The supervisor
 agent does not perform executor work: it launches the executor and monitors it. After the
@@ -1013,6 +1014,15 @@ launcher also validates the monitor detach: a non-numeric or immediately-dead mo
 that lost its Slack reporting is surfaced to the supervisor rather than reported as launched. The
 monitor posts its own Slack notes via `hermes send` (no LLM, no running gateway required). The
 executor's PID lock and GitHub idempotency make overlapping ticks safe.
+
+Because Slack is the only human surface for a detached run, the monitor verifies its reporting
+channel before it starts watching: `hermes send --list <platform>` must resolve `PRAUTO_SLACK_TARGET`
+under the resolved profile home (`PRAUTO_SCHEDULER_HERMES_HOME` in config.local.env, else the
+supervisor's inherited `HERMES_HOME`, else the default home). An unresolvable target is a nonzero
+exit with the reason recorded in `.prauto/state/monitor-slack-unresolved` — which the launcher turns
+into `MONITOR_EXITED_IMMEDIATELY … reason=…`, so misconfigured reporting is reported, never silent.
+A send that still fails after one bounded retry is appended to
+`.prauto/state/monitor-undelivered.log` rather than dropped.
 
 **The cron tick is not where the work happens.** The tick detaches the executor and the monitor;
 the executor's agent invocations are the long-running part. GitHub is the SSOT for phase state

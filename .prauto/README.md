@@ -133,8 +133,10 @@ Repo-level fields (what the job *is*) live in `config.env`; the instance-identit
 | `PRAUTO_SLACK_TARGET` | config.env | Slack channel the supervisor and monitor report to (`slack:hermes-dev`) |
 | `PRAUTO_MONITOR_CHECK_SECS` | config.env | Monitor liveness poll cadence (default 60) |
 | `PRAUTO_MONITOR_INTERVAL_SECS` | config.env | Monitor Slack-report cadence while running (default 600) |
+| `PRAUTO_MONITOR_SEND_RETRY_SECS` | config.env | Delay before the monitor's single Slack-send retry (default 5) |
 | `PRAUTO_SCHEDULER_HERMES_WORKDIR` | config.local.env | Local checkout path (the job's `workdir`) |
 | `PRAUTO_SCHEDULER_HERMES_DELIVER` | config.local.env | Where the supervisor's final response is archived (`local`); Slack reporting is explicit via `hermes send` |
+| `PRAUTO_SCHEDULER_HERMES_HOME` | config.local.env | Optional: the Hermes profile home that resolves `PRAUTO_SLACK_TARGET` (defaults to the inherited `HERMES_HOME`, then the default home) |
 
 The monitor's canonical source is `.prauto/scheduler/monitor.sh`; the supervisor detaches it via
 `.prauto/scheduler/launch.sh` (which uses `.prauto/scheduler/daemonize.py` — a setsid double-fork
@@ -142,8 +144,12 @@ The monitor's canonical source is `.prauto/scheduler/monitor.sh`; the supervisor
 process-group teardown). `launch.sh` also validates the monitor detach: a non-numeric or
 immediately-dead monitor PID is a `MONITOR_FAILED`/`MONITOR_EXITED_IMMEDIATELY` result (exit 1),
 never a silent success. The monitor posts its own Slack notes via `hermes send` (no LLM, no
-running gateway required). See `spec/AI_PRAUTO.md §Executor and Scheduler` for the create call
-that consumes these vars.
+running gateway required). Because Slack is the only human surface for a detached run, the monitor
+preflights its channel: the target must resolve under the profile home above (`hermes send --list`),
+or the monitor exits nonzero with the reason in `.prauto/state/monitor-slack-unresolved` — reported
+as `MONITOR_EXITED_IMMEDIATELY … reason=…`, never silence. A send that fails twice is appended to
+`.prauto/state/monitor-undelivered.log`. See `spec/AI_PRAUTO.md §Executor and Scheduler` for the
+create call that consumes these vars.
 
 Before creating the job, install the supervisor skill into the Hermes profile that runs it, or the
 job rejects the unknown `prauto-executor` skill:

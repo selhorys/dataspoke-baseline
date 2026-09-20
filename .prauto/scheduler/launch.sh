@@ -65,6 +65,7 @@ fi
 monitor_pid=$(python3 "$DAEMONIZE" "$MONITOR_LOG" -- bash "$SCRIPT_DIR/monitor.sh" "$exec_pid")
 if [[ -z "$monitor_pid" || ! "$monitor_pid" =~ ^[0-9]+$ ]]; then
   echo "MONITOR_FAILED pid=$exec_pid monitor_pid=${monitor_pid:-unknown}"
+  tail -5 "$MONITOR_LOG" 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' || true
   exit 1
 fi
 # 5. Verify the monitor survived its first seconds too. daemonize.py prints a numeric PID even
@@ -74,7 +75,17 @@ fi
 #    reporting while the supervisor is told it succeeded.
 sleep 3
 if ! kill -0 "$monitor_pid" 2>/dev/null; then
-  echo "MONITOR_EXITED_IMMEDIATELY pid=$exec_pid monitor_pid=$monitor_pid"
+  # Surface WHY the monitor died. The supervisor relays this status line to Slack and
+  # cannot read the monitor log, so a bare MONITOR_EXITED_IMMEDIATELY hides the one
+  # thing worth acting on — e.g. an unresolved Slack target, which is what a monitor
+  # run under the wrong HERMES_HOME reports (see monitor.sh's preflight).
+  reason=$(grep -m1 -E '^monitor:' "$MONITOR_LOG" 2>/dev/null || true)
+  if [[ -n "$reason" ]]; then
+    echo "MONITOR_EXITED_IMMEDIATELY pid=$exec_pid monitor_pid=$monitor_pid reason=$reason"
+  else
+    echo "MONITOR_EXITED_IMMEDIATELY pid=$exec_pid monitor_pid=$monitor_pid"
+  fi
+  tail -5 "$MONITOR_LOG" 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' || true
   exit 1
 fi
 echo "STARTED pid=$exec_pid monitor_pid=$monitor_pid"
