@@ -8,7 +8,12 @@ reviewer, up to 3 fix passes per stage) over the plan's stages. The binding depe
 are:
 
 - **Claude Code**: run `.claude/workflows/wf-minimal.js` via the `Workflow` tool. Do not reimplement
-  or shortcut that loop — wf-minimal owns it.
+  or shortcut that loop — wf-minimal owns it. If the `Workflow` tool is absent from this session's
+  tool list, that is a harness fault, not a situation to work around: the executor enables dynamic
+  workflows for this phase, so an absent tool means that opt-in did not take effect. Escalate,
+  saying so. Do not take the Codex path — wf-minimal is what decides whether each stage's reviewer
+  verdict is actually collected and merged, and a self-driven substitute leaves no evidence of
+  which loop ran.
 - **Codex**: express the same loop inline (Codex has no `Workflow` tool): for each stage, dispatch a
   generator subagent, then its reviewer(s), merge verdicts worst-of, and run at most three fix passes
   (four review rounds total) before escalating a persisting REVISE.

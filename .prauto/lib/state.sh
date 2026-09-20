@@ -254,24 +254,105 @@ read_retry_count() {
 # Increment the current retry count by one, persist it atomically, and set
 # RETRY_COUNT to the new value so callers can use it directly.
 increment_retry_count() {
-  local issue_number="$1" cf new_count ready_ts
+  local issue_number="$1"
+  read_retry_count "$issue_number"
+  read_refund_count "$issue_number"
+  write_retry_count "$issue_number" $((RETRY_COUNT + 1)) "$REFUND_COUNT"
+}
+
+# refund_retry_count <issue_number>
+# Give back the attempt this dispatch consumed, flooring at zero. The counter is
+# incremented at dispatch, before the outcome is known, so an attempt that turns
+# out not to be the worker's failure — the agent CLI truncating a session that was
+# still making progress — must be handed back or a harness limitation burns the
+# job's retry budget.
+#
+# Two bounds keep the refund from defeating the abandonment guarantee:
+#
+#  - It only refunds what THIS dispatch consumed. RETRY_COUNT_CONSUMED is set by
+#    the heartbeat's normal dispatch path, the only path that increments. The
+#    plan-approval and quota-resume paths deliberately bypass the counter
+#    (spec/AI_PRAUTO.md §Retry tracking), so a refund there would hand the job a
+#    free attempt taken from an earlier dispatch's tally.
+#  - PRAUTO_MAX_REFUNDS_PER_JOB caps refunds per ready-label lifecycle. Even if
+#    some future signature turns out to be reachable by the worker, a job cannot
+#    be made unabandonable: past the cap, attempts are consumed normally.
+refund_retry_count() {
+  local issue_number="$1"
+
+  if [[ "${RETRY_COUNT_CONSUMED:-false}" != true ]]; then
+    info "Issue #${issue_number}: this dispatch consumed no retry; nothing to refund."
+    return 0
+  fi
+
+  read_refund_count "$issue_number"
+  # Validate the override before it reaches an arithmetic comparison, the way
+  # provision_dev_env validates its timeout. A typo must fall back to the
+  # documented default, not silently unbound or disable the cap.
+  local max_refunds="${PRAUTO_MAX_REFUNDS_PER_JOB:-2}"
+  if [[ ! "$max_refunds" =~ ^[0-9]+$ ]]; then
+    warn "Invalid PRAUTO_MAX_REFUNDS_PER_JOB='${max_refunds}'; using the default of 2."
+    max_refunds=2
+  fi
+  if [[ "$REFUND_COUNT" -ge "$max_refunds" ]]; then
+    warn "Issue #${issue_number}: refund cap reached (${REFUND_COUNT}/${max_refunds}); this attempt stays counted."
+    return 0
+  fi
+
+  read_retry_count "$issue_number"
+  [[ "$RETRY_COUNT" -gt 0 ]] || return 0
+  write_retry_count "$issue_number" $((RETRY_COUNT - 1)) $((REFUND_COUNT + 1))
+}
+
+# read_refund_count <issue_number>
+# Sets REFUND_COUNT for the issue's current ready-label lifecycle. Same safety as
+# read_retry_count, and deliberately the same strictness: this counter is the only
+# bound on the abandonment guarantee, so a record carrying a negative or fractional
+# value must read as zero rather than flow into an arithmetic comparison — under
+# the heartbeat's `set -euo pipefail` a non-integer there kills the wake instead of
+# degrading. A missing, malformed, or foreign-lifecycle record yields zero.
+read_refund_count() {
+  local issue_number="$1" cf
+  REFUND_COUNT=0
+  [[ -n "${READY_LABEL_TIMESTAMP:-}" ]] || return 0
+  cf=$(retry_count_file "$issue_number") || return 0
+  [[ -f "$cf" ]] || return 0
+  REFUND_COUNT=$(jq -er \
+    --argjson issue_number "$issue_number" \
+    --arg ready_label_timestamp "$READY_LABEL_TIMESTAMP" '
+    if (.issue_number == $issue_number)
+       and (.ready_label_timestamp == $ready_label_timestamp)
+       and ((.refund_count // 0) | type == "number")
+       and ((.refund_count // 0) >= 0)
+       and (((.refund_count // 0) | floor) == (.refund_count // 0))
+    then (.refund_count // 0) else 0 end
+    ' "$cf" 2>/dev/null) || REFUND_COUNT=0
+}
+
+# write_retry_count <issue_number> <count> <refund_count>
+# Persist <count> and <refund_count> atomically against the current ready-label
+# lifecycle, setting RETRY_COUNT and REFUND_COUNT to them. Shared by
+# increment_retry_count and refund_retry_count so both write one record shape —
+# the refund tally has to ride in the same record, or a refund that raced a
+# rewrite could reset its own cap.
+write_retry_count() {
+  local issue_number="$1" new_count="$2" new_refund_count="${3:-0}" cf ready_ts
   cf=$(retry_count_file "$issue_number") || return 1
   ready_ts="${READY_LABEL_TIMESTAMP:-}"
   [[ -n "$ready_ts" ]] || {
-    warn "Cannot increment retry count for #${issue_number}: missing ready-label timestamp"
+    warn "Cannot write retry count for #${issue_number}: missing ready-label timestamp"
     RETRY_COUNT=0
     return 1
   }
-  read_retry_count "$issue_number"
-  new_count=$((RETRY_COUNT + 1))
   local tmp_file
   tmp_file=$(mktemp "${cf}.tmp.XXXXXX") || return 1
   if ! jq -n \
     --argjson issue_number "$issue_number" \
     --argjson count "$new_count" \
+    --argjson refund_count "$new_refund_count" \
     --arg ready_label_timestamp "$ready_ts" \
     --arg last_updated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{issue_number: $issue_number, count: $count, ready_label_timestamp: $ready_label_timestamp, last_updated: $last_updated}' \
+    '{issue_number: $issue_number, count: $count, refund_count: $refund_count, ready_label_timestamp: $ready_label_timestamp, last_updated: $last_updated}' \
     > "$tmp_file"; then
     rm -f "$tmp_file"
     return 1
@@ -281,4 +362,5 @@ increment_retry_count() {
     return 1
   fi
   RETRY_COUNT=$new_count
+  REFUND_COUNT=$new_refund_count
 }

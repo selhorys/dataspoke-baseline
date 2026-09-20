@@ -217,3 +217,74 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   exits, so a SIGKILLed attempt leaves it empty — that attempt's `total_cost_usd`/`num_turns` are
   unrecoverable and per-attempt cost sums silently under-count it. The transcript under
   `~/.claude/projects/...` survives; the result file does not.
+- **A logged-out Claude CLI passes the `claude auth status` gate but kills the wake at the dry-run.**
+  `claude auth status` still exits 0 when logged out (`{"loggedIn": false, "authMethod": "none"}`),
+  so `check_quota`'s auth gate passes and the wake dies at the JSON probe instead:
+  `Claude dry-run failed (exit 0):` with empty stderr, then `No coding agent available this wake.`
+  Verify with `claude auth status` (look at `loggedIn`, not the exit code) and fix with the
+  interactive `claude auth login` — an empty `ANTHROPIC_API_KEY` in `config.local.env` is the
+  normal state, not a fallback. Codex is the ready alternative: confirm its auth with
+  `codex exec --json --sandbox workspace-write "Reply with exactly: OK"` (exit 0 + `item.completed`),
+  then temporarily set `PRAUTO_AGENT="codex"` — note `--disallowedTools` tool enforcement is
+  Claude-only, so fix sessions lose their `Agent`/`Workflow`/`Task` block.
+- **Resuming a paused job leaves `next_run_at` in the past.** `hermes cron resume <id>` keeps the
+  stale timestamp, so the job is immediately overdue and either the gateway ticker catches it up
+  (`last_dispatch.kind = catch_up`) or `hermes -p <profile> cron run <id>` fires it synchronously
+  (`Ran now: succeeded` prints after the supervisor turn completes). Run once from the repo root so
+  the supervisor's `workdir` is the checkout; do not hand-run `heartbeat.sh` for the first wake.
+- **The implementation phase needs the `Workflow` tool, which the Claude CLI registers only on explicit
+  opt-in.** Claude Code gates dynamic workflows behind `enableWorkflows` (its schema: "Unset = default
+  by plan"), and this account's plan default is off, so a bare `claude -p` session's tool list has no
+  `Workflow` at all — `--allowedTools` cannot re-enable an unregistered tool. The implementation
+  prompt's wf-minimal binding is then unsatisfiable, and a worker that obeys the prompt escalates with
+  zero commits (`Implementation workflow escalated for issue #N. Abandoning.`, `prauto:failed`, branch
+  head unchanged). The executor applies `CLAUDE_CODE_WORKFLOWS` (default 1; `PRAUTO_CLAUDE_WORKFLOWS=0`
+  in `config.local.env` opts out) to the **implementation invocation and its quota-resume only**, not
+  to every Claude session — so do not reason about a fix, analysis or pr-review session as though it
+  had the tool. There is no Codex inline fallback for a Claude session: an absent `Workflow` tool in
+  the implementation phase is a harness fault the prompt requires the worker to escalate on, because a
+  self-driven substitute leaves no evidence of whether each stage's reviewer verdict was collected.
+  Verify a live session with
+  `claude -p "Reply with exactly: OK" --output-format stream-json --verbose --max-turns 1` and read the
+  `system`/`init` event's `tools` — not the prompt's tool names. Fix sessions lose the tool
+  through `FIX_DENY_TOOLS_EXTRA`'s `--disallowedTools` block (verified: absent even with the opt-in).
+- **A retry counter that went DOWN is a refunded attempt, not corruption.** `claude -p` terminates a
+  print-mode session once background tasks outlive its wait ceiling, exiting 0 with
+  `Background tasks still running after <N>s; terminating.` on stderr — so the implementation session
+  dies before wf-minimal reports, no `PRAUTO_WORKFLOW_OUTCOME` sentinel is emitted, and the stages that
+  already ran have still committed. The executor classifies that from **its own wall-clock measurement
+  of the session** — not from the stderr message above, and not from the worker's report. Both of those
+  are worker-writable (the worker has a shell and runs as the executor's user), so neither can gate a
+  refund; a session whose elapsed time reached the ceiling must have been terminated by the CLI. The ceiling is
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, applied to the implementation invocation, default `14400000`
+  (4h) — deliberately finite, since `0` waits forever and would both hold the executor PID lock for the
+  full `PRAUTO_AGENT_TIMEOUT_SECS` and make this classification unreachable. Refunds are capped by
+  `PRAUTO_MAX_REFUNDS_PER_JOB` (default 2) per ready-label lifecycle, and only the dispatch that
+  consumed an attempt may refund one, so `PRAUTO_MAX_RETRIES_PER_JOB` still terminates the job.
+- **The subagent tool is named `Task` from Claude Code 2.1.273 on (`Agent` through 2.1.271).** A
+  whitelist entry for a name the CLI no longer exposes matches nothing, so `IMPLEMENTATION_ALLOWED_TOOLS`
+  names both; the same rename makes a whitelist-only diagnosis wrong about what a session can do.
+- **A workflow escalation is not necessarily a reviewer finding.** The sentinel is a single token, so
+  the abandonment comment names both causes (a persisting REVISE after three fix passes, or an
+  unrunnable workflow loop). Read the worker's own report before assuming a reviewer blocked the change.
+- **A `spec`-stage ESCALATE is usually missing review evidence, not a spec defect.** Reviewer
+  subagents run with `Read, Glob, Grep` and no shell, and their roles require the parent-supplied
+  `Untrusted per-pass evidence` to carry the complete diff — status, staged/unstaged diffs,
+  untracked inventory, `git diff --check` (`spec/AI_SCAFFOLD.md`). `wf-minimal` now makes each
+  generator end its report with a fenced evidence block (`git status --porcelain`,
+  `git show --stat --oneline HEAD`, full `git show HEAD`); before that it passed only the plan and
+  the report, so a removal-scoped stage fail-closed and halted the run (issue #182, attempt 2).
+  Read the finding text: "no diff supplied" is a harness fault — fix the workflow; a named
+  spec↔impl contradiction is real and needs a code fix or a spec narrowing before a resume.
+- **Resuming an escalated issue does not pick up base-branch fixes by itself.** `create_branch`
+  reuses the existing `prauto/I-<n>` branch at its own head, and only PR finalize rebases onto
+  `origin/$PRAUTO_BASE_BRANCH` — a commit landed on the base branch after the branch forked stays
+  invisible to the resumed worktree. Rebase the branch and push it
+  (`git worktree add /tmp/<n> prauto/I-<n> && git rebase origin/dev && git push --force-with-lease`)
+  so the resumed stages actually run against the fix.
+- **Resuming an escalated issue reuses its approved plan.** Escalation leaves the plan comment and its
+  `go ahead` reply inside the current ready-label lifecycle, so
+  `gh issue edit <N> --remove-label prauto:failed --add-label prauto:wip` (keeping the assignee) makes
+  the next wake derive `implementation` and re-run that plan's stages for one retry slot. A full
+  restart (remove all `prauto:` labels, then a fresh `prauto:ready`) moves the lifecycle anchor past
+  the approval and forces a whole new analysis pass — use it only when the plan itself is wrong.

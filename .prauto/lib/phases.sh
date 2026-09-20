@@ -329,19 +329,6 @@ provision_dev_env() {
     return 1
   fi
 
-  # Write the durable marker (and set the in-memory globals) BEFORE launching
-  # install.sh rather than after a successful exit. A cluster install.sh has
-  # only partially built is exactly the case this exists for: if this
-  # heartbeat is killed mid-install, both its own EXIT trap and a later
-  # heartbeat's recover_orphaned_dev_env must still find evidence to tear it
-  # down. This function only ever runs when the caller (dev_env_healthy) has
-  # already decided provisioning is needed, so it never marks — and therefore
-  # never tears down — a pre-existing healthy cluster prauto did not start
-  # provisioning.
-  DEV_ENV_PROVISIONED=true
-  DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
-  write_dev_env_state_marker "$env_file"
-
   info "Provisioning the dev cluster (install.sh --profile dev)..."
   local pid pgid rc=0 gate_dir gate_fifo
   # Start an inert gated wrapper, not install.sh itself. It cannot exec the
@@ -422,6 +409,42 @@ if total > LIMIT:
   fi
   PROVISION_PGID="$pgid"
   PROVISION_LEADER_PID="$pid"
+
+  # Write the durable marker (and set the in-memory globals) BEFORE authorizing
+  # the exec rather than after a successful exit. A cluster install.sh has only
+  # partially built is exactly the case this exists for: if this heartbeat is
+  # killed mid-install, both its own EXIT trap and a later heartbeat's
+  # recover_orphaned_dev_env must still find evidence to tear it down. This
+  # function only ever runs when the caller (dev_env_healthy) has already decided
+  # provisioning is needed, so it never marks — and therefore never tears down —
+  # a pre-existing healthy cluster prauto did not start provisioning.
+  #
+  # It sits after the gate rather than before it because every return above this
+  # point leaves the wrapper inert: install.sh has not run and there is no cluster
+  # to tear down. Marking earlier made those returns claim a provisioned cluster,
+  # and the next wake's recover_orphaned_dev_env would run uninstall.sh against a
+  # cluster this worker never touched.
+  DEV_ENV_PROVISIONED=true
+  DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
+  # Fail closed if the marker cannot be persisted. Without it, a crash that skips
+  # this wake's EXIT trap leaves a provisioned cluster no later wake can discover
+  # or tear down — a cluster that then bills indefinitely. Not provisioning is
+  # strictly safer. Closing fd 9 makes the still-inert wrapper read EOF and exit
+  # without touching the cluster.
+  if ! write_dev_env_state_marker "$env_file"; then
+    DEV_ENV_PROVISIONED=false
+    DEV_ENV_PROVISIONED_ENV_FILE=""
+    PROVISION_PGID=""
+    PROVISION_LEADER_PID=""
+    exec 9>&-
+    CONTAINMENT_GATE_FD_OPEN=false
+    wait "$pid" 2>/dev/null || true
+    CONTAINMENT_GATE_WRAPPER_PID=""
+    rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+    warn "Could not persist the dev-env provisioning marker. Provisioning was not started."
+    return 1
+  fi
+
   # Store the verified group before authorizing the exec, so a signal that
   # arrives immediately after this write still group-terminates the command.
   printf 'start\n' >&9
@@ -709,12 +732,14 @@ run_integration_tests_with_protocol() {
     info "Could not acquire dev-env lock (HTTP ${lock_code}). Skipping integration tests."
     return 0
   fi
+  # Register the lock with the shared owner global so release_required_dev_lock —
+  # including the heartbeat EXIT trap's call — can release it if this loop dies.
+  REQUIRED_LOCK_OWNER="$lock_owner"
   info "Dev-env lock acquired for integration tests."
 
   run_integration_groups "$DEV_ENV_FILE"
 
-  curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
+  release_required_dev_lock
   info "Dev-env lock released."
 
   post_test_results_comment "$pr_number" "Integration (spot)" "$INTEG_SPOT_EXIT" "$INTEG_SPOT_OUTPUT"
@@ -1795,15 +1820,23 @@ run_integration_test_fix() {
     -H "Content-Type: application/json" \
     -d "{\"owner\": \"${lock_owner}\", \"message\": \"prauto integration fix for issue #${issue_number}\"}")
   if [[ "$lock_code" != "200" ]]; then info "Could not acquire dev-env lock. Skipping."; return 0; fi
+  # Register the lock with the shared owner global so release_required_dev_lock —
+  # including the heartbeat EXIT trap's call — can release it if this loop dies.
+  REQUIRED_LOCK_OWNER="$lock_owner"
   info "Dev-env lock acquired for integration test fix loop."
 
-  [[ -f "pyproject.toml" ]] && uv sync 2>&1 || warn "uv sync failed."
+  # A plain `if`: as an `&& ... ||` chain this warned "uv sync failed" whenever
+  # pyproject.toml was merely absent, and let uv's output escape to the harness's
+  # own stdout instead of being captured like every other invocation.
+  if [[ -f "pyproject.toml" ]]; then
+    local uv_sync_output
+    uv_sync_output=$(uv sync 2>&1) || warn "uv sync failed: ${uv_sync_output}"
+  fi
 
   if diff_touches src/api/ src/backend/ src/shared/; then
     if ! deploy_branch_api "$DEV_ENV_FILE"; then
       warn "Branch API deploy failed. Skipping the integration test fix loop."
-      curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
-        -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+      release_required_dev_lock
       return 0
     fi
   fi
@@ -1832,8 +1865,7 @@ run_integration_test_fix() {
       need_pre_probe=false
       if ! dev_env_probe_healthy "$DEV_ENV_FILE"; then
         warn "Dev-env unhealthy ahead of attempt ${attempt} (stale since the last fix session/redeploy). Ending the integration test fix loop without dispatching a worker."
-        curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
-          -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+        release_required_dev_lock
         return 0
       fi
     fi
@@ -1877,8 +1909,7 @@ run_integration_test_fix() {
     fi
     if [[ -n "$health_abort" ]]; then
       warn "Integration harness health gate aborted before any test ran (${health_abort}). Ending the integration test fix loop without dispatching a worker (infrastructure)."
-      curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
-        -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+      release_required_dev_lock
       return 0
     fi
 
@@ -1946,8 +1977,7 @@ run_integration_test_fix() {
       if [[ "$post_fix_head" != "$pre_fix_head" ]] && diff_touches src/api/ src/backend/ src/shared/; then
         if ! deploy_branch_api "$DEV_ENV_FILE"; then
           warn "Branch API redeploy after the fix session failed. Skipping the rest of the integration test fix loop."
-          curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
-            -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || true
+          release_required_dev_lock
           return 0
         fi
       fi
@@ -1958,8 +1988,7 @@ run_integration_test_fix() {
     attempt=$((attempt + 1))
   done
 
-  curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
+  release_required_dev_lock
   info "Dev-env lock released after integration test fix loop."
   [[ "$quota_paused" == "true" ]] && return 1
   return 0
@@ -2085,6 +2114,9 @@ run_e2e_test_fix() {
     -H "Content-Type: application/json" \
     -d "{\"owner\": \"${lock_owner}\", \"message\": \"prauto E2E for issue #${issue_number}\"}")
   if [[ "$lock_code" != "200" ]]; then info "Could not acquire dev-env lock. Skipping E2E."; return 0; fi
+  # Register the lock with the shared owner global so release_required_dev_lock —
+  # including the heartbeat EXIT trap's call — can release it if this loop dies.
+  REQUIRED_LOCK_OWNER="$lock_owner"
   info "Dev-env lock acquired for E2E stage."
 
   # attempt only advances when a real (non-flake) run happens; a flake-only
@@ -2165,8 +2197,7 @@ run_e2e_test_fix() {
     attempt=$((attempt + 1))
   done
 
-  curl -s -X POST "${lock_url}/release" -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${lock_owner}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
+  release_required_dev_lock
   info "Dev-env lock released after E2E stage."
 
   [[ "$deployed" == "true" ]] && report_e2e_results "$issue_number" "$branch" "$e2e_exit" "$e2e_output"
@@ -2184,14 +2215,45 @@ implementation_escalated() {
   [[ "$last_sentinel" =~ ^PRAUTO_WORKFLOW_OUTCOME:[[:space:]]*ESCALATED ]]
 }
 
-# implementation_complete <impl_output>
+# implementation_complete <impl_result>
 # A successful implementation must explicitly end with COMPLETE. Exit code 0
 # alone is insufficient: an agent can return empty, partial, or otherwise
 # malformed text after making no usable workflow progress.
+#
+# Takes the agent's own result (AGENT_RESULT via IMPL_RESULT), never the merged
+# AGENT_OUTPUT: that one has the session's stderr appended for diagnostics, and
+# any stderr line would sit after the sentinel and fail a genuinely complete run.
 implementation_complete() {
-  local impl_output="$1" last_line
-  last_line=$(printf '%s' "$impl_output" | sed '/^[[:space:]]*$/d' | tail -1) || true
+  local impl_result="$1" last_line
+  last_line=$(printf '%s' "$impl_result" | sed '/^[[:space:]]*$/d' | tail -1) || true
   [[ "$last_line" == "PRAUTO_WORKFLOW_OUTCOME: COMPLETE" ]]
+}
+
+# implementation_truncated_by_agent_cli <elapsed_secs>
+# True when the session ran long enough that the agent CLI must have terminated it
+# on its own background-task wait ceiling, rather than the worker finishing badly.
+# The CLI exits 0 in that case, so exit status alone cannot tell the two apart, and
+# the workflow may have been making real progress — earlier stages commit as they
+# go. That is a harness limitation, not a worker failure, and it must not consume
+# the job's retry budget.
+#
+# Takes the executor's own wall-clock measurement (AGENT_ELAPSED_SECS via
+# IMPL_ELAPSED_SECS) and nothing from the session's output. The worker runs
+# unreviewed branch code as this executor's OS user, so anything it writes — its
+# report, and the stderr sidecar under the state tree just as much — is
+# worker-influenceable. Elapsed time is the one account of the session the worker
+# cannot author. Its own stalling is still bounded: PRAUTO_MAX_REFUNDS_PER_JOB caps
+# how many refunds a lifecycle can collect, and stalling to the ceiling costs it a
+# full ceiling's wall-clock per attempt.
+#
+# A ceiling of 0 means wait indefinitely, so no truncation is possible.
+implementation_truncated_by_agent_cli() {
+  local elapsed_secs="$1"
+  local ceiling_ms="${PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS:-14400000}"
+  [[ "$elapsed_secs" =~ ^[0-9]+$ ]] || return 1
+  [[ "$ceiling_ms" =~ ^[0-9]+$ ]] || return 1
+  [[ "$ceiling_ms" -gt 0 ]] || return 1
+  (( elapsed_secs >= ceiling_ms / 1000 ))
 }
 
 # abandon_workflow_escalation <issue_number> <impl_output>
@@ -2211,7 +2273,7 @@ abandon_workflow_escalation() {
   details=$(tail_chars "$details" 12000)
 
   gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Abandoning — implementation workflow escalated. A per-stage reviewer's findings persisted after a fix pass. Manual intervention needed.
+    --body "prauto(${PRAUTO_WORKER_ID}): Abandoning — implementation workflow escalated. Either a per-stage reviewer's findings persisted after a fix pass, or the worker could not run the required workflow loop (for example the Workflow tool was absent from its session's tool list). The report below says which. Manual intervention needed.
 
 ${details}" \
     2>/dev/null || warn "Failed to post workflow-escalation comment on issue #${issue_number}."
@@ -2243,8 +2305,12 @@ implement_and_finalize() {
     resume_agent \
       "Continue your implementation from where you left off. Complete the workflow, commit (do NOT push), and end with exactly one of these lines: PRAUTO_WORKFLOW_OUTCOME: COMPLETE or PRAUTO_WORKFLOW_OUTCOME: ESCALATED" \
       "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" \
-      "$PAUSED_SESSION_ID" "${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}"
+      "$PAUSED_SESSION_ID" "${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}" "$DENY_TOOLS" \
+      "${IMPLEMENTATION_CLAUDE_ENV[@]}"
     IMPL_SESSION_ID="$PAUSED_SESSION_ID"
+    IMPL_RESULT="$AGENT_RESULT"
+    IMPL_STDERR="$AGENT_STDERR"
+    IMPL_ELAPSED_SECS="$AGENT_ELAPSED_SECS"
     IMPL_OUTPUT="$AGENT_OUTPUT"
     if [[ "$AGENT_STATUS" == "quota" ]]; then
       warn "Issue #${issue_number}: resumed ${ACTIVE_AGENT} died on quota again. Re-pausing."
@@ -2283,7 +2349,7 @@ implement_and_finalize() {
     fi
   fi
 
-  if implementation_escalated "$IMPL_OUTPUT"; then
+  if implementation_escalated "$IMPL_RESULT"; then
     warn "Implementation workflow escalated for issue #${issue_number}. Abandoning."
     checkpoint_branch "$issue_number" "$branch"
     gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -2292,7 +2358,14 @@ implement_and_finalize() {
     return 0
   fi
 
-  if ! implementation_complete "$IMPL_OUTPUT"; then
+  if ! implementation_complete "$IMPL_RESULT"; then
+    if implementation_truncated_by_agent_cli "$IMPL_ELAPSED_SECS"; then
+      warn "Issue #${issue_number}: the agent CLI terminated the session on its background-task wait ceiling before the workflow reported an outcome. Refunding this attempt; will retry next heartbeat."
+      checkpoint_branch "$issue_number" "$branch"
+      refund_retry_count "$issue_number" \
+        || warn "Could not refund the retry count for #${issue_number}; this attempt stays counted."
+      return 0
+    fi
     warn "Issue #${issue_number}: implementation returned no valid COMPLETE outcome. Will retry next heartbeat."
     checkpoint_branch "$issue_number" "$branch"
     return 0
@@ -2345,7 +2418,7 @@ handle_phase_analysis() {
     if [[ -f "$plan_file" ]] && [[ -s "$plan_file" ]]; then
       ANALYSIS_OUTPUT=$(cat "$plan_file")
     else
-      ANALYSIS_OUTPUT="$AGENT_OUTPUT"
+      ANALYSIS_OUTPUT="$AGENT_RESULT"
     fi
   elif ! run_analysis "$issue_number" "$issue_title" "$issue_body_raw"; then
     # Quota death mid-analysis: pause with session id, do not burn a retry.
@@ -2411,7 +2484,13 @@ handle_phase_plan_approval() {
     local change_size
     change_size=$(resolve_change_size "$issue_body_raw" "$ANALYSIS_OUTPUT")
     post_plan_comment "$issue_number" "$ANALYSIS_OUTPUT" "$change_size"
-    [[ "$change_size" == "minor" ]] && implement_and_finalize "$issue_number" "$branch" "$ANALYSIS_OUTPUT" "$issue_title"
+    # A plain `if`, not a `[[ ]] && call` tail: as the function's last command that
+    # compound returns 1 for a non-minor plan, and heartbeat.sh calls this function
+    # bare under `set -e`, which would end the whole wake — skipping the worktree
+    # cleanup and every remaining claimed issue — on an ordinary non-minor plan.
+    if [[ "$change_size" == "minor" ]]; then
+      implement_and_finalize "$issue_number" "$branch" "$ANALYSIS_OUTPUT" "$issue_title"
+    fi
   else
     info "Still waiting for plan approval on issue #${issue_number}."
   fi

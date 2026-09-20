@@ -5,14 +5,84 @@
 
 # Per-phase tool whitelists and the standing denylist, per
 # spec/AI_PRAUTO.md §Worker Agent Invocation. The implementation phase drives
-# .claude/workflows/wf-minimal.js, so it needs Agent + Workflow on top of the
-# direct-edit tools. Granting those voids DENY_TOOLS for delegated work (subagent
-# frontmatter, not the parent whitelist, governs subagent tools) — an accepted,
-# documented consequence per spec/AI_PRAUTO.md §Security Model.
+# .claude/workflows/wf-minimal.js, so it needs the subagent tool plus Workflow on
+# top of the direct-edit tools. The subagent tool is named `Task` from Claude Code
+# 2.1.273 on (it was `Agent` through 2.1.271), so name both and keep matching
+# across the CLI rename. Granting those voids DENY_TOOLS for delegated work
+# (subagent frontmatter, not the parent whitelist, governs subagent tools) — an
+# accepted, documented consequence per spec/AI_PRAUTO.md §Security Model.
 ANALYSIS_ALLOWED_TOOLS='Read,Write,Glob,Grep,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *)'
-IMPLEMENTATION_ALLOWED_TOOLS='Read,Write,Edit,Glob,Grep,Agent,Workflow,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(git add *),Bash(git commit *),Bash(uv run pytest *),Bash(uv run python3 *),Bash(uv run ruff *),Bash(uv run mypy *),Bash(uv sync *),Bash(npm run *),Bash(npx prettier *),Bash(npx tsc *),Bash(npx eslint *),Bash(pnpm *)'
+IMPLEMENTATION_ALLOWED_TOOLS='Read,Write,Edit,Glob,Grep,Task,Agent,Workflow,Bash(git log *),Bash(git diff *),Bash(git status *),Bash(git branch *),Bash(git add *),Bash(git commit *),Bash(uv run pytest *),Bash(uv run python3 *),Bash(uv run ruff *),Bash(uv run mypy *),Bash(uv sync *),Bash(npm run *),Bash(npx prettier *),Bash(npx tsc *),Bash(npx eslint *),Bash(pnpm *)'
 
-DENY_TOOLS='Bash(git push *),Bash(rm -rf *),Bash(sudo *),Bash(kubectl *),Bash(helm *),Bash(curl *),Bash(wget *),Bash(gh *),Read(.prauto/config.local.env),Read(.prauto/state/*),WebFetch,WebSearch'
+# IMPLEMENTATION_CLAUDE_ENV — Claude CLI environment for the implementation phase
+# only, applied per invocation (see invoke_agent's env_overrides parameter) rather
+# than exported process-wide. The implementation phase is the only one with a
+# wf-minimal binding to satisfy, and the only one that runs its work as a
+# background task, so it is the only one either knob below is for. The two fix
+# phases in particular must not receive them: they hold the dev-env lock while
+# they run, so a lifted background-wait ceiling would extend the worst-case hold
+# on that lock — and on a live cluster — from minutes to PRAUTO_AGENT_TIMEOUT_SECS.
+#
+# Note what this scoping does NOT buy. Only `Workflow` is gated by
+# CLAUDE_CODE_WORKFLOWS; the subagent tool is registered by CLI default, and
+# pr-review runs with the same IMPLEMENTATION_ALLOWED_TOOLS grant, so it can
+# delegate and its delegated work escapes DENY_TOOLS exactly as implementation's
+# does — the consequence spec/AI_PRAUTO.md §Security Model already accepts. The
+# phases whose grant is genuinely narrowed are the fix sessions, via
+# FIX_DENY_TOOLS_EXTRA's hard --disallowedTools block.
+#
+# CLAUDE_CODE_WORKFLOWS — the dynamic-workflow opt-in. Claude Code registers its
+# `Workflow` tool only when dynamic workflows are enabled for the session, and its
+# settings schema says `enableWorkflows` is "Unset = default by plan". This
+# account's plan default is OFF, so a bare `claude -p` session has no `Workflow`
+# tool at all — `--allowedTools` cannot re-enable an unregistered tool, which left
+# the implementation prompt's wf-minimal binding unsatisfiable and escalated issue
+# #182 with zero commits. Verified against the installed CLI: without this variable
+# the headless tool list has no `Workflow`; with `CLAUDE_CODE_WORKFLOWS=1` it does.
+# Scoping it here keeps spec/AI_PRAUTO.md §Security Model's accepted
+# "granting those voids DENY_TOOLS for delegated work" consequence a property of
+# the implementation phase, as that section states it.
+#
+# CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS — how long `claude -p` waits for background
+# tasks before terminating the session. Unset, the CLI applies a 600s ceiling and
+# kills the session with `Background tasks still running after 600s; terminating.`
+# The implementation phase runs wf-minimal as a background task, so it hits that
+# ceiling structurally: the session dies before the workflow reports completion,
+# the sentinel is never printed, and the executor scores real committed work as a
+# failed attempt (issue #182 attempt 3, issue #176). The default here is generous
+# but FINITE, deliberately: 0 (wait forever) would leave a genuinely wedged task
+# holding the executor's PID lock for the full PRAUTO_AGENT_TIMEOUT_SECS, and would
+# make the truncation-refund path below unreachable — a wedged session could then
+# never report the signature that classifies it as a harness fault. Override with
+# PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS in config.local.env; 0 restores the
+# wait-forever behaviour.
+PRAUTO_CLAUDE_WORKFLOWS="${PRAUTO_CLAUDE_WORKFLOWS:-1}"
+PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS="${PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS:-14400000}"
+IMPLEMENTATION_CLAUDE_ENV=(
+  "CLAUDE_CODE_WORKFLOWS=${PRAUTO_CLAUDE_WORKFLOWS}"
+  "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=${PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS}"
+)
+
+# DENY_TOOLS — the standing block for every phase.
+#
+# Read this as defence in depth, NOT as a boundary. Sessions run under
+# `--dangerously-skip-permissions`, and the implementation grant includes
+# `Bash(uv run python3 *)` — an interpreter running as this executor's own OS
+# user. A worker that wants to reach the state tree can, whatever this list says.
+# The file denials below still earn their place: they stop casual and accidental
+# access, and they make the intent explicit. They are not what makes any guarantee
+# hold.
+#
+# The absolute forms matter because a session's cwd is its worktree at
+# ${PRAUTO_DIR}/worktrees/I-<n>, two levels below ${PRAUTO_DIR}/state, so a
+# cwd-relative pattern never covered the real path at all. The worktree itself
+# stays writable — that is where a worker's legitimate work goes.
+#
+# The consequence for design: treat every value under the state tree as
+# worker-influenceable, and rest control decisions on what this executor computes
+# (see AGENT_ELAPSED_SECS) or on bounds it enforces itself
+# (PRAUTO_MAX_REFUNDS_PER_JOB, RETRY_COUNT_CONSUMED).
+DENY_TOOLS="Bash(git push *),Bash(rm -rf *),Bash(sudo *),Bash(kubectl *),Bash(helm *),Bash(curl *),Bash(wget *),Bash(gh *),Read(.prauto/config.local.env),Read(.prauto/state/*),Write(.prauto/state/*),Edit(.prauto/state/*),Read(${PRAUTO_DIR}/config.local.env),Read(${PRAUTO_DIR}/state/**),Write(${PRAUTO_DIR}/config.local.env),Write(${PRAUTO_DIR}/state/**),Edit(${PRAUTO_DIR}/config.local.env),Edit(${PRAUTO_DIR}/state/**),WebFetch,WebSearch"
 # FIX_DENY_TOOLS_EXTRA — appended to DENY_TOOLS's --disallowedTools value for
 # the integration and E2E fix sessions. `--allowedTools` is not itself an
 # enforced removal under `--dangerously-skip-permissions` (everything is
@@ -26,12 +96,33 @@ DENY_TOOLS='Bash(git push *),Bash(rm -rf *),Bash(sudo *),Bash(kubectl *),Bash(he
 FIX_DENY_TOOLS_EXTRA='Agent,Workflow,Task'
 
 # ACTIVE_AGENT — the agent selected for this wake (`claude` or `codex`).
-# AGENT_SESSION_ID / AGENT_OUTPUT / AGENT_STATUS — set by invoke_agent/resume_agent.
-# AGENT_STATUS is one of: ok | quota | error.
+# AGENT_SESSION_ID / AGENT_RESULT / AGENT_OUTPUT / AGENT_STATUS — set by
+# invoke_agent/resume_agent. AGENT_STATUS is one of: ok | quota | error.
+#
+# The executor sees three planes of agent output, and which one a decision reads
+# is a security property, not a style choice:
+#   AGENT_RESULT — the agent's own answer. AGENT-AUTHORED, therefore UNTRUSTED:
+#     the worker runs unreviewed branch code and can emit any string it likes.
+#   AGENT_STDERR — the session's stderr, as written by the agent CLI. Useful for
+#     diagnosis, but NOT trustworthy input for a control decision: the sidecar is
+#     a file under the state tree and the worker has a shell, so it can be
+#     rewritten. Do not gate behaviour on a string found here.
+#   AGENT_ELAPSED_SECS — how long the invocation took, measured by this executor.
+#     The only account of the session the worker cannot author, and therefore the
+#     one a control decision may rest on.
+#   AGENT_OUTPUT — AGENT_RESULT plus AGENT_STDERR, for diagnostics and issue
+#     comments. Never key a control decision on a string found here: a match can
+#     have come from either plane.
+# Anything parsing what the agent SAID — the workflow outcome sentinel above all —
+# reads AGENT_RESULT, because a stderr line appended to AGENT_OUTPUT lands after
+# the answer and would displace a sentinel the contract requires to be final.
 ACTIVE_AGENT=""
 AGENT_SESSION_ID=""
+AGENT_RESULT=""
+AGENT_STDERR=""
 AGENT_OUTPUT=""
 AGENT_STATUS=""
+AGENT_ELAPSED_SECS=0
 
 # codex_model_is_supported <model>
 # PRauto accepts only formal model identifiers when a deployment explicitly
@@ -217,16 +308,21 @@ $(cat "$stderr_file" 2>/dev/null || printf '')"
   fi
 }
 
-# invoke_agent <prompt> <allowed_tools> <max_turns> [budget] [deny_tools]
+# invoke_agent <prompt> <allowed_tools> <max_turns> [budget] [deny_tools] [env_overrides...]
 # Dispatch a fresh session under ACTIVE_AGENT. Claude receives a harness-created
 # id; Codex records only the native `thread.started` id. Sets AGENT_SESSION_ID,
-# AGENT_OUTPUT, AGENT_STATUS. deny_tools defaults to DENY_TOOLS; a caller that
+# AGENT_RESULT, AGENT_STDERR, AGENT_OUTPUT, AGENT_STATUS. Any trailing
+# NAME=VALUE arguments are applied to this invocation's environment only (Claude
+# only), so a phase that needs a CLI knob does not impose it on every other phase.
+# deny_tools defaults to DENY_TOOLS; a caller that
 # needs a stricter block (e.g. a fix session appending FIX_DENY_TOOLS_EXTRA)
 # passes its own combined value — see DENY_TOOLS's declaration comment for why
 # this, not allowed_tools, is the only Claude-enforced removal, and why this is
 # Claude-only (Codex receives no tool flags at all, below).
 invoke_agent() {
   local prompt="$1" allowed_tools="$2" max_turns="$3" budget="${4:-}" deny_tools="${5:-$DENY_TOOLS}"
+  shift 5 2>/dev/null || shift $#
+  local -a env_overrides=("$@")
   local system_file=""
   [[ "$ACTIVE_AGENT" == "claude" ]] && system_file=$(prepare_system_prompt)
   local session_id=""
@@ -242,6 +338,8 @@ invoke_agent() {
     if ! validate_codex_override; then
       AGENT_SESSION_ID=""
       AGENT_OUTPUT="Invalid Codex model/effort override; Codex was not invoked."
+      AGENT_RESULT="$AGENT_OUTPUT"
+      AGENT_STDERR=""
       AGENT_STATUS=error
       return 0
     fi
@@ -261,7 +359,12 @@ invoke_agent() {
     # option. It follows all explicit fresh-session options.
     cmd+=(-- "$prompt")
   else
-    cmd=(claude -p "$prompt"
+    # `env NAME=VALUE ... claude` scopes the knobs to this child process. A bare
+    # `NAME=VALUE func` prefix would not: bash does not export such assignments to
+    # the commands a function runs unless the name was already exported.
+    cmd=()
+    [[ "${#env_overrides[@]}" -gt 0 ]] && cmd=(env "${env_overrides[@]}")
+    cmd+=(claude -p "$prompt"
       --append-system-prompt-file "$system_file"
       --model "${PRAUTO_CLAUDE_MODEL:-opus}"
       --effort "${PRAUTO_CLAUDE_EFFORT:-high}"
@@ -286,19 +389,20 @@ invoke_agent() {
   # rather than wedging the heartbeat forever. A kill normalizes to exit 124,
   # which classify_exit treats as an ordinary error (retry), never a resume.
   local agent_timeout="${PRAUTO_AGENT_TIMEOUT_SECS:-86400}"
-  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
-    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
-      code=0
-    else
-      code=$?
-    fi
+  # Measure the wall-clock span here, in the executor. This is the one account of
+  # how long a session ran that the worker has no way to influence, and it is what
+  # classifies a session the agent CLI killed on its own background-task wait
+  # ceiling. Deriving that from the session's output instead would key a control
+  # decision on text a worker can write.
+  local started_at ended_at
+  started_at=$(date +%s)
+  if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
+    code=0
   else
-    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
-      code=0
-    else
-      code=$?
-    fi
+    code=$?
   fi
+  ended_at=$(date +%s)
+  AGENT_ELAPSED_SECS=$(( ended_at - started_at ))
 
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
     AGENT_SESSION_ID=$(codex_thread_id "$output_file")
@@ -315,6 +419,8 @@ invoke_agent() {
     if [[ -z "$AGENT_OUTPUT" ]] && [[ -s "$stderr_file" ]]; then
       AGENT_OUTPUT=$(cat "$stderr_file" 2>/dev/null || printf '')
     fi
+    AGENT_RESULT="$AGENT_OUTPUT"
+    AGENT_STDERR=""
     classify_exit "$output_file" "$code" codex
     # No native identity means no safe resume target. Treat an otherwise quota
     # exit as an ordinary failure so the heartbeat retries/restarts instead of
@@ -331,9 +437,12 @@ invoke_agent() {
     if [[ "$subtype" == error_* ]] || [[ -z "$AGENT_OUTPUT" ]]; then
       [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
     fi
+    AGENT_RESULT="$AGENT_OUTPUT"
+    AGENT_STDERR=""
     if [[ -s "$stderr_file" ]]; then
       local claude_stderr
       claude_stderr=$(cat "$stderr_file" 2>/dev/null || printf '')
+      AGENT_STDERR="$claude_stderr"
       [[ -n "$AGENT_OUTPUT" ]] && AGENT_OUTPUT="${AGENT_OUTPUT}
 ${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
     fi
@@ -341,19 +450,27 @@ ${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
   fi
 }
 
-# resume_agent <prompt> <allowed_tools> <max_turns> <session_id> [budget] [deny_tools]
+# resume_agent <prompt> <allowed_tools> <max_turns> <session_id> [budget] [deny_tools] [env_overrides...]
 # Resume an existing session under ACTIVE_AGENT. Same agent as the original —
 # a session cannot migrate agents; agent-switch is only reachable via
-# abandon+restart. Sets AGENT_OUTPUT, AGENT_STATUS. deny_tools defaults to
-# DENY_TOOLS, same override contract as invoke_agent.
+# abandon+restart. Sets AGENT_SESSION_ID, AGENT_RESULT, AGENT_STDERR,
+# AGENT_OUTPUT, AGENT_STATUS. deny_tools defaults to DENY_TOOLS, and trailing
+# NAME=VALUE arguments scope this invocation's environment — both the same
+# contract as invoke_agent. A resumed session is a continuation of the phase that
+# started it, so it must be handed the SAME environment: a resumed implementation
+# that lost the dynamic-workflow opt-in could not satisfy its wf-minimal binding.
 resume_agent() {
   local prompt="$1" allowed_tools="$2" max_turns="$3" session_id="$4" budget="${5:-}" deny_tools="${6:-$DENY_TOOLS}"
+  shift 6 2>/dev/null || shift $#
+  local -a env_overrides=("$@")
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
     if [[ "$session_id" != "${PAUSED_SESSION_ID:-}" ]] || \
        ! codex_pause_marker_is_trusted "${CUR_ISSUE_NUMBER:-}"; then
       warn "Refusing Codex resume without a matching trusted native-session anchor."
       AGENT_SESSION_ID=""
       AGENT_OUTPUT=""
+      AGENT_RESULT=""
+      AGENT_STDERR=""
       AGENT_STATUS=error
       return 0
     fi
@@ -372,7 +489,9 @@ resume_agent() {
     # either positional value from option parsing without changing that order.
     cmd=(codex exec resume --json -- "$session_id" "$prompt")
   else
-    cmd=(claude -p "$prompt"
+    cmd=()
+    [[ "${#env_overrides[@]}" -gt 0 ]] && cmd=(env "${env_overrides[@]}")
+    cmd+=(claude -p "$prompt"
       --resume "$session_id"
       --append-system-prompt-file "$system_file"
       --model "${PRAUTO_CLAUDE_MODEL:-opus}"
@@ -389,19 +508,20 @@ resume_agent() {
   # Same wall-clock backstop as the fresh invocation (see invoke_agent): a resume
   # that hangs waiting for token reset must not wedge the heartbeat.
   local agent_timeout="${PRAUTO_AGENT_TIMEOUT_SECS:-86400}"
-  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
-    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
-      code=0
-    else
-      code=$?
-    fi
+  # Measure the wall-clock span here, in the executor. This is the one account of
+  # how long a session ran that the worker has no way to influence, and it is what
+  # classifies a session the agent CLI killed on its own background-task wait
+  # ceiling. Deriving that from the session's output instead would key a control
+  # decision on text a worker can write.
+  local started_at ended_at
+  started_at=$(date +%s)
+  if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
+    code=0
   else
-    if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
-      code=0
-    else
-      code=$?
-    fi
+    code=$?
   fi
+  ended_at=$(date +%s)
+  AGENT_ELAPSED_SECS=$(( ended_at - started_at ))
 
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
     AGENT_OUTPUT=$(codex_final_output "$output_file")
@@ -409,13 +529,18 @@ resume_agent() {
     if [[ -z "$AGENT_OUTPUT" ]] && [[ -s "$stderr_file" ]]; then
       AGENT_OUTPUT=$(cat "$stderr_file" 2>/dev/null || printf '')
     fi
+    AGENT_RESULT="$AGENT_OUTPUT"
+    AGENT_STDERR=""
     classify_exit "$output_file" "$code" codex
   else
     AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
     [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+    AGENT_RESULT="$AGENT_OUTPUT"
+    AGENT_STDERR=""
     if [[ -s "$stderr_file" ]]; then
       local claude_stderr
       claude_stderr=$(cat "$stderr_file" 2>/dev/null || printf '')
+      AGENT_STDERR="$claude_stderr"
       [[ -n "$AGENT_OUTPUT" ]] && AGENT_OUTPUT="${AGENT_OUTPUT}
 ${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
     fi
@@ -480,7 +605,10 @@ ${counter_proposal}"
     info "Plan captured from file ($(wc -c < "$plan_file" | tr -d ' ') bytes)."
   else
     warn "Plan file not found at ${plan_file}. Falling back to .result output."
-    ANALYSIS_OUTPUT="$AGENT_OUTPUT"
+    # AGENT_RESULT, not AGENT_OUTPUT: this text is published verbatim by
+    # post_plan_comment and parsed by resolve_change_size, so a session stderr
+    # line must not reach either.
+    ANALYSIS_OUTPUT="$AGENT_RESULT"
   fi
   printf '%s' "$ANALYSIS_OUTPUT" > "${CUR_SESSION_DIR}/analysis.txt"
 }
@@ -488,7 +616,9 @@ ${counter_proposal}"
 # run_implementation <issue_number> <branch> <analysis_output>
 # Implementation phase: drive wf-minimal via the Workflow tool. Fresh session each
 # time; the workflow restarts rather than resumes, so only committed work is
-# continuity. Sets IMPL_SESSION_ID, IMPL_OUTPUT (carries the outcome sentinel).
+# continuity. Sets IMPL_SESSION_ID, IMPL_RESULT (the agent's answer, which carries
+# the outcome sentinel), IMPL_STDERR (the CLI's stderr, for diagnosis only),
+# IMPL_ELAPSED_SECS (measured by this executor) and IMPL_OUTPUT (for reporting).
 run_implementation() {
   local issue_number="$1" branch="$2" analysis_output="$3"
   local prompt
@@ -497,8 +627,12 @@ run_implementation() {
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}" \
     "analysis_output=${analysis_output}")
 
-  invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" "${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}"
+  invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" \
+    "${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}" "$DENY_TOOLS" "${IMPLEMENTATION_CLAUDE_ENV[@]}"
   IMPL_SESSION_ID="$AGENT_SESSION_ID"
+  IMPL_RESULT="$AGENT_RESULT"
+  IMPL_STDERR="$AGENT_STDERR"
+  IMPL_ELAPSED_SECS="$AGENT_ELAPSED_SECS"
   IMPL_OUTPUT="$AGENT_OUTPUT"
   printf '%s' "$AGENT_OUTPUT" > "${CUR_SESSION_DIR}/implementation.json"
 }
@@ -529,7 +663,7 @@ run_integration_fix_session() {
 ... (truncated)"; fi
   evidence_base64=$(encode_regression_evidence "$failed_stages" "$test_output") || {
     warn "Could not serialize targeted regression evidence."
-    AGENT_STATUS=error; AGENT_OUTPUT="Targeted regression evidence serialization failed."; return 0
+    AGENT_STATUS=error; AGENT_OUTPUT="Targeted regression evidence serialization failed."; AGENT_RESULT="$AGENT_OUTPUT"; AGENT_STDERR=""; return 0
   }
   local mode_context
   if [[ "$mode" == "pre-pr" ]]; then
@@ -555,7 +689,7 @@ run_e2e_fix_session() {
 ... (truncated)"; fi
   evidence_base64=$(encode_regression_evidence "E2E" "$test_output") || {
     warn "Could not serialize E2E fix evidence."
-    AGENT_STATUS=error; AGENT_OUTPUT="E2E fix evidence serialization failed."; return 0
+    AGENT_STATUS=error; AGENT_OUTPUT="E2E fix evidence serialization failed."; AGENT_RESULT="$AGENT_OUTPUT"; AGENT_STDERR=""; return 0
   }
   local prompt
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/e2e-fix.md" \

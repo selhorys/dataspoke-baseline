@@ -28,13 +28,24 @@ SECOND_READY_TIMESTAMP = "2026-09-02T00:00:00Z"
 def _run_bash(
     script: str, *, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run a state-library snippet without sharing process or filesystem state."""
+    """Run a state-library snippet without sharing process or filesystem state.
+
+    The retry and refund bounds are read from the environment, so an exported
+    value in the developer's shell would otherwise silently change what these
+    tests assert — passing some vacuously and failing others for the wrong reason.
+    """
+    child = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"PRAUTO_MAX_REFUNDS_PER_JOB", "PRAUTO_MAX_RETRIES_PER_JOB"}
+    }
+    child.update(env or {})
     return subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
         check=False,
         text=True,
-        env=os.environ | (env or {}),
+        env=child,
     )
 
 
@@ -542,3 +553,318 @@ def test_normal_dispatch_waits_when_retry_state_cannot_be_persisted(tmp_path: Pa
     assert "exceeded max retries (4/4)" in abandoned.stdout
     assert "--session-id" not in claude_args.read_text()
     assert len(json.loads(comments_file.read_text())) == 2
+
+
+
+def test_refund_retry_count_returns_one_attempt_and_floors_at_zero(tmp_path: Path) -> None:
+    """A harness-caused attempt is handed back, and a refund can never go negative.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — only genuine attempt starts consume
+    the configured retry budget. The counter advances at dispatch, before the
+    outcome is known, so an attempt that turns out not to be the worker's failure
+    has to be given back rather than silently spent.
+    """
+    state_root = tmp_path / "prauto"
+    setup = _source_state_library(state_root, FIRST_READY_TIMESTAMP)
+
+    result = _run_bash(
+        "\n".join(
+            [
+                setup,
+                "RETRY_COUNT_CONSUMED=true",
+                "PRAUTO_MAX_REFUNDS_PER_JOB=99",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"refund_retry_count {ISSUE_NUMBER}",
+                'printf "after-refund=%s\\n" "$RETRY_COUNT"',
+                # Two more refunds against a count of 1 must floor at zero, never
+                # wrap to a negative budget that would make the job unabandonable.
+                f"refund_retry_count {ISSUE_NUMBER}",
+                f"refund_retry_count {ISSUE_NUMBER}",
+                f"read_retry_count {ISSUE_NUMBER}",
+                'printf "floored=%s\\n" "$RETRY_COUNT"',
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "after-refund=1" in result.stdout
+    assert "floored=0" in result.stdout
+
+
+def test_refund_retry_count_keeps_the_ready_label_lifecycle(tmp_path: Path) -> None:
+    """A refund rewrites the counter for the current lifecycle, not a new one.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — the counter is scoped to the
+    issue's current ready-label lifecycle, so a refunded record must still carry
+    that timestamp or the next wake reads it as a foreign lifecycle and resets.
+    """
+    state_root = tmp_path / "prauto"
+    setup = _source_state_library(state_root, FIRST_READY_TIMESTAMP)
+
+    result = _run_bash(
+        "\n".join(
+            [
+                setup,
+                "RETRY_COUNT_CONSUMED=true",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"refund_retry_count {ISSUE_NUMBER}",
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+
+    record = json.loads((state_root / "state" / f"retry-count-{ISSUE_NUMBER}.json").read_text())
+    assert record["count"] == 1
+    assert record["ready_label_timestamp"] == FIRST_READY_TIMESTAMP
+
+
+def test_refund_is_refused_when_this_dispatch_consumed_no_retry(tmp_path: Path) -> None:
+    """Only the path that advanced the counter may give an attempt back.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — the counter is incremented only in
+    the normal dispatch path; the quota-pause cycles and the plan-approval path
+    bypass it entirely. Those paths reach the same phase handler, so an ungated
+    refund would take an attempt from an earlier dispatch's tally and hand the
+    job more attempts than PRAUTO_MAX_RETRIES_PER_JOB allows.
+    """
+    state_root = tmp_path / "prauto"
+    setup = _source_state_library(state_root, FIRST_READY_TIMESTAMP)
+
+    result = _run_bash(
+        "\n".join(
+            [
+                setup,
+                "RETRY_COUNT_CONSUMED=true",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                # A plan-approval or quota-resume dispatch: no increment happened.
+                "RETRY_COUNT_CONSUMED=false",
+                f"refund_retry_count {ISSUE_NUMBER}",
+                f"read_retry_count {ISSUE_NUMBER}",
+                'printf "unchanged=%s\\n" "$RETRY_COUNT"',
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "unchanged=2" in result.stdout
+
+
+def test_refunds_are_capped_per_ready_label_lifecycle(tmp_path: Path) -> None:
+    """A job cannot be made unabandonable by repeated refunds.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — at PRAUTO_MAX_RETRIES_PER_JOB the
+    issue is abandoned. That guarantee only holds if refunds are bounded: an
+    unbounded refund nets every dispatch to zero, so the limit is never reached
+    and the issue loops forever holding an open-issue slot.
+    """
+    state_root = tmp_path / "prauto"
+    setup = _source_state_library(state_root, FIRST_READY_TIMESTAMP)
+
+    # Alternate dispatch and refund far more times than the cap allows.
+    cycles = "\n".join(
+        f"increment_retry_count {ISSUE_NUMBER}\nrefund_retry_count {ISSUE_NUMBER}"
+        for _ in range(6)
+    )
+    result = _run_bash(
+        "\n".join(
+            [
+                setup,
+                "RETRY_COUNT_CONSUMED=true",
+                "PRAUTO_MAX_REFUNDS_PER_JOB=2",
+                cycles,
+                f"read_retry_count {ISSUE_NUMBER}",
+                'printf "count=%s\\n" "$RETRY_COUNT"',
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    # Six dispatches, only the first two refunded: the counter still climbs, so
+    # the abandonment threshold is reachable.
+    assert "count=4" in result.stdout
+
+
+def test_refund_count_resets_with_a_new_ready_label_lifecycle(tmp_path: Path) -> None:
+    """A re-queued issue gets a fresh refund allowance, like its retry counter.
+
+    spec: spec/AI_PRAUTO.md §Issue restart protocol — a fresh ready-label
+    timestamp establishes a new lifecycle, and no tally may be inherited across
+    it in either direction.
+    """
+    state_root = tmp_path / "prauto"
+
+    first = _run_bash(
+        "\n".join(
+            [
+                _source_state_library(state_root, FIRST_READY_TIMESTAMP),
+                "RETRY_COUNT_CONSUMED=true",
+                "PRAUTO_MAX_REFUNDS_PER_JOB=1",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"refund_retry_count {ISSUE_NUMBER}",
+                f"read_refund_count {ISSUE_NUMBER}",
+                'printf "first=%s\\n" "$REFUND_COUNT"',
+            ]
+        )
+    )
+    assert first.returncode == 0, first.stderr
+    assert "first=1" in first.stdout
+
+    second = _run_bash(
+        "\n".join(
+            [
+                _source_state_library(state_root, SECOND_READY_TIMESTAMP),
+                f"read_refund_count {ISSUE_NUMBER}",
+                'printf "second=%s\\n" "$REFUND_COUNT"',
+            ]
+        )
+    )
+    assert second.returncode == 0, second.stderr
+    assert "second=0" in second.stdout
+
+
+def test_refund_cap_default_is_the_documented_two(tmp_path: Path) -> None:
+    """The shipped cap, not an override, is what bounds an unattended worker.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking names PRAUTO_MAX_REFUNDS_PER_JOB's
+    default as 2. Left unpinned, a default of 0 makes the refund inert and a large
+    default makes the abandonment guarantee vacuous; neither shows up in a test
+    that sets the value explicitly.
+    """
+    state_root = tmp_path / "prauto"
+    cycles = "\n".join(
+        f"increment_retry_count {ISSUE_NUMBER}\nrefund_retry_count {ISSUE_NUMBER}"
+        for _ in range(6)
+    )
+    result = _run_bash(
+        "\n".join(
+            [
+                _source_state_library(state_root, FIRST_READY_TIMESTAMP),
+                "RETRY_COUNT_CONSUMED=true",
+                "unset PRAUTO_MAX_REFUNDS_PER_JOB",
+                cycles,
+                f"read_retry_count {ISSUE_NUMBER}",
+                'printf "count=%s\\n" "$RETRY_COUNT"',
+            ]
+        ),
+        env={"PRAUTO_MAX_REFUNDS_PER_JOB": ""},
+    )
+
+    assert result.returncode == 0, result.stderr
+    # Six dispatches, the default two refunded.
+    assert "count=4" in result.stdout
+
+
+def test_an_invalid_refund_cap_falls_back_to_the_default(tmp_path: Path) -> None:
+    """An operator typo must not silently unbound or disable the cap.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — the cap is the only thing keeping
+    the abandonment guarantee true in the presence of refunds, so a value that
+    cannot be compared numerically has to degrade to the documented default
+    rather than to "no cap" or to a bash arithmetic error that kills the wake.
+    """
+    state_root = tmp_path / "prauto"
+    cycles = "\n".join(
+        f"increment_retry_count {ISSUE_NUMBER}\nrefund_retry_count {ISSUE_NUMBER}"
+        for _ in range(6)
+    )
+    result = _run_bash(
+        "\n".join(
+            [
+                _source_state_library(state_root, FIRST_READY_TIMESTAMP),
+                "RETRY_COUNT_CONSUMED=true",
+                'PRAUTO_MAX_REFUNDS_PER_JOB="4h"',
+                cycles,
+                f"read_retry_count {ISSUE_NUMBER}",
+                'printf "count=%s\\n" "$RETRY_COUNT"',
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "count=4" in result.stdout
+
+
+def test_a_refund_that_cannot_be_persisted_leaves_the_attempt_counted(
+    tmp_path: Path,
+) -> None:
+    """A failed refund fails safe — toward spending the attempt, not freeing it.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — if PRauto cannot persist a
+    current-lifecycle counter it does not proceed as though it had. The same
+    applies in the refund direction: an unwritable record must leave the consumed
+    attempt on the books, or the abandonment bound drifts upward silently.
+
+    The lifecycle anchor stays set so the write is actually attempted; the state
+    directory is made unwritable so mktemp fails inside write_retry_count.
+    """
+    state_root = tmp_path / "prauto"
+    setup = _source_state_library(state_root, FIRST_READY_TIMESTAMP)
+
+    seeded = _run_bash(
+        "\n".join(
+            [
+                setup,
+                "RETRY_COUNT_CONSUMED=true",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"increment_retry_count {ISSUE_NUMBER}",
+            ]
+        )
+    )
+    assert seeded.returncode == 0, seeded.stderr
+
+    state_dir = state_root / "state"
+    original_mode = state_dir.stat().st_mode
+    state_dir.chmod(0o500)  # readable and traversable, not writable
+    try:
+        result = _run_bash(
+            "\n".join(
+                [
+                    setup,
+                    "RETRY_COUNT_CONSUMED=true",
+                    f"refund_retry_count {ISSUE_NUMBER} && rc=0 || rc=$?",
+                    'printf "rc=%s\\n" "$rc"',
+                ]
+            )
+        )
+        assert result.returncode == 0, result.stderr
+        assert "rc=0" not in result.stdout, (
+            "a refund that could not be persisted reported success: "
+            f"{result.stdout!r}"
+        )
+    finally:
+        state_dir.chmod(original_mode)
+
+    record = json.loads((state_dir / f"retry-count-{ISSUE_NUMBER}.json").read_text())
+    assert record["count"] == 2
+    assert record["ready_label_timestamp"] == FIRST_READY_TIMESTAMP
+
+
+def test_a_refund_without_a_lifecycle_anchor_is_declined(tmp_path: Path) -> None:
+    """Without the lifecycle anchor there is no record to refund against.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — the counter is scoped to the issue's
+    current ready-label lifecycle; a read that cannot identify the lifecycle
+    deliberately yields zero rather than guessing.
+    """
+    state_root = tmp_path / "prauto"
+    setup = _source_state_library(state_root, FIRST_READY_TIMESTAMP)
+
+    result = _run_bash(
+        "\n".join(
+            [
+                setup,
+                "RETRY_COUNT_CONSUMED=true",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                f"increment_retry_count {ISSUE_NUMBER}",
+                'READY_LABEL_TIMESTAMP=""',
+                f"refund_retry_count {ISSUE_NUMBER}",
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+
+    record = json.loads((state_root / "state" / f"retry-count-{ISSUE_NUMBER}.json").read_text())
+    assert record["count"] == 2

@@ -154,9 +154,13 @@ executor dispatches them in step 6.
 7. **Finalize** — the executor (not the worker) pushes, opens/updates PRs, posts test
    results, and swaps labels.
 
-**Claim-first, then process-all**: Step 4 counts open issues assigned to this worker (excluding
-ready-only restarted issues). If under limit, claims the oldest `prauto:ready` issue. Step 5
-loops over all claimed issues.
+**Claim-first, then process-all**: Step 4 counts open issues assigned to this worker as
+**claimed** — carrying any active `prauto:` label other than a ready-only restart, and excluding
+the terminal `prauto:failed` and `prauto:done` labels. If under limit, claims the oldest
+`prauto:ready` issue. Step 5 loops over that same claimed set. One definition of "claimed" serves
+both: a terminal issue is work this worker has already finished with, so counting it toward the
+slot would hold a `PRAUTO_OPEN_ISSUE_LIMIT` slot that nothing can ever release, wedging every
+later wake into a no-op until a human edits the labels.
 
 **Worktree isolation**: Every worker session runs in a dedicated git worktree. The main repo
 directory is never the working directory during worker invocations.
@@ -307,6 +311,50 @@ At `PRAUTO_MAX_RETRIES_PER_JOB` (default 4), the issue is abandoned. The counter
 **before** incrementing: a dispatch at count 3 with max 4 checks `3 >= 4` → false → proceeds
 → increments to 4. The next dispatch sees `4 >= 4` → abandon.
 
+### Refunding a harness-truncated attempt
+
+A dispatch is counted at the moment it starts, before its outcome is known. One outcome must be
+handed back rather than kept: the implementation phase's agent CLI can terminate its own session
+on its background-task wait ceiling — the CLI exits 0 and prints
+`Background tasks still running after <N>s; terminating.` — before the workflow ever emits its
+`PRAUTO_WORKFLOW_OUTCOME` sentinel, even though the stages that already ran have committed their
+work to the branch. That is a harness limitation (see `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` in
+[Worker Agent Invocation](#worker-agent-invocation)), not a worker failure, so the attempt it
+consumed is refunded back onto the counter rather than charged against the job.
+
+**Detection reads the executor's own wall-clock measurement of the session** — never the agent's
+answer, the session stderr, or the merged output. The worker authors its report and runs unreviewed
+branch code (see [Prauto executes unreviewed branch code](#prauto-executes-unreviewed-branch-code));
+a check keyed on anything a worker can write would let it refund its own retry on every wake, netting
+each dispatch to zero, never reaching `PRAUTO_MAX_RETRIES_PER_JOB`, and looping on the issue forever
+while holding an open-issue slot. A session whose elapsed time reaches the configured ceiling must
+have been terminated by the CLI; the elapsed span is the one account of the session the worker cannot
+author. A ceiling of `0` means wait indefinitely, so no truncation is possible.
+
+**Two bounds keep the abandonment guarantee intact even with refunds in play**:
+
+- **Only the path that consumed an attempt may return it.** The normal dispatch path is the sole
+  path that increments the counter; only it may refund. The plan-approval and quota-resume paths
+  already bypass the counter entirely, so a refund reachable from either would hand back an
+  attempt some earlier dispatch took, not one of its own.
+- **`PRAUTO_MAX_REFUNDS_PER_JOB` (default 2) caps refunds per ready-label lifecycle.** The refund
+  floors at zero and is recorded in the same lifecycle-scoped state file as the counter. Past the
+  cap, attempts are consumed normally regardless of cause, so no repeating fault — CLI or
+  otherwise — can make a job unabandonable.
+
+The abandonment guarantee therefore holds in terms of **net** attempts, not raw dispatch count: an
+issue is abandoned once `(dispatches that consumed an attempt) - (refunds granted)` reaches
+`PRAUTO_MAX_RETRIES_PER_JOB`, and the refund side of that subtraction is itself bounded by
+`PRAUTO_MAX_REFUNDS_PER_JOB`.
+
+The worker runs unreviewed branch code as the executor's own OS user, and its tool grant includes an
+interpreter, so nothing it can write is trustworthy input to this decision — not its report, and not
+the session stderr sidecar under the state tree either. `DENY_TOOLS` blocks those paths as defence in
+depth, but a tool denylist is not an OS boundary. What bounds the refund is therefore not a fence
+around the inputs but the two controls above, both enforced by the executor itself: the
+`RETRY_COUNT_CONSUMED` gate and `PRAUTO_MAX_REFUNDS_PER_JOB`. Stalling to the ceiling to earn a refund
+costs a worker a full ceiling of wall-clock per attempt and is capped either way.
+
 ### Job completion and abandonment
 
 | Scenario | Actions |
@@ -378,6 +426,36 @@ shared command-line flags or output formats.
 JSONL is a protocol boundary, not display text: parsers select records by their event type and
 fields, preserve the raw stream as diagnostic evidence, and do not infer a thread id or quota
 state from human-readable prose when the required structured event is absent.
+
+### Implementation-phase Claude CLI environment
+
+The executor applies two Claude CLI environment variables to the **implementation invocation
+only** — passed per-invocation, never exported process-wide. Analysis, pr-review,
+squash-commit, feedback-response, and the two fix sessions (integration-fix, E2E-fix) are
+unaffected and keep the CLI's own defaults.
+
+- **`CLAUDE_CODE_WORKFLOWS`** (default `1`). Claude Code registers its `Workflow` tool only on
+  this opt-in; `--allowedTools` cannot re-enable a tool the session never registered. Without it,
+  the implementation phase's `wf-minimal` binding — the generator → reviewer per-stage loop
+  described in [The implementation phase runs the AGENTS.md workflow](#the-implementation-phase-runs-the-agentsmd-workflow) —
+  is unsatisfiable. Scoping the grant does not narrow the delegation consequence
+  [Security Model](#security-model) already accepts: only `Workflow` is gated by this variable,
+  while the subagent tool is registered by CLI default, and PR review carries the same tool grant
+  as implementation — so delegated work escapes `DENY_TOOLS` in both phases. The phases whose
+  grant is genuinely narrower are the two fix sessions, via the hard `--disallowedTools` block.
+- **`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`** (default 4 hours, finite). How long the session waits
+  for its background workflow before the CLI terminates it. The CLI's own 600s default cuts a
+  normal implementation run short — `wf-minimal` runs as a background task, so a real run routinely
+  outlives 600s without being wedged. The configured default is generous but deliberately finite,
+  not `0` (wait forever): an indefinite wait would let a genuinely wedged background task hold the
+  executor's PID lock for the full `PRAUTO_AGENT_TIMEOUT_SECS`, and would make the
+  truncation-refund classification in [Retry tracking](#retry-tracking) unreachable — a session
+  that never returns can never emit the stderr signature that classifies it as a harness fault
+  rather than a worker failure.
+
+The fix sessions still lose the delegation tools (`Agent`, `Workflow`, `Task`) through the hard
+`--disallowedTools` block regardless of either variable — that denial is unchanged and independent
+of the implementation-phase environment.
 
 | Phase | Tools | Turn cap |
 |-------|-------|-----------|

@@ -233,6 +233,9 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
     CUR_ISSUE_TITLE=$(printf '%s' "$ALL_CLAIMED_ISSUES" | jq -r ".[$claim_i].title")
     CUR_LABELS=$(printf '%s' "$ALL_CLAIMED_ISSUES" | jq ".[$claim_i].labels | map(.name)")
     CUR_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${CUR_ISSUE_NUMBER}"
+    # Reset per issue: only the normal dispatch path below sets this true, and it
+    # must never carry over from the previous issue in this wake.
+    RETRY_COUNT_CONSUMED=false
 
     # Terminal states — nothing to do.
     if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_DONE" || \
@@ -333,6 +336,12 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
         claim_i=$((claim_i + 1)); continue
       fi
       retry_count=$RETRY_COUNT  # RETRY_COUNT was set by increment_retry_count → read_retry_count
+      # This is the only path that advances the counter, so it is the only path
+      # that may give an attempt back. refund_retry_count checks this flag: the
+      # plan-approval and quota-resume paths reach the same phase handlers without
+      # incrementing, and a refund there would take an attempt from an earlier
+      # dispatch's tally rather than returning this one.
+      RETRY_COUNT_CONSUMED=true
 
       post_heartbeat_comment "$CUR_ISSUE_NUMBER" "$DERIVED_PHASE" "$retry_count" "$PRAUTO_MAX_RETRIES_PER_JOB"
       info "Dispatching issue #${CUR_ISSUE_NUMBER} (phase: ${DERIVED_PHASE}, attempt: ${retry_count}/${PRAUTO_MAX_RETRIES_PER_JOB})."

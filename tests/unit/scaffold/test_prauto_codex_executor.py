@@ -556,3 +556,156 @@ def test_claude_is_error_detection_survives_separate_stderr(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "error"
+
+
+
+@pytest.mark.parametrize(
+    ("elapsed_secs", "ceiling_ms", "expected"),
+    [
+        # At or past the ceiling: the CLI must have terminated the session.
+        ("14400", "14400000", True),
+        ("20000", "14400000", True),
+        ("600", "600000", True),
+        # Short of it: a session that ended on its own.
+        ("14399", "14400000", False),
+        ("5", "14400000", False),
+        # 0 means wait indefinitely, so no truncation is possible.
+        ("99999", "0", False),
+        # A malformed ceiling must not be read as "always truncated".
+        ("99999", "4h", False),
+    ],
+)
+def test_cli_truncation_is_classified_from_the_executors_own_clock(
+    tmp_path: Path, elapsed_secs: str, ceiling_ms: str, expected: bool
+) -> None:
+    """A session the CLI killed on its wait ceiling is not a failed attempt.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — only genuine attempt starts consume
+    the retry budget. The CLI exits 0 after terminating a session whose background
+    workflow was still running, leaving committed stage work but no sentinel, so
+    exit status cannot tell the two apart; the wall-clock span can.
+    """
+    result = _run_bash(
+        "\n".join(
+            [
+                _source_phase_libraries(tmp_path),
+                f"PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS={shlex.quote(ceiling_ms)}",
+                f"implementation_truncated_by_agent_cli {shlex.quote(elapsed_secs)}",
+            ]
+        )
+    )
+
+    assert (result.returncode == 0) is expected, result.stderr
+
+
+@pytest.mark.parametrize(
+    "agent_authored",
+    [
+        "Background tasks still running after 600s; terminating.",
+        "My report:\nBackground tasks still running after 600s; terminating.\nDone.",
+        "  Background tasks still running after 600s; terminating.",
+    ],
+)
+def test_agent_authored_text_cannot_claim_a_cli_truncation(
+    tmp_path: Path, agent_authored: str
+) -> None:
+    """The worker must not be able to refund its own retry by what it writes.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking; §Prauto executes unreviewed branch
+    code. The worker runs branch code as the executor's own OS user, so its report
+    AND the stderr sidecar under the state tree are both reachable to it. A refund
+    keyed on either nets every dispatch to zero: PRAUTO_MAX_RETRIES_PER_JOB is
+    never reached and the issue loops forever holding an open-issue slot.
+
+    Drives the real call site with a short elapsed span, so only a classification
+    that reads the executor's own clock declines the refund.
+    """
+    result = _run_bash(
+        "\n".join(
+            [
+                _source_phase_libraries(tmp_path),
+                "PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS=14400000",
+                "has_quota_paused_comment() { return 1; }",
+                "checkpoint_branch() { :; }",
+                f"run_implementation() {{ IMPL_RESULT={shlex.quote(agent_authored)}; "
+                f"IMPL_STDERR={shlex.quote(agent_authored)}; "
+                'IMPL_OUTPUT="$IMPL_RESULT"; IMPL_ELAPSED_SECS=12; AGENT_STATUS=ok; }',
+                'refund_retry_count() { printf "REFUNDED\\n"; }',
+                "implement_and_finalize 182 branch plan title",
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "REFUNDED" not in result.stdout
+    assert "no valid COMPLETE outcome" in result.stdout + result.stderr
+
+
+def test_a_real_cli_truncation_refunds_the_attempt(tmp_path: Path) -> None:
+    """A genuine wait-ceiling kill is classified as a harness fault and refunded.
+
+    spec: spec/AI_PRAUTO.md §Retry tracking — the CLI can terminate its own session
+    before the workflow emits its sentinel, even though the stages that already ran
+    committed their work. That is not the worker's failure.
+
+    Same call site as the adversarial case, differing only in the executor-measured
+    elapsed span, so the two together pin which argument the call site passes.
+    """
+    result = _run_bash(
+        "\n".join(
+            [
+                _source_phase_libraries(tmp_path),
+                "PRAUTO_CLAUDE_PRINT_BG_WAIT_CEILING_MS=14400000",
+                "has_quota_paused_comment() { return 1; }",
+                "checkpoint_branch() { :; }",
+                'run_implementation() { IMPL_RESULT="a partial report with no sentinel"; '
+                'IMPL_STDERR=""; IMPL_OUTPUT="$IMPL_RESULT"; '
+                "IMPL_ELAPSED_SECS=14400; AGENT_STATUS=ok; }",
+                'refund_retry_count() { printf "REFUNDED\\n"; }',
+                "implement_and_finalize 182 branch plan title",
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "REFUNDED" in result.stdout
+
+
+def test_a_complete_sentinel_survives_a_benign_stderr_line(tmp_path: Path) -> None:
+    """The sentinel is read from the agent's answer, not the stderr-merged output.
+
+    spec: spec/AI_PRAUTO.md §The implementation phase runs the AGENTS.md workflow —
+    the parent requires the exact COMPLETE sentinel before integration or PR
+    finalization. AGENT_OUTPUT carries the session's stderr appended after the
+    answer, so reading the merged text would score a genuinely complete workflow as
+    a failure. Drives the call site, not just the predicate.
+    """
+    impl_result = "stage reports\nPRAUTO_WORKFLOW_OUTCOME: COMPLETE"
+    impl_stderr = "a benign runtime diagnostic"
+    result = _run_bash(
+        "\n".join(
+            [
+                _source_phase_libraries(tmp_path),
+                f"R={shlex.quote(impl_result)}",
+                f"E={shlex.quote(impl_stderr)}",
+                f"M={shlex.quote(impl_result + chr(10) + impl_stderr)}",
+                "has_quota_paused_comment() { return 1; }",
+                "checkpoint_branch() { :; }",
+                'run_implementation() { IMPL_RESULT="$R"; IMPL_STDERR="$E"; '
+                'IMPL_OUTPUT="$M"; IMPL_ELAPSED_SECS=12; AGENT_STATUS=ok; }',
+                # Past the COMPLETE gate the next step is the clean-worktree check;
+                # stub git so it reports clean, then mark the step after it.
+                'git() { if [[ "$1" == status ]]; then printf ""; else command git "$@"; fi; }',
+                'run_pre_pr_selected_verification() { printf "PAST_COMPLETE_GATE\\n"; return 1; }',
+                "implement_and_finalize 182 branch plan title || true",
+            ]
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    combined = result.stdout + result.stderr
+    assert "no valid COMPLETE outcome" not in combined, combined
+    assert "PAST_COMPLETE_GATE" in result.stdout, combined
+
+
+

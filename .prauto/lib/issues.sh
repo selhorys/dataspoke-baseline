@@ -218,9 +218,15 @@ ${footer}" \
 }
 
 # find_all_claimed_issues
-# List open issues claimed by this worker (any active prauto: label, excluding
-# restarted issues that only carry prauto:ready). Sorted oldest-first.
-# Sets: ALL_CLAIMED_ISSUES, ALL_CLAIMED_COUNT. Returns 0 if any, 1 if none.
+# List open issues this worker still owns work on: any active prauto: label,
+# excluding restarted issues that only carry prauto:ready, and excluding the
+# terminal labels. A terminal issue is work this worker has finished with — the
+# processing loop in heartbeat.sh skips it — so counting it as claimed would hold
+# a PRAUTO_OPEN_ISSUE_LIMIT slot that nothing can ever release, wedging every
+# later wake into a no-op until a human edits the labels. One definition of
+# "claimed" serves both the slot count and the processing loop.
+# Sorted oldest-first. Sets: ALL_CLAIMED_ISSUES, ALL_CLAIMED_COUNT.
+# Returns 0 if any, 1 if none.
 find_all_claimed_issues() {
   local issues_json
   issues_json=$(gh issue list -R "$PRAUTO_GITHUB_REPO" \
@@ -230,10 +236,14 @@ find_all_claimed_issues() {
     return 1
   }
   ALL_CLAIMED_ISSUES=$(printf '%s' "$issues_json" | jq \
-    --arg ready "$PRAUTO_GITHUB_LABEL_READY" '
+    --arg ready "$PRAUTO_GITHUB_LABEL_READY" \
+    --arg failed "$PRAUTO_GITHUB_LABEL_FAILED" \
+    --arg donelabel "$PRAUTO_GITHUB_LABEL_DONE" '
     [.[] | select(.labels | any(.name | startswith("prauto:")))
           | select((.labels | map(.name) | [.[] | select(startswith("prauto:"))]) as $pl
-            | ($pl | length > 1) or ($pl[0] != $ready))]
+            | (($pl | length > 1) or ($pl[0] != $ready))
+              and (($pl | index($failed)) | not)
+              and (($pl | index($donelabel)) | not))]
     | sort_by(.number)')
   ALL_CLAIMED_COUNT=$(printf '%s' "$ALL_CLAIMED_ISSUES" | jq 'length')
   [[ "$ALL_CLAIMED_COUNT" -eq 0 ]] && return 1
