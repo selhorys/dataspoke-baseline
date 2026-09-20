@@ -992,11 +992,8 @@ repo, not left to a hand-built profile:
   `bash .prauto/scheduler/launch.sh`, map the launcher's one-line status to a Slack report, and end
   the turn. It never performs executor work. Because it is placed verbatim, a change to this file
   must be followed by re-syncing the job's field, or the running supervisor keeps an older
-  procedure than the repo it came from:
-
-  ```bash
-  hermes -p <profile> cron edit <job_id> --prompt "$(cat .prauto/scheduler/supervisor-prompt.md)"
-  ```
+  procedure than the repo it came from (the `hermes cron edit --prompt` command is in the
+  supervisor skill).
 - The supervisor skill is `.prauto/scheduler/prauto-executor/SKILL.md` — the `prauto-executor`
   skill the job's `skills` field loads. Install it into the Hermes profile that runs the cron job
   before creating the job, or the job rejects the unknown skill:
