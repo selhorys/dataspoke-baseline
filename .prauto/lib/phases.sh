@@ -740,6 +740,14 @@ TRANSPORT_FLAKE_ALLOWLIST_RE='econnreset|econnrefused|etimedout|eai_again|tempor
 # True only when text matches the allowlist and nothing in it disqualifies.
 # Unrecognized or ambiguous text (e.g. a bare gateway status with no ingress
 # or control-plane source) stays blocking.
+#
+# The gateway-status gate below is NOT redundant with the allowlist, though it
+# reads that way: every pattern it accepts also appears there. It is a veto, not
+# a second acceptance. A reason mentioning an unattributed 502/503/504 stays
+# blocking even when some other allowlist alternative matches it — "econnreset
+# while polling; server later returned 503" is a real failure to investigate,
+# not a transport flake to retry. Removing the gate silently reclassifies that
+# whole shape as environmental.
 is_environmental_transport_failure() {
   local text="$1"
   grep -Eqi "$TRANSPORT_FLAKE_DISQUALIFIER_RE" <<< "$text" && return 1
@@ -750,18 +758,28 @@ is_environmental_transport_failure() {
 }
 
 # transport_flake_category <text>
-# Name the allowlisted category an (already qualifying) failure reason
-# matched, for the public flake notice.
+# Name the allowlisted category an (already qualifying) failure reason matched,
+# for the public flake notice.
+#
+# Ordered most-specific mechanism first, because these signals co-occur. A
+# cluster-sourced failure usually names the cluster too, so testing for the
+# cluster first would report every such failure as a control-plane error — a GKE
+# node whose DNS failed would be filed as "control-plane request failure", which
+# points an operator at the wrong subsystem. What failed is more useful than
+# where it failed, so the mechanism wins and the cluster is the fallback.
 transport_flake_category() {
   local text="$1"
-  if grep -Eqi '(kubernetes|kube-apiserver|apiserver|control[- ]plane|gke)' <<< "$text"; then
-    printf 'control-plane request failure'
-  elif grep -Eqi 'evicted|preempted|nodenotready' <<< "$text"; then
+  if grep -Eqi 'evicted|preempted|nodenotready' <<< "$text"; then
     printf 'pod eviction/preemption or node not ready'
-  elif grep -Eqi "$TRANSPORT_FLAKE_GATEWAY_STATUS_RE" <<< "$text"; then
-    printf 'ingress gateway error'
   elif grep -Eqi 'eai_again|temporary failure in name resolution' <<< "$text"; then
     printf 'DNS resolution failure'
+  elif grep -Eqi '(ingress-nginx|ingress controller|nginx)' <<< "$text" \
+    && grep -Eqi "$TRANSPORT_FLAKE_GATEWAY_STATUS_RE" <<< "$text"; then
+    # Only an ingress-attributed gateway status is an ingress error; a bare
+    # 502/503/504 alongside a cluster name is a control-plane one.
+    printf 'ingress gateway error'
+  elif grep -Eqi '(kubernetes|kube-apiserver|apiserver|control[- ]plane|gke)' <<< "$text"; then
+    printf 'control-plane request failure'
   else
     printf 'client connection refused/reset/timeout'
   fi
@@ -1308,41 +1326,93 @@ post_post_pr_regression_comment() {
   fi
   return 0
 }
+# --- Local regression stages -------------------------------------------------
+#
+# The static and unit checks run in two places: the full regression, which
+# selects by what the diff touched, and the targeted retry, which selects by
+# what previously failed. Those differ only in how a stage is SELECTED and where
+# its result is RECORDED — the commands are identical. Holding them in one table
+# with one driver is what stops the two paths drifting apart, which they had.
+#
+# Stage names are the public identifiers: they appear in PR status comments and
+# in POST_PR_FAILED_STAGES, and stage_is_recorded matches them whole. Changing
+# one renames a stage everywhere, including in a retry reading an older list.
+LOCAL_REGRESSION_STAGES=(
+  "Static (ruff)"
+  "Static (mypy)"
+  "Static (frontend typecheck)"
+  "Static (frontend eslint)"
+  "Static (E2E typecheck)"
+  "Unit (Python)"
+  "Unit (frontend)"
+)
+
+# local_stage_command <stage>
+# Run one stage. Output goes to stdout; the exit status is the stage's.
+local_stage_command() {
+  case "$1" in
+    "Static (ruff)")                uv run ruff check src/ tests/ 2>&1 ;;
+    "Static (mypy)")                uv run mypy src/ 2>&1 ;;
+    "Static (frontend typecheck)")  pnpm -C src/frontend exec tsc --noEmit 2>&1 ;;
+    "Static (frontend eslint)")     pnpm -C src/frontend run lint 2>&1 ;;
+    "Static (E2E typecheck)")       pnpm -C tests/e2e typecheck 2>&1 ;;
+    "Unit (Python)")                COLUMNS="$PYTEST_REPORT_COLUMNS" uv run pytest tests/unit/ --tb=short 2>&1 ;;
+    "Unit (frontend)")              pnpm -C src/frontend test 2>&1 ;;
+    *) warn "Unknown local regression stage: $1"; return 2 ;;
+  esac
+}
+
+# local_stage_applies <stage>
+# The full regression's selector: run a stage when the diff reaches what it
+# covers. The Python checks always apply; the frontend and E2E ones are scoped
+# to their trees so an unrelated backend change does not pay for them.
+local_stage_applies() {
+  case "$1" in
+    "Static (frontend typecheck)"|"Static (frontend eslint)"|"Unit (frontend)")
+      diff_touches src/frontend/ ;;
+    "Static (E2E typecheck)")
+      diff_touches tests/e2e/ ;;
+    *) return 0 ;;
+  esac
+}
+
+# run_local_stages <selector_fn> <recorder_fn>
+# Drive the table: for each stage the selector accepts, run it and hand the
+# result to the recorder. Returns 1 if any stage failed, 0 otherwise.
+#
+# The recorder is called as <recorder_fn> <stage> <exit_code> <output>, so both
+# callers supply a wrapper with that shape rather than the driver knowing about
+# branches or targeted-result bookkeeping.
+run_local_stages() {
+  local selector="$1" recorder="$2"
+  local stage exit_code output rc=0
+  for stage in "${LOCAL_REGRESSION_STAGES[@]}"; do
+    "$selector" "$stage" || continue
+    exit_code=0
+    output=$(local_stage_command "$stage") || exit_code=$?
+    "$recorder" "$stage" "$exit_code" "$output"
+    [[ "$exit_code" -eq 0 ]] || rc=1
+  done
+  return "$rc"
+}
+
 
 # run_static_and_unit_regression <branch>
 # Sets LOCAL_REGRESSION_EXIT.  Commands are checks only; none mutates the diff.
 run_static_and_unit_regression() {
-  local branch="$1" rc=0 output exit_code=0
+  local branch="$1" output
+
   LOCAL_REGRESSION_EXIT=0
   [[ -f pyproject.toml ]] || { LOCAL_REGRESSION_EXIT=2; LOCAL_REGRESSION_REASON="pyproject.toml is missing"; return 0; }
   output=$(uv sync 2>&1) || { LOCAL_REGRESSION_EXIT=2; LOCAL_REGRESSION_REASON="uv sync failed"; return 0; }
-
-  output=$(uv run ruff check src/ tests/ 2>&1) || exit_code=$?
-  post_result "$branch" "Static (ruff)" "$exit_code" "$output"
-  [[ "$exit_code" -eq 0 ]] || rc=1
-  exit_code=0; output=$(uv run mypy src/ 2>&1) || exit_code=$?
-  post_result "$branch" "Static (mypy)" "$exit_code" "$output"
-  [[ "$exit_code" -eq 0 ]] || rc=1
-
-  if diff_touches src/frontend/; then
-    exit_code=0; output=$(pnpm -C src/frontend exec tsc --noEmit 2>&1) || exit_code=$?
-    post_result "$branch" "Static (frontend typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
-    exit_code=0; output=$(pnpm -C src/frontend run lint 2>&1) || exit_code=$?
-    post_result "$branch" "Static (frontend eslint)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
-  fi
-  if diff_touches tests/e2e/; then
-    exit_code=0; output=$(pnpm -C tests/e2e typecheck 2>&1) || exit_code=$?
-    post_result "$branch" "Static (E2E typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
-  fi
-
   [[ -d tests/unit ]] || { LOCAL_REGRESSION_EXIT=2; LOCAL_REGRESSION_REASON="tests/unit is missing"; return 0; }
-  exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" uv run pytest tests/unit/ --tb=short 2>&1) || exit_code=$?
-  post_result "$branch" "Unit (Python)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
-  if diff_touches src/frontend/; then
-    exit_code=0; output=$(pnpm -C src/frontend test 2>&1) || exit_code=$?
-    post_result "$branch" "Unit (frontend)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || rc=1
-  fi
-  LOCAL_REGRESSION_EXIT="$rc"
+
+  # post_result takes the branch first; the driver calls recorders as
+  # <stage> <exit> <output>, so close over the branch here.
+  _record_full_stage() { post_result "$branch" "$1" "$2" "$3"; }
+
+  LOCAL_REGRESSION_EXIT=0
+  run_local_stages local_stage_applies _record_full_stage || LOCAL_REGRESSION_EXIT=1
 }
 
 # acquire_required_dev_lock <issue> <purpose>
@@ -1502,39 +1572,16 @@ run_targeted_post_pr_regression() {
 
   # Local checks: dependency sync is setup, while every selected check is a
   # branch-attributable target. Do not rerun an unrelated successful gate.
-  if stage_is_recorded "Static (ruff)" || stage_is_recorded "Static (mypy)" || \
-     stage_is_recorded "Static (frontend typecheck)" || stage_is_recorded "Static (frontend eslint)" || \
-     stage_is_recorded "Static (E2E typecheck)" || stage_is_recorded "Unit (Python)" || \
-     stage_is_recorded "Unit (frontend)"; then
+  local any_local_recorded=false stage
+  for stage in "${LOCAL_REGRESSION_STAGES[@]}"; do
+    stage_is_recorded "$stage" && { any_local_recorded=true; break; }
+  done
+  if [[ "$any_local_recorded" == true ]]; then
     output=$(uv sync 2>&1) || { TARGETED_REGRESSION_EXIT=2; regression_blocked "$issue_number" "uv sync failed during targeted regression" "$branch"; return 0; }
-  fi
-  if stage_is_recorded "Static (ruff)"; then
-    exit_code=0; output=$(uv run ruff check src/ tests/ 2>&1) || exit_code=$?
-    record_targeted_result "Static (ruff)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
-  fi
-  if stage_is_recorded "Static (mypy)"; then
-    exit_code=0; output=$(uv run mypy src/ 2>&1) || exit_code=$?
-    record_targeted_result "Static (mypy)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
-  fi
-  if stage_is_recorded "Static (frontend typecheck)"; then
-    exit_code=0; output=$(pnpm -C src/frontend exec tsc --noEmit 2>&1) || exit_code=$?
-    record_targeted_result "Static (frontend typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
-  fi
-  if stage_is_recorded "Static (frontend eslint)"; then
-    exit_code=0; output=$(pnpm -C src/frontend run lint 2>&1) || exit_code=$?
-    record_targeted_result "Static (frontend eslint)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
-  fi
-  if stage_is_recorded "Static (E2E typecheck)"; then
-    exit_code=0; output=$(pnpm -C tests/e2e typecheck 2>&1) || exit_code=$?
-    record_targeted_result "Static (E2E typecheck)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
-  fi
-  if stage_is_recorded "Unit (Python)"; then
-    exit_code=0; output=$(COLUMNS="$PYTEST_REPORT_COLUMNS" uv run pytest tests/unit/ --tb=short 2>&1) || exit_code=$?
-    record_targeted_result "Unit (Python)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
-  fi
-  if stage_is_recorded "Unit (frontend)"; then
-    exit_code=0; output=$(pnpm -C src/frontend test 2>&1) || exit_code=$?
-    record_targeted_result "Unit (frontend)" "$exit_code" "$output"; [[ "$exit_code" -eq 0 ]] || TARGETED_REGRESSION_EXIT=1
+    # Same table and commands as the full run; only the selector and the
+    # recorder differ, which is the whole reason they share a driver.
+    _record_targeted_stage() { record_targeted_result "$1" "$2" "$3"; }
+    run_local_stages stage_is_recorded _record_targeted_stage || TARGETED_REGRESSION_EXIT=1
   fi
 
   # API is the prerequisite for both integration groups. If the deploy itself

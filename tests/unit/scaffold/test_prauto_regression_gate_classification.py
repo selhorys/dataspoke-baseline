@@ -1695,3 +1695,71 @@ def test_heartbeat_cleanup_calls_release_required_dev_lock(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     lines = events.read_text().splitlines()
     assert "release-called" in lines
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        # The mechanism wins over the cluster that reported it: these co-occur,
+        # and naming the cluster points an operator at the wrong subsystem.
+        (
+            "gke node pool: temporary failure in name resolution",
+            "DNS resolution failure",
+        ),
+        (
+            "kubernetes apiserver: pod was evicted",
+            "pod eviction/preemption or node not ready",
+        ),
+        # An ingress-attributed gateway status is an ingress error...
+        ("ingress-nginx returned 503 for the api host", "ingress gateway error"),
+        # ...while the same status from the control plane is not.
+        ("kube-apiserver returned 503", "control-plane request failure"),
+        # Cluster named with no more specific mechanism.
+        ("gke control-plane i/o timeout", "control-plane request failure"),
+        ("econnreset from the api host", "client connection refused/reset/timeout"),
+    ],
+)
+def test_flake_category_names_the_mechanism_not_the_cluster(
+    reason: str, expected: str
+) -> None:
+    """A flake notice must point at the subsystem that actually failed.
+
+    spec: spec/AI_PRAUTO.md §Deterministic environmental-flake exception — the
+    notice is what an operator reads to decide whether to investigate. Cluster
+    names appear in almost every cluster-sourced failure, so matching on them
+    first files DNS failures, evictions and ingress errors alike as control-plane
+    problems.
+    """
+    result = _run(
+        _source_phases() + f"\ntransport_flake_category {shlex.quote(reason)}"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
+def test_an_unattributed_gateway_status_is_not_a_transport_flake() -> None:
+    """A bare 502/503/504 keeps a failure blocking even if something else matches.
+
+    spec: spec/AI_PRAUTO.md §Deterministic environmental-flake exception — the
+    allowlist is closed and ambiguity stays blocking. A reason that mentions a
+    gateway status with no ingress or control-plane source is a real failure to
+    investigate; matching it through an unrelated allowlist alternative would
+    retry a genuine regression as environmental.
+    """
+    blocking = "econnreset while polling; server later returned 503"
+    flaky = "econnreset from the api host"
+
+    result = _run(
+        _source_phases()
+        + f'\nif is_environmental_transport_failure {shlex.quote(blocking)}; then'
+        ' printf "unattributed=flake\\n"; else printf "unattributed=blocking\\n"; fi'
+        + f'\nif is_environmental_transport_failure {shlex.quote(flaky)}; then'
+        ' printf "plain=flake\\n"; else printf "plain=blocking\\n"; fi'
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "unattributed=blocking" in result.stdout
+    # The same text without the gateway status is still recognised, so this is
+    # the status gate doing the work rather than the allowlist simply missing.
+    assert "plain=flake" in result.stdout
