@@ -167,13 +167,18 @@ classify() {
 # nonzero — launch.sh turns an immediately-dead monitor into
 # MONITOR_EXITED_IMMEDIATELY (exit 1) with this reason, so the supervisor reports
 # degraded reporting instead of a successful launch.
-if [[ "${PRAUTO_MONITOR_DRY_RUN:-0}" != "1" ]] && ! resolve_slack_target; then
-  reason="monitor: cannot resolve Slack target '${SLACK_TARGET}' under HERMES_HOME=${HERMES_HOME} — a detached run would have no reporting. Set PRAUTO_SCHEDULER_HERMES_HOME in config.local.env to the profile home that owns the target (see config.local.env.example)."
-  printf '%s\n' "$reason" >&2
-  printf '%s\n' "$reason" > "$UNRESOLVED_MARKER"
-  exit 2
+if [[ "${PRAUTO_MONITOR_DRY_RUN:-0}" != "1" ]]; then
+  if ! resolve_slack_target; then
+    reason="monitor: cannot resolve Slack target '${SLACK_TARGET}' under HERMES_HOME=${HERMES_HOME} — a detached run would have no reporting. Set PRAUTO_SCHEDULER_HERMES_HOME in config.local.env to the profile home that owns the target (see config.local.env.example)."
+    printf '%s\n' "$reason" >&2
+    printf '%s\n' "$reason" > "$UNRESOLVED_MARKER"
+    exit 2
+  fi
+  # Preflight passed — delete an earlier run's breadcrumb so it cannot outlive the fix.
+  # A dry run never reaches this line: it verifies nothing, so it must leave the marker
+  # alone rather than report a clean state it never established.
+  rm -f "$UNRESOLVED_MARKER"
 fi
-rm -f "$UNRESOLVED_MARKER"   # resolved now; a stale reason must not outlive the fix
 
 # --- at most one monitor per checkout -----------------------------------------
 if [[ -f "$MONITOR_LOCK" ]]; then

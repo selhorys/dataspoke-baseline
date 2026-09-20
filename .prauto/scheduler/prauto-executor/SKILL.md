@@ -68,6 +68,12 @@ must:
      monitor (Slack reporting) did not survive; report ⚠️ reporting degraded + the status line,
      including its `reason=…` field when present (a bare status line hides the cause).
 
+   The job's `prompt` field is the canonical `.prauto/scheduler/supervisor-prompt.md` placed
+   verbatim, so it must be re-synced whenever that file changes (or when you find it stale) —
+   otherwise the running supervisor follows an older procedure than the repo it came from:
+   `hermes -p <profile> cron edit <job_id> --prompt "$(cat .prauto/scheduler/supervisor-prompt.md)"`.
+   The skill loads from the profile's installed copy, so sync that too (repo file is canonical).
+
    `launch.sh` detaches the executor, waits ~5s to confirm it survived, then detaches the
    background monitor (`.prauto/scheduler/monitor.sh`) and verifies it too. The monitor posts a
    brief Slack note every `PRAUTO_MONITOR_INTERVAL_SECS` (default 600) while the executor runs,

@@ -384,6 +384,40 @@ def test_monitor_pins_the_profile_home_over_an_inherited_one(tmp_path: Path) -> 
     assert not (state / "monitor.lock").exists()
 
 
+def test_monitor_dry_run_leaves_a_real_unresolved_marker_alone(tmp_path: Path) -> None:
+    """A dry run verifies nothing, so it must not clear a genuine reporting breadcrumb."""
+    repo = _scheduler_fixture(tmp_path, "monitor.sh")
+    state = repo / ".prauto/state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "heartbeat_cron.log").write_text("Heartbeat complete\n")
+    marker = state / "monitor-slack-unresolved"
+    marker.write_text("monitor: cannot resolve Slack target 'slack:hermes-dev'\n")
+    bin_dir = _stub_hermes(tmp_path / "bin", list_body="slack:\n  slack:hermes-dev")
+
+    result = _run_monitor(repo, _monitor_env(tmp_path, bin_dir, PRAUTO_MONITOR_DRY_RUN="1"))
+
+    assert result.returncode == 0, result.stderr
+    assert marker.exists(), "dry-run must not clear a marker it never verified"
+    assert marker.read_text().startswith("monitor: cannot resolve Slack target"), marker.read_text()
+
+
+def test_monitor_clears_a_stale_marker_once_the_preflight_passes(tmp_path: Path) -> None:
+    """A verified preflight is the only thing that removes an earlier run's breadcrumb."""
+    repo = _scheduler_fixture(tmp_path, "monitor.sh")
+    state = repo / ".prauto/state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "heartbeat_cron.log").write_text("Heartbeat complete\n")
+    marker = state / "monitor-slack-unresolved"
+    marker.write_text("monitor: cannot resolve Slack target 'slack:hermes-dev'\n")
+    (repo / ".prauto/config.local.env").write_text('PRAUTO_SLACK_TARGET="slack:hermes-dev"\n')
+    bin_dir = _stub_hermes(tmp_path / "bin", list_body="slack:\n  slack:hermes-dev  [C0BS779DV4L]")
+
+    result = _run_monitor(repo, _monitor_env(tmp_path, bin_dir))
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists(), "a resolving preflight must clear the stale breadcrumb"
+
+
 def test_monitor_records_undelivered_message_after_one_retry(tmp_path: Path) -> None:
     """A send that fails twice leaves a local trace instead of vanishing."""
     repo = _scheduler_fixture(tmp_path, "monitor.sh")
