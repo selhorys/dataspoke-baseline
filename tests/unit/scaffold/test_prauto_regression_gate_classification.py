@@ -20,6 +20,7 @@ import pytest
 
 ROOT = Path(__file__).parents[3]
 PHASES = ROOT / ".prauto/lib/phases.sh"
+REGRESSION = ROOT / ".prauto/lib/regression.sh"
 PR = ROOT / ".prauto/lib/pr.sh"
 HELPERS = ROOT / ".prauto/lib/helpers.sh"
 HEARTBEAT = ROOT / ".prauto/heartbeat.sh"
@@ -1305,7 +1306,8 @@ def test_extract_failed_tests_bounds_entries_reason_and_summaries() -> None:
     real bound instead of pinning a copy of it."""
     max_entries = _read_bash_constant("FAILED_TESTS_MAX_ENTRIES")
     max_summaries = _read_bash_constant("FAILED_TESTS_MAX_SUMMARIES")
-    reason_clip_match = re.search(r"length\(\$s\) > (\d+)", PHASES.read_text())
+    # sanitize_failed_test_entries lives in the regression layer.
+    reason_clip_match = re.search(r"length\(\$s\) > (\d+)", REGRESSION.read_text())
     assert reason_clip_match is not None
     reason_cap = int(reason_clip_match.group(1))
 
