@@ -46,11 +46,9 @@ fetch_org_members() {
 post_feedback_response_comment() {
   local issue_number="$1" response_text="$2"
   [[ -z "$response_text" ]] && return 0
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Feedback response
+  prauto_issue_comment "$issue_number" "Feedback response
 
-${response_text}" \
-    2>/dev/null || warn "Failed to post feedback response on issue #${issue_number}."
+${response_text}" "Failed to post feedback response on issue #${issue_number}."
 }
 
 # find_eligible_issue
@@ -91,7 +89,6 @@ find_eligible_issue() {
 
   FOUND_ISSUE_NUMBER=$(printf '%s' "$filtered" | jq -r '.number')
   FOUND_ISSUE_TITLE=$(printf '%s' "$filtered" | jq -r '.title')
-  FOUND_ISSUE_BODY=$(printf '%s' "$filtered" | jq -r '.body // ""')
   info "Found eligible issue: #${FOUND_ISSUE_NUMBER} — ${FOUND_ISSUE_TITLE}"
   return 0
 }
@@ -134,9 +131,9 @@ claim_issue() {
   gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
     --remove-label "$PRAUTO_GITHUB_LABEL_READY" \
     --add-assignee "$PRAUTO_GITHUB_ACTOR" 2>/dev/null || true
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Claimed this issue. Starting work." 2>/dev/null \
-    || warn "Failed to post claim comment on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" \
+    "Claimed this issue. Starting work." \
+    "Failed to post claim comment on issue #${issue_number}."
   info "Claimed issue #${issue_number}."
   return 0
 }
@@ -198,16 +195,14 @@ post_plan_comment() {
 > Reply with \`go ahead\` to approve, or post a counter-proposal."
   fi
 
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): ${keyword}
+  prauto_issue_comment "$issue_number" "${keyword}
 
 ## Implementation Plan
 
 ${analysis_output}
 
 ---
-${footer}" \
-    2>/dev/null || warn "Failed to post plan comment on issue #${issue_number}."
+${footer}" "Failed to post plan comment on issue #${issue_number}."
 
   if [[ "$change_size" != "minor" ]]; then
     gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -251,30 +246,12 @@ find_all_claimed_issues() {
   return 0
 }
 
-# count_heartbeat_comments <issue_number>
-# Count heartbeat markers within the CURRENT lifecycle only: after the most
-# recent "Claimed" comment by this worker AND after the last prauto:ready event.
-# Sets: HEARTBEAT_COMMENT_COUNT.
-count_heartbeat_comments() {
-  local issue_number="$1"
-  local hb_marker="prauto(${PRAUTO_WORKER_ID}): Heartbeat"
-  local claim_marker="prauto(${PRAUTO_WORKER_ID}): Claimed"
-  local ready_ts="${READY_LABEL_TIMESTAMP:-}"
-  HEARTBEAT_COMMENT_COUNT=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json comments --jq '.comments' 2>/dev/null \
-    | jq --arg hb "$hb_marker" --arg cl "$claim_marker" --arg ready_ts "$ready_ts" '
-      [.[] | select($ready_ts == "" or .createdAt > $ready_ts)] as $scoped
-      | ($scoped | [.[] | select(.body | startswith($cl))] | last | .createdAt // "") as $anchor
-      | [$scoped[] | select(.body | startswith($hb)) | select(.createdAt > $anchor)] | length
-    ') || HEARTBEAT_COMMENT_COUNT=0
-}
-
 # post_heartbeat_comment <issue_number> <phase> <attempt> <max>
 post_heartbeat_comment() {
   local issue_number="$1" phase="$2" attempt="$3" max="$4"
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — ${phase} (attempt ${attempt}/${max})" 2>/dev/null \
-    || warn "Failed to post heartbeat comment on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" \
+    "Heartbeat — ${phase} (attempt ${attempt}/${max})" \
+    "Failed to post heartbeat comment on issue #${issue_number}."
 }
 
 # post_commit_checkpoint_comment <issue_number> <branch> <sha> <subject>
@@ -291,14 +268,13 @@ post_commit_checkpoint_comment() {
   fi
 
   local body
-  body="prauto(${PRAUTO_WORKER_ID}): Checkpoint commit ${sha}
+  body="Checkpoint commit ${sha}
 
 [\`${short_sha}\`](${commit_url}) — ${subject}
 Branch: [\`${branch}\`](${branch_url})"
 
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "$body" 2>/dev/null \
-    || warn "Failed to post checkpoint comment for ${short_sha} on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" "$body" \
+    "Failed to post checkpoint comment for ${short_sha} on issue #${issue_number}."
 }
 
 # publish_commit_checkpoints <issue_number> <branch>
@@ -347,7 +323,7 @@ derive_phase_from_github() {
     DERIVED_PHASE="plan-approval"; return 0
   fi
 
-  local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local plan_prefix="$(prauto_comment_prefix)Plan"
   local ready_ts="${READY_LABEL_TIMESTAMP:-}"
   local plan_exists
   plan_exists=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -374,7 +350,7 @@ derive_phase_from_github() {
 # Sets: GITHUB_PLAN_REVISION.
 get_plan_revision_from_github() {
   local issue_number="$1"
-  local prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local prefix="$(prauto_comment_prefix)Plan"
   local ready_ts="${READY_LABEL_TIMESTAMP:-}"
   local plan_count
   plan_count=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -391,7 +367,7 @@ get_plan_revision_from_github() {
 # approval is a non-prauto comment reading exactly "go ahead" after the plan.
 check_plan_approval() {
   local issue_number="$1"
-  local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local plan_prefix="$(prauto_comment_prefix)Plan"
   local ready_ts="${READY_LABEL_TIMESTAMP:-}"
 
   local comments_json

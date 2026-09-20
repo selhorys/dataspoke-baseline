@@ -151,12 +151,12 @@ create_or_update_pr() {
     info "PR #${existing_pr} already exists for ${branch}. Adding update comment."
     local commit_log
     commit_log=$(git log --oneline "origin/${PRAUTO_BASE_BRANCH}..HEAD" 2>/dev/null || printf '(no commits)')
-    gh pr comment "$existing_pr" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): Updated with new commits.
+    prauto_pr_comment "$existing_pr" "Updated with new commits.
 
 \`\`\`
 ${commit_log}
-\`\`\`" 2>/dev/null || warn "Failed to comment on PR #${existing_pr}."
+\`\`\`" \
+      "Failed to comment on PR #${existing_pr}."
     gh pr edit "$existing_pr" -R "$PRAUTO_GITHUB_REPO" \
       --remove-label "$PRAUTO_GITHUB_LABEL_REVIEW" \
       --add-label "$PRAUTO_GITHUB_LABEL_WIP" 2>/dev/null || warn "Failed to set PR #${existing_pr} to prauto:wip."
@@ -416,11 +416,10 @@ ${co_authored_by%$'\n'}"
 post_review_response_comment() {
   local pr_number="$1" response_text="$2"
   [[ -z "$response_text" ]] && return 0
-  gh pr comment "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Review response
+  prauto_pr_comment "$pr_number" "Review response
 
 ${response_text}" \
-    2>/dev/null || warn "Failed to post review response on PR #${pr_number}."
+    "Failed to post review response on PR #${pr_number}."
 }
 
 # get_pr_number_for_branch <branch>  — Sets: BRANCH_PR_NUMBER (empty if none).
@@ -443,8 +442,7 @@ post_test_results_comment() {
   if [[ ${#output} -gt 60000 ]]; then output="${output:0:60000}
 ... (truncated)"; fi
 
-  gh pr comment "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): ${test_type} Test Results — ${status_label}
+  prauto_pr_comment "$pr_number" "${test_type} Test Results — ${status_label}
 
 <details>
 <summary>${test_type} test output</summary>
@@ -454,13 +452,12 @@ ${output}
 \`\`\`
 
 </details>" \
-    2>/dev/null || warn "Failed to post ${test_type} test results on PR #${pr_number}."
+    "Failed to post ${test_type} test results on PR #${pr_number}."
 }
 
 # post_feedback_addressed_comment <pr_number>
 post_feedback_addressed_comment() {
   local pr_number="$1"
-  gh pr comment "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Reviewer feedback addressed." 2>/dev/null \
-    || warn "Failed to post feedback-addressed comment on PR #${pr_number}."
+  prauto_pr_comment "$pr_number" "Reviewer feedback addressed." \
+    "Failed to post feedback-addressed comment on PR #${pr_number}."
 }

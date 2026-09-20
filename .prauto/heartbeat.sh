@@ -19,12 +19,18 @@ source "$PRAUTO_DIR/lib/helpers.sh"
 # ---------------------------------------------------------------------------
 WORKTREE_DIR=""
 CLEANUP_DONE=false
+CLEANUP_IN_PROGRESS=false
 cleanup() {
   # A signal handler calls cleanup explicitly and then disables EXIT before it
   # exits. The guard also makes cleanup safe if an error path invokes it while
   # the EXIT trap is unwinding.
-  [[ "$CLEANUP_DONE" == true ]] && return 0
-  CLEANUP_DONE=true
+  # Re-entrancy guard, not a completion flag: CLEANUP_IN_PROGRESS stops the EXIT
+  # trap re-entering while a signal handler is already unwinding, and
+  # CLEANUP_DONE is set only once the work is finished. Setting the done flag on
+  # entry meant a cleanup interrupted partway could never be retried.
+  [[ "${CLEANUP_DONE:-false}" == true ]] && return 0
+  [[ "${CLEANUP_IN_PROGRESS:-false}" == true ]] && return 0
+  CLEANUP_IN_PROGRESS=true
   # A gated child has not been authorized to exec its real command yet. Closing
   # the parent FIFO descriptor makes that inert wrapper receive EOF and exit;
   # this also closes the tiny signal window before its private PGID is stored.
@@ -44,22 +50,42 @@ cleanup() {
   # timeout handling and install.sh's own EXIT-trap group-kill of helm, so a
   # cooperating install.sh gets the chance to run its own cleanup) before
   # escalating to KILL.
-  if [[ -n "${PROVISION_PGID:-}" && -n "${PROVISION_LEADER_PID:-}" ]]; then
+  if [[ -n "${PROVISION_PGID:-}" ]]; then
     warn "Heartbeat exiting with a provisioning run still active (pgid ${PROVISION_PGID}); stopping it."
-    # PROVISION_PGID is recorded only after provision_dev_env verified a
-    # private process group whose leader is the install shell. Never fall back
-    # to signalling the leader PID: that can leave descendants alive, and an
-    # unverified group could include this heartbeat itself.
+    # Gated on the PGID alone. Requiring the leader PID as well meant any path
+    # that recorded one without the other silently skipped the whole teardown
+    # and left the tree running, with nothing logged.
+    #
+    # PROVISION_PGID is recorded only after a private process group was verified,
+    # so signalling the group is safe. Never fall back to the leader PID: that
+    # leaves descendants alive, and an unverified group could include this
+    # heartbeat itself.
     kill -TERM -"$PROVISION_PGID" 2>/dev/null || true
     sleep 2
-    if managed_process_group_is_live "$PROVISION_PGID"; then
+    if ! declare -F managed_process_group_is_live >/dev/null; then
+      # Sourced from lib/phases.sh; a fatal exit before that leaves cleanup
+      # without it. Escalate unconditionally rather than skipping silently.
       kill -9 -"$PROVISION_PGID" 2>/dev/null || true
+    elif managed_process_group_is_live "$PROVISION_PGID"; then
+      kill -9 -"$PROVISION_PGID" 2>/dev/null || true
+      sleep 1
+      # Say so when the group outlives SIGKILL. Discarding this was how a leader
+      # that ignores signals left an untracked tree behind with a clean log.
+      if managed_process_group_is_live "$PROVISION_PGID"; then
+        warn "Process group ${PROVISION_PGID} survived SIGKILL; it may still be running."
+      fi
     fi
-    wait "$PROVISION_LEADER_PID" 2>/dev/null || true
+    # Bounded: everything else in this harness has a wall-clock backstop, and
+    # this trap runs after those. An unbounded wait on a leader stuck in
+    # uninterruptible sleep would hold the heartbeat lock and worktree forever.
+    if [[ -n "${PROVISION_LEADER_PID:-}" ]]; then
+      wait_for_pid_bounded "$PROVISION_LEADER_PID" 10
+    fi
   elif [[ -n "${CONTAINMENT_GATE_WRAPPER_PID:-}" ]]; then
     # No verified command group exists, so the child is still an inert FIFO
-    # wrapper. The closed parent descriptor above delivers EOF; reap it now.
-    wait "$CONTAINMENT_GATE_WRAPPER_PID" 2>/dev/null || true
+    # wrapper. The closed parent descriptor above delivers EOF; reap it now,
+    # bounded for the same reason as the wait above.
+    wait_for_pid_bounded "$CONTAINMENT_GATE_WRAPPER_PID" 10
     CONTAINMENT_GATE_WRAPPER_PID=""
   fi
   if [[ -n "$WORKTREE_DIR" ]] && [[ -d "$WORKTREE_DIR" ]]; then
@@ -81,8 +107,12 @@ cleanup() {
   # pre-existing healthy cluster — DEV_ENV_PROVISIONED is only ever set inside
   # provision_dev_env, which only runs when this heartbeat itself decided
   # provisioning was needed.
-  teardown_provisioned_dev_env || true
+  if declare -F teardown_provisioned_dev_env >/dev/null; then
+    teardown_provisioned_dev_env || true
+  fi
   release_lock 2>/dev/null || true
+  CLEANUP_DONE=true
+  CLEANUP_IN_PROGRESS=false
 }
 handle_signal() {
   local status="$1"

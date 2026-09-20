@@ -178,9 +178,9 @@ validate_codex_override() {
 # it was, no worker starts, and no retry is burned.
 post_codex_override_invalid_comment() {
   local issue_number="$1"
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Codex model/effort override is invalid or unsupported (PRAUTO_CODEX_MODEL='${PRAUTO_CODEX_MODEL:-}', PRAUTO_CODEX_EFFORT='${PRAUTO_CODEX_EFFORT:-}'). Fix the override in this worker's configuration; the issue is left unchanged and will be retried on a later heartbeat once resolved." \
-    2>/dev/null || warn "Failed to post Codex-override-invalid comment on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" \
+    "Codex model/effort override is invalid or unsupported (PRAUTO_CODEX_MODEL='${PRAUTO_CODEX_MODEL:-}', PRAUTO_CODEX_EFFORT='${PRAUTO_CODEX_EFFORT:-}'). Fix the override in this worker's configuration; the issue is left unchanged and will be retried on a later heartbeat once resolved." \
+    "Failed to post Codex-override-invalid comment on issue #${issue_number}."
 }
 
 # select_agent — probe per PRAUTO_AGENT and set ACTIVE_AGENT.
@@ -308,6 +308,67 @@ $(cat "$stderr_file" 2>/dev/null || printf '')"
   fi
 }
 
+# _agent_run <output_file> <stderr_file> <timeout_secs> <cmd...>
+# Run an agent CLI under the wall-clock backstop and record how long it took.
+# Sets AGENT_ELAPSED_SECS; prints nothing; returns the CLI's exit status.
+#
+# The span is measured here, in the executor. It is the one account of a session
+# the worker cannot author, and it is what distinguishes a session the CLI killed
+# on its background-task wait ceiling from one that failed. Deriving that from the
+# session's own output would key a control decision on text a worker can write.
+#
+# The backstop (PRAUTO_AGENT_TIMEOUT_SECS, default 24h) kills an agent that hangs
+# — on a network wait, or a token-reset wait — rather than wedging the heartbeat.
+# A kill normalizes to exit 124, which classify_exit treats as an ordinary error
+# (retry), never a resume.
+_agent_run() {
+  local output_file="$1" stderr_file="$2" timeout_secs="$3"; shift 3
+  local started_at ended_at code=0
+  started_at=$(date +%s)
+  run_with_timeout "$timeout_secs" "$@" > "$output_file" 2> "$stderr_file" || code=$?
+  ended_at=$(date +%s)
+  AGENT_ELAPSED_SECS=$(( ended_at - started_at ))
+  return "$code"
+}
+
+# _agent_collect_result <output_file> <stderr_file> <exit_code>
+# Split one finished invocation into the three output planes and classify it.
+# Sets AGENT_RESULT, AGENT_STDERR, AGENT_OUTPUT and (via classify_exit)
+# AGENT_STATUS. Shared by invoke_agent and resume_agent, which differ only in
+# how they establish the session id.
+_agent_collect_result() {
+  local output_file="$1" stderr_file="$2" code="$3"
+
+  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
+    AGENT_OUTPUT=$(codex_final_output "$output_file")
+    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+    if [[ -z "$AGENT_OUTPUT" ]] && [[ -s "$stderr_file" ]]; then
+      AGENT_OUTPUT=$(cat "$stderr_file" 2>/dev/null || printf '')
+    fi
+    # Codex's stderr is only a fallback for an empty result, so the two planes
+    # coincide and there is no separate CLI-authored plane to record.
+    AGENT_RESULT="$AGENT_OUTPUT"
+    AGENT_STDERR=""
+    classify_exit "$output_file" "$code" codex
+    return 0
+  fi
+
+  AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
+  # An error subtype (error_max_turns, error_budget, api_error) carries no
+  # .result, so fall back to the raw object.
+  [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
+  # Snapshot the agent's own answer BEFORE the stderr merge below: a stderr line
+  # appended after it would displace a sentinel the contract requires to be last.
+  AGENT_RESULT="$AGENT_OUTPUT"
+  AGENT_STDERR=""
+  if [[ -s "$stderr_file" ]]; then
+    AGENT_STDERR=$(cat "$stderr_file" 2>/dev/null || printf '')
+    [[ -n "$AGENT_OUTPUT" ]] && AGENT_OUTPUT="${AGENT_OUTPUT}
+${AGENT_STDERR}" || AGENT_OUTPUT="$AGENT_STDERR"
+  fi
+  classify_exit "$output_file" "$code" claude "$stderr_file"
+}
+
 # invoke_agent <prompt> <allowed_tools> <max_turns> [budget] [deny_tools] [env_overrides...]
 # Dispatch a fresh session under ACTIVE_AGENT. Claude receives a harness-created
 # id; Codex records only the native `thread.started` id. Sets AGENT_SESSION_ID,
@@ -383,26 +444,7 @@ invoke_agent() {
   # Codex JSONL must remain stdout-only: stderr can contain non-JSON runtime
   # diagnostics, which would otherwise make thread.started unparsable. Retain
   # that raw stderr sidecar for postmortem diagnosis.
-  #
-  # The invocation runs under a wall-clock backstop (PRAUTO_AGENT_TIMEOUT_SECS,
-  # default 24h): a hung/stalled agent (network wait, token-reset wait) is killed
-  # rather than wedging the heartbeat forever. A kill normalizes to exit 124,
-  # which classify_exit treats as an ordinary error (retry), never a resume.
-  local agent_timeout="${PRAUTO_AGENT_TIMEOUT_SECS:-86400}"
-  # Measure the wall-clock span here, in the executor. This is the one account of
-  # how long a session ran that the worker has no way to influence, and it is what
-  # classifies a session the agent CLI killed on its own background-task wait
-  # ceiling. Deriving that from the session's output instead would key a control
-  # decision on text a worker can write.
-  local started_at ended_at
-  started_at=$(date +%s)
-  if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
-    code=0
-  else
-    code=$?
-  fi
-  ended_at=$(date +%s)
-  AGENT_ELAPSED_SECS=$(( ended_at - started_at ))
+  _agent_run "$output_file" "$stderr_file" "${PRAUTO_AGENT_TIMEOUT_SECS:-86400}" "${cmd[@]}" || code=$?
 
   if [[ "$ACTIVE_AGENT" == "codex" ]]; then
     AGENT_SESSION_ID=$(codex_thread_id "$output_file")
@@ -414,39 +456,19 @@ invoke_agent() {
       warn "Could not persist Codex native-session anchor; leaving this attempt non-resumable."
       AGENT_SESSION_ID=""
     fi
-    AGENT_OUTPUT=$(codex_final_output "$output_file")
-    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
-    if [[ -z "$AGENT_OUTPUT" ]] && [[ -s "$stderr_file" ]]; then
-      AGENT_OUTPUT=$(cat "$stderr_file" 2>/dev/null || printf '')
-    fi
-    AGENT_RESULT="$AGENT_OUTPUT"
-    AGENT_STDERR=""
-    classify_exit "$output_file" "$code" codex
-    # No native identity means no safe resume target. Treat an otherwise quota
-    # exit as an ordinary failure so the heartbeat retries/restarts instead of
-    # publishing a misleading resumable pause marker.
-    if [[ -z "$AGENT_SESSION_ID" ]] && [[ "$AGENT_STATUS" != "ok" ]]; then
-      warn "Codex exited before emitting thread.started; leaving this attempt non-resumable."
-      AGENT_STATUS=error
-    fi
   else
     AGENT_SESSION_ID="$session_id"
-    AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
-    # An error subtype (error_max_turns, error_budget, api_error) carries no .result.
-    local subtype; subtype=$(jq -r '.subtype // empty' "$output_file" 2>/dev/null || printf '')
-    if [[ "$subtype" == error_* ]] || [[ -z "$AGENT_OUTPUT" ]]; then
-      [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
-    fi
-    AGENT_RESULT="$AGENT_OUTPUT"
-    AGENT_STDERR=""
-    if [[ -s "$stderr_file" ]]; then
-      local claude_stderr
-      claude_stderr=$(cat "$stderr_file" 2>/dev/null || printf '')
-      AGENT_STDERR="$claude_stderr"
-      [[ -n "$AGENT_OUTPUT" ]] && AGENT_OUTPUT="${AGENT_OUTPUT}
-${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
-    fi
-    classify_exit "$output_file" "$code" claude "$stderr_file"
+  fi
+
+  _agent_collect_result "$output_file" "$stderr_file" "$code"
+
+  # No native identity means no safe resume target. Treat an otherwise quota
+  # exit as an ordinary failure so the heartbeat retries/restarts instead of
+  # publishing a misleading resumable pause marker.
+  if [[ "$ACTIVE_AGENT" == "codex" ]] && [[ -z "$AGENT_SESSION_ID" ]] \
+      && [[ "$AGENT_STATUS" != "ok" ]]; then
+    warn "Codex exited before emitting thread.started; leaving this attempt non-resumable."
+    AGENT_STATUS=error
   fi
 }
 
@@ -505,47 +527,10 @@ resume_agent() {
   fi
 
   info "Resuming ${ACTIVE_AGENT} session ${session_id}..."
-  # Same wall-clock backstop as the fresh invocation (see invoke_agent): a resume
-  # that hangs waiting for token reset must not wedge the heartbeat.
-  local agent_timeout="${PRAUTO_AGENT_TIMEOUT_SECS:-86400}"
-  # Measure the wall-clock span here, in the executor. This is the one account of
-  # how long a session ran that the worker has no way to influence, and it is what
-  # classifies a session the agent CLI killed on its own background-task wait
-  # ceiling. Deriving that from the session's output instead would key a control
-  # decision on text a worker can write.
-  local started_at ended_at
-  started_at=$(date +%s)
-  if run_with_timeout "$agent_timeout" "${cmd[@]}" > "$output_file" 2> "$stderr_file"; then
-    code=0
-  else
-    code=$?
-  fi
-  ended_at=$(date +%s)
-  AGENT_ELAPSED_SECS=$(( ended_at - started_at ))
-
-  if [[ "$ACTIVE_AGENT" == "codex" ]]; then
-    AGENT_OUTPUT=$(codex_final_output "$output_file")
-    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
-    if [[ -z "$AGENT_OUTPUT" ]] && [[ -s "$stderr_file" ]]; then
-      AGENT_OUTPUT=$(cat "$stderr_file" 2>/dev/null || printf '')
-    fi
-    AGENT_RESULT="$AGENT_OUTPUT"
-    AGENT_STDERR=""
-    classify_exit "$output_file" "$code" codex
-  else
-    AGENT_OUTPUT=$(jq -r '.result // empty' "$output_file" 2>/dev/null || printf '')
-    [[ -z "$AGENT_OUTPUT" ]] && AGENT_OUTPUT=$(cat "$output_file" 2>/dev/null || printf '')
-    AGENT_RESULT="$AGENT_OUTPUT"
-    AGENT_STDERR=""
-    if [[ -s "$stderr_file" ]]; then
-      local claude_stderr
-      claude_stderr=$(cat "$stderr_file" 2>/dev/null || printf '')
-      AGENT_STDERR="$claude_stderr"
-      [[ -n "$AGENT_OUTPUT" ]] && AGENT_OUTPUT="${AGENT_OUTPUT}
-${claude_stderr}" || AGENT_OUTPUT="$claude_stderr"
-    fi
-    classify_exit "$output_file" "$code" claude "$stderr_file"
-  fi
+  # Same wall-clock backstop and output-plane split as the fresh invocation; a
+  # resume differs only in that its session id is already known.
+  _agent_run "$output_file" "$stderr_file" "${PRAUTO_AGENT_TIMEOUT_SECS:-86400}" "${cmd[@]}" || code=$?
+  _agent_collect_result "$output_file" "$stderr_file" "$code"
 }
 
 # render_prompt <template_file> <var1=val1> [var2=val2 ...]
@@ -725,7 +710,7 @@ capture_evaluator_authority() {
 # run_implementation <issue_number> <branch> <analysis_output>
 # Implementation phase: drive wf-minimal via the Workflow tool. Fresh session each
 # time; the workflow restarts rather than resumes, so only committed work is
-# continuity. Sets IMPL_SESSION_ID, IMPL_RESULT (the agent's answer, which carries
+# continuity. Sets IMPL_RESULT (the agent's answer, which carries
 # the outcome sentinel), IMPL_STDERR (the CLI's stderr, for diagnosis only),
 # IMPL_ELAPSED_SECS (measured by this executor) and IMPL_OUTPUT (for reporting).
 run_implementation() {
@@ -763,7 +748,6 @@ run_implementation() {
     AGENT_STDERR=""
     AGENT_OUTPUT="$AGENT_RESULT"
     AGENT_ELAPSED_SECS=0
-    IMPL_SESSION_ID=""
     IMPL_RESULT="$AGENT_RESULT"
     IMPL_STDERR=""
     IMPL_ELAPSED_SECS=0
@@ -786,7 +770,6 @@ run_implementation() {
 
   invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" \
     "${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}" "$DENY_TOOLS" "${IMPLEMENTATION_CLAUDE_ENV[@]}"
-  IMPL_SESSION_ID="$AGENT_SESSION_ID"
   IMPL_RESULT="$AGENT_RESULT"
   IMPL_STDERR="$AGENT_STDERR"
   IMPL_ELAPSED_SECS="$AGENT_ELAPSED_SECS"

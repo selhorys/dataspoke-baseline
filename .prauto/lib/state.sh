@@ -180,11 +180,11 @@ abandon_job_github() {
     --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" 2>/dev/null || true
 
   if ! comment_exists "issue" "$issue_number" "Abandoning"; then
-    local body="prauto(${PRAUTO_WORKER_ID}): Abandoning after ${retry_count} retries. Manual intervention needed."
+    local body="Abandoning after ${retry_count} retries. Manual intervention needed."
     [[ -n "$reason" ]] && body="${body}
 ${reason}"
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" --body "$body" 2>/dev/null \
-      || warn "Failed to post abandonment comment on issue #${issue_number}"
+    prauto_issue_comment "$issue_number" "$body" \
+      "Failed to post abandonment comment on issue #${issue_number}"
   fi
 }
 

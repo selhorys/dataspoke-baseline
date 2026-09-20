@@ -197,7 +197,7 @@ check_quota() {
 # costing parse robustness across email digests and mobile clients.
 pause_marker_body() {
   local agent="$1" session_id="${2:-}"
-  local body="prauto(${PRAUTO_WORKER_ID}): Paused — ${agent} quota exhausted. Will resume automatically on the next quota window.
+  local body="Paused — ${agent} quota exhausted. Will resume automatically on the next quota window.
 
 To abandon this session and restart from scratch instead of resuming, comment \"abandon previous session\".
 
@@ -295,9 +295,8 @@ post_quota_paused_comment() {
     info "Quota-pause marker already present on issue #${issue_number}. Skipping."
     return 0
   fi
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "$(pause_marker_body "$agent" "$session_id")" 2>/dev/null \
-    || warn "Failed to post quota-pause comment on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" "$(pause_marker_body "$agent" "$session_id")" \
+    "Failed to post quota-pause comment on issue #${issue_number}."
   info "Quota-pause marker posted on issue #${issue_number} (agent=${agent}, session=${session_id:-none})."
 }
 
@@ -305,9 +304,9 @@ post_quota_paused_comment() {
 # No idempotency guard — gated externally by has_quota_paused_comment.
 post_quota_resumed_comment() {
   local issue_number="$1"
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Resumed — ${PAUSED_AGENT:-agent} quota is now available. Continuing work." 2>/dev/null \
-    || warn "Failed to post quota-resumed comment on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" \
+    "Resumed — ${PAUSED_AGENT:-agent} quota is now available. Continuing work." \
+    "Failed to post quota-resumed comment on issue #${issue_number}."
   info "Quota-resumed comment posted on issue #${issue_number}."
 }
 
@@ -317,9 +316,9 @@ post_quota_resumed_comment() {
 # paused agent's quota has not reset).
 post_restart_comment() {
   local issue_number="$1" agent="$2"
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Restarting — previous session abandoned per instruction. Fresh ${agent} session." 2>/dev/null \
-    || warn "Failed to post restart comment on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" \
+    "Restarting — previous session abandoned per instruction. Fresh ${agent} session." \
+    "Failed to post restart comment on issue #${issue_number}."
   info "Restart marker posted on issue #${issue_number} (agent=${agent})."
 }
 
@@ -329,9 +328,9 @@ post_restart_comment() {
 # retry path starts a fresh agent instead of ever resuming the supplied id.
 post_untrusted_resume_restart_comment() {
   local issue_number="$1" agent="$2"
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Restarting — the previous Codex pause marker did not match a trusted local native-session anchor. Fresh ${agent} session." 2>/dev/null \
-    || warn "Failed to post untrusted-resume restart marker on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" \
+    "Restarting — the previous Codex pause marker did not match a trusted local native-session anchor. Fresh ${agent} session." \
+    "Failed to post untrusted-resume restart marker on issue #${issue_number}."
   info "Untrusted Codex resume marker bypassed on issue #${issue_number}."
 }
 
@@ -340,8 +339,8 @@ post_untrusted_resume_restart_comment() {
 # next heartbeat would retry the same failed resume without advancing retries.
 post_resume_failure_restart_comment() {
   local issue_number="$1" agent="$2"
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Restarting — the previous ${agent} resume failed without a recognized quota signal. Fresh ${agent} session on the next retry." 2>/dev/null \
-    || warn "Failed to post resume-failure restart marker on issue #${issue_number}."
+  prauto_issue_comment "$issue_number" \
+    "Restarting — the previous ${agent} resume failed without a recognized quota signal. Fresh ${agent} session on the next retry." \
+    "Failed to post resume-failure restart marker on issue #${issue_number}."
   info "Resume failure converted to ordinary retry on issue #${issue_number}."
 }

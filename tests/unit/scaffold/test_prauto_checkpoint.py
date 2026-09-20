@@ -180,3 +180,54 @@ def test_new_branch_link_is_requested_via_graphql(tmp_path: Path) -> None:
     assert "graphql" in calls_text
     assert "createLinkedBranch" in calls_text
     assert "input[name]=prauto/I-176" in calls_text
+
+
+def test_every_issue_comment_goes_through_the_shared_helper() -> None:
+    """One definition of the marker prefix, because two readers parse it.
+
+    spec: spec/AI_PRAUTO.md §Comment idempotency — comment_exists and the
+    quota-marker readers both match on "prauto(<worker>): ". A call site that
+    builds that prefix itself can drift from what those readers expect, and the
+    failure is silent: the guard stops matching, so prauto posts duplicates
+    instead of recognising its own earlier comment.
+    """
+    lib = Path(__file__).parents[3] / ".prauto/lib"
+    offenders = []
+    for path in sorted(lib.glob("*.sh")):
+        if path.name == "helpers.sh":
+            continue  # defines the helpers
+        lines = path.read_text().splitlines()
+        for n, line in enumerate(lines, 1):
+            if "gh issue comment" not in line and "gh pr comment" not in line:
+                continue
+            # A file-backed body is a different mechanism, used where the text
+            # can exceed argv limits. It still builds its prefix from
+            # prauto_comment_prefix, which the sibling test checks.
+            invocation = "\n".join(lines[n - 1 : n + 2])
+            if "--body-file" in invocation:
+                continue
+            offenders.append(f"{path.name}:{n}")
+
+    assert not offenders, (
+        "these post comments directly instead of via prauto_issue_comment / "
+        f"prauto_pr_comment, so their prefix can drift: {offenders}"
+    )
+
+
+def test_the_comment_prefix_has_exactly_one_definition() -> None:
+    """The posting side and the reading side must agree by construction.
+
+    spec: spec/AI_PRAUTO.md §Comment idempotency — the prefix is the parse key.
+    """
+    lib = Path(__file__).parents[3] / ".prauto/lib"
+    literal = 'prauto(${PRAUTO_WORKER_ID}): '
+    writers = [
+        f"{p.name}:{n}"
+        for p in sorted(lib.glob("*.sh"))
+        for n, line in enumerate(p.read_text().splitlines(), 1)
+        if literal in line and "printf" not in line
+    ]
+
+    assert not writers, (
+        f"the comment prefix is re-typed outside prauto_comment_prefix: {writers}"
+    )

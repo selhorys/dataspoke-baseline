@@ -94,9 +94,8 @@ regression_set_wip() {
 regression_blocked() {
   local issue_number="$1" reason="$2" branch="${3:-}"
   regression_set_wip "$issue_number" "$branch" || return 1
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Regression blocked by infrastructure/setup: ${reason}. The PR remains in prauto:wip and will retry on a later heartbeat." \
-    2>/dev/null || true
+  prauto_issue_comment "$issue_number" \
+    "Regression blocked by infrastructure/setup: ${reason}. The PR remains in prauto:wip and will retry on a later heartbeat."
 }
 
 regression_ready() {
@@ -135,16 +134,16 @@ finalize_issue_pr() {
   publish_commit_checkpoints "$issue_number" "$branch" || true
   create_or_update_pr "$issue_number" "$issue_title" "$branch"
   if ! regression_set_wip "$issue_number" "$branch"; then
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): Regression blocked: GitHub label/API state could not be established. Retrying on a later heartbeat." 2>/dev/null || true
+    prauto_issue_comment "$issue_number" \
+      "Regression blocked: GitHub label/API state could not be established. Retrying on a later heartbeat."
     return 0
   fi
   if run_post_pr_regression "$issue_number" "$branch"; then
     if regression_ready "$issue_number" "$branch"; then
       complete_job "$issue_number"
     else
-      gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-        --body "prauto(${PRAUTO_WORKER_ID}): Regression passed but GitHub readiness labels could not be updated; retrying on a later heartbeat." 2>/dev/null || true
+      prauto_issue_comment "$issue_number" \
+        "Regression passed but GitHub readiness labels could not be updated; retrying on a later heartbeat."
     fi
   fi
 }
@@ -256,6 +255,91 @@ wait_with_group_backstop() {
   return "$rc"
 }
 
+# run_gated_group <label> <timeout_secs> <body_fn> [on_ready_fn]
+# Run <body_fn> as a contained, terminable process group, and wait for it.
+#
+# The problem this solves: a long external command (install.sh, health-check.sh)
+# spawns a tree of its own. If the heartbeat is signalled mid-run, it must be able
+# to terminate that whole tree rather than orphan it — which means knowing the
+# tree's process-group id BEFORE anything in it starts doing work.
+#
+# So the group is started inert. The wrapper blocks reading a FIFO and cannot
+# reach <body_fn> until this parent has verified it owns a private process group
+# and writes "start". If verification fails, the parent closes the FIFO instead:
+# the wrapper reads EOF and exits having touched nothing. The FIFO is opened
+# O_RDWR so the open does not block on a reader, and so heartbeat cleanup can
+# close the only writer during the signal window and free a waiting wrapper.
+#
+# <on_ready_fn>, when given, runs after the group is verified and published but
+# before the body is authorized — the one window where a caller can record
+# durable evidence that the work is about to start. Returning non-zero from it
+# aborts without running the body.
+#
+# Sets GATED_GROUP_EXIT to the body's exit status (124 if the backstop killed it).
+# Returns: 0 ran to completion · 1 the gate could not be built · 2 the group could
+# not be verified · 3 <on_ready_fn> declined. A caller maps those to its own
+# contract; 1, 2 and 3 all mean the body never ran.
+run_gated_group() {
+  local label="$1" timeout_secs="$2" body_fn="$3" on_ready_fn="${4:-}"
+  local gate_dir gate_fifo pid pgid rc=0
+  GATED_GROUP_EXIT=0
+
+  gate_dir=$(mktemp -d "${TMPDIR:-/tmp}/prauto-${label}-gate.XXXXXX") || return 1
+  gate_fifo="${gate_dir}/start"
+  if ! mkfifo "$gate_fifo"; then
+    rmdir "$gate_dir" 2>/dev/null || true
+    return 1
+  fi
+
+  exec 9<>"$gate_fifo"
+  CONTAINMENT_GATE_FD_OPEN=true
+  set -m
+  ( exec 9>&-; IFS= read -r permit < "$gate_fifo"; [[ "$permit" == start ]] || exit 0; "$body_fn" ) &
+  pid=$!
+  CONTAINMENT_GATE_WRAPPER_PID="$pid"
+  set +m
+
+  # Abandon the inert wrapper: close the FIFO, let it read EOF, reap it.
+  _abandon_gated_group() {
+    exec 9>&-
+    CONTAINMENT_GATE_FD_OPEN=false
+    wait "$pid" 2>/dev/null || true
+    CONTAINMENT_GATE_WRAPPER_PID=""
+    rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+  }
+
+  if ! pgid=$(private_process_group_for_leader "$pid"); then
+    _abandon_gated_group
+    return 2
+  fi
+
+  # Publish the verified group before authorizing the body, so a signal arriving
+  # immediately after still group-terminates the work.
+  PROVISION_PGID="$pgid"
+  PROVISION_LEADER_PID="$pid"
+
+  if [[ -n "$on_ready_fn" ]] && ! "$on_ready_fn"; then
+    PROVISION_PGID=""
+    PROVISION_LEADER_PID=""
+    _abandon_gated_group
+    return 3
+  fi
+
+  printf 'start\n' >&9
+  exec 9>&-
+  CONTAINMENT_GATE_FD_OPEN=false
+  CONTAINMENT_GATE_WRAPPER_PID=""
+  rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+
+  wait_with_group_backstop "$timeout_secs" "$pid" "$pgid" || rc=$?
+  # Heartbeat cleanup owns the containment globals while this call is blocked;
+  # only clear them once the wait has returned.
+  PROVISION_PGID=""
+  PROVISION_LEADER_PID=""
+  GATED_GROUP_EXIT="$rc"
+  return 0
+}
+
 # prune_old_provision_logs <log_dir>
 # Provisioning logs are unscrubbed local transcripts of a real install.sh run
 # (see spec/AI_PRAUTO.md §Provisioning) — never posted anywhere, but not kept
@@ -330,34 +414,16 @@ provision_dev_env() {
   fi
 
   info "Provisioning the dev cluster (install.sh --profile dev)..."
-  local pid pgid rc=0 gate_dir gate_fifo
-  # Start an inert gated wrapper, not install.sh itself. It cannot exec the
-  # provisioning command until this parent has verified the wrapper's private
-  # process group and writes "start" to its FIFO. If verification fails, close
-  # the FIFO instead: the wrapper reads EOF and exits without cluster work.
-  gate_dir=$(mktemp -d "${TMPDIR:-/tmp}/prauto-provision-gate.XXXXXX") || {
-    warn "Could not create the provisioning containment gate. Cannot provision."
-    return 1
-  }
-  gate_fifo="${gate_dir}/start"
-  if ! mkfifo "$gate_fifo"; then
-    rmdir "$gate_dir" 2>/dev/null || true
-    warn "Could not create the provisioning containment gate. Cannot provision."
-    return 1
-  fi
-  # O_RDWR makes the FIFO open non-blocking before the wrapper starts. It also
-  # lets heartbeat cleanup close the only writer in the signal window, causing
-  # the inert wrapper to receive EOF rather than wait indefinitely.
-  exec 9<>"$gate_fifo"
-  CONTAINMENT_GATE_FD_OPEN=true
-  set -m
+
   # Keep the transcript private and bounded while preserving both the opening
   # diagnostics and the final failure context. The byte-stream filter reads
   # fixed-size chunks, retains at most 12 KiB for short output and 6 KiB from
   # each end for larger output, and never buffers an entire line. pipefail is
   # required so the installer's exit status, rather than the filter's,
   # controls this job.
-  ( exec 9>&-; IFS= read -r permit < "$gate_fifo"; [[ "$permit" == start ]] || exit 0; set -o pipefail; LC_ALL=C bash "$install_script" --profile dev --env-file "$env_file" </dev/null 2>&1 | python3 -c '
+  _provision_body() {
+    set -o pipefail
+    LC_ALL=C bash "$install_script" --profile dev --env-file "$env_file" </dev/null 2>&1 | python3 -c '
 import sys
 
 LIMIT = 12000
@@ -394,76 +460,52 @@ if total > LIMIT:
     sys.stdout.buffer.write(suffix)
     sys.stdout.buffer.truncate()
     sys.stdout.buffer.flush()
-' >"$prov_log" 2>&1 ) &
-  pid=$!
-  CONTAINMENT_GATE_WRAPPER_PID="$pid"
-  set +m
-  if ! pgid=$(private_process_group_for_leader "$pid"); then
-    exec 9>&-
-    CONTAINMENT_GATE_FD_OPEN=false
-    wait "$pid" 2>/dev/null || true
-    CONTAINMENT_GATE_WRAPPER_PID=""
-    rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
-    warn "Could not verify a private provisioning process group. Provisioning was not started."
-    return 1
-  fi
-  PROVISION_PGID="$pgid"
-  PROVISION_LEADER_PID="$pid"
+' >"$prov_log" 2>&1
+  }
 
-  # Write the durable marker (and set the in-memory globals) BEFORE authorizing
-  # the exec rather than after a successful exit. A cluster install.sh has only
-  # partially built is exactly the case this exists for: if this heartbeat is
-  # killed mid-install, both its own EXIT trap and a later heartbeat's
-  # recover_orphaned_dev_env must still find evidence to tear it down. This
-  # function only ever runs when the caller (dev_env_healthy) has already decided
-  # provisioning is needed, so it never marks — and therefore never tears down —
-  # a pre-existing healthy cluster prauto did not start provisioning.
+  # Runs after the process group is verified and published, but before the
+  # installer is authorized — the only window where durable evidence that a
+  # cluster is about to exist can be recorded.
   #
-  # It sits after the gate rather than before it because every return above this
-  # point leaves the wrapper inert: install.sh has not run and there is no cluster
-  # to tear down. Marking earlier made those returns claim a provisioned cluster,
-  # and the next wake's recover_orphaned_dev_env would run uninstall.sh against a
-  # cluster this worker never touched.
-  DEV_ENV_PROVISIONED=true
-  DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
-  # Fail closed if the marker cannot be persisted. Without it, a crash that skips
-  # this wake's EXIT trap leaves a provisioned cluster no later wake can discover
-  # or tear down — a cluster that then bills indefinitely. Not provisioning is
-  # strictly safer. Closing fd 9 makes the still-inert wrapper read EOF and exit
-  # without touching the cluster.
-  if ! write_dev_env_state_marker "$env_file"; then
+  # The marker goes down BEFORE install.sh runs rather than after it succeeds: a
+  # cluster install.sh has only partially built is exactly the case it exists for.
+  # If this heartbeat is killed mid-install, both its own EXIT trap and a later
+  # heartbeat's recover_orphaned_dev_env must still find evidence to tear it down.
+  # provision_dev_env only runs when dev_env_healthy has already decided
+  # provisioning is needed, so it never marks — and never tears down — a
+  # pre-existing healthy cluster prauto did not start.
+  #
+  # It fails closed. Without a persisted marker, a crash that skips this wake's
+  # EXIT trap leaves a cluster no later wake can discover, billing indefinitely.
+  # Declining here leaves the wrapper inert and the cluster untouched.
+  _provision_mark_started() {
+    DEV_ENV_PROVISIONED=true
+    DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
+    if write_dev_env_state_marker "$env_file"; then
+      return 0
+    fi
     DEV_ENV_PROVISIONED=false
     DEV_ENV_PROVISIONED_ENV_FILE=""
-    PROVISION_PGID=""
-    PROVISION_LEADER_PID=""
-    exec 9>&-
-    CONTAINMENT_GATE_FD_OPEN=false
-    wait "$pid" 2>/dev/null || true
-    CONTAINMENT_GATE_WRAPPER_PID=""
-    rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
-    warn "Could not persist the dev-env provisioning marker. Provisioning was not started."
     return 1
-  fi
+  }
 
-  # Store the verified group before authorizing the exec, so a signal that
-  # arrives immediately after this write still group-terminates the command.
-  printf 'start\n' >&9
-  exec 9>&-
-  CONTAINMENT_GATE_FD_OPEN=false
-  CONTAINMENT_GATE_WRAPPER_PID=""
-  rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
+  run_gated_group provision "$timeout" _provision_body _provision_mark_started
+  case $? in
+    0) : ;;
+    3) warn "Could not persist the dev-env provisioning marker. Provisioning was not started."
+       return 1 ;;
+    2) warn "Could not verify a private provisioning process group. Provisioning was not started."
+       return 1 ;;
+    *) warn "Could not create the provisioning containment gate. Cannot provision."
+       return 1 ;;
+  esac
 
-  rc=0
-  wait_with_group_backstop "$timeout" "$pid" "$pgid" || rc=$?
-  PROVISION_PGID=""
-  PROVISION_LEADER_PID=""
-
-  if [[ "$rc" -eq 124 ]]; then
+  if [[ "$GATED_GROUP_EXIT" -eq 124 ]]; then
     warn "Cluster provisioning timed out after ${timeout}s. The private provisioning log was retained locally."
     return 1
   fi
-  if [[ "$rc" -ne 0 ]]; then
-    warn "Cluster provisioning failed (exit ${rc}). The private provisioning log was retained locally."
+  if [[ "$GATED_GROUP_EXIT" -ne 0 ]]; then
+    warn "Cluster provisioning failed (exit ${GATED_GROUP_EXIT}). The private provisioning log was retained locally."
     return 1
   fi
   # install.sh rewrites the env file in place (e.g. a fresh LB IP for
@@ -474,6 +516,7 @@ if total > LIMIT:
   fi
   info "Cluster provisioning completed."
   return 0
+
 }
 
 # write_dev_env_state_marker <env_file>
@@ -558,70 +601,36 @@ HEALTH_CHECK_OUTPUT=""
 run_health_check() {
   local script="$1" env_file="$2"
   local timeout="${PRAUTO_HEALTH_CHECK_TIMEOUT_SECS:-300}"
-  local tmpdir out pid rc=0
+  local tmpdir out rc
 
   HEALTH_CHECK_OUTPUT=""
   tmpdir="$(mktemp -d)" || { HEALTH_CHECK_OUTPUT="Could not create a temp dir."; return 2; }
   out="${tmpdir}/output"
 
-  local gate_dir gate_fifo pgid
-  gate_dir=$(mktemp -d "${TMPDIR:-/tmp}/prauto-health-gate.XXXXXX") || {
-    HEALTH_CHECK_OUTPUT="Could not create a health-check containment gate."
-    rm -rf "$tmpdir"
-    return 2
+  # TMPDIR is redirected into this run's own directory so the health check's
+  # scratch files cannot collide with another run's.
+  _health_check_body() {
+    exec env TMPDIR="$tmpdir" bash "$script" --env-file "$env_file" --keep-lock \
+      </dev/null >"$out" 2>&1
   }
-  gate_fifo="${gate_dir}/start"
-  if ! mkfifo "$gate_fifo"; then
-    rmdir "$gate_dir" 2>/dev/null || true
-    HEALTH_CHECK_OUTPUT="Could not create a health-check containment gate."
+
+  run_gated_group health "$timeout" _health_check_body
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    HEALTH_CHECK_OUTPUT="Could not start a contained health check."
     rm -rf "$tmpdir"
     return 2
   fi
-  exec 9<>"$gate_fifo"
-  CONTAINMENT_GATE_FD_OPEN=true
-  set -m
-  ( exec 9>&-; IFS= read -r permit < "$gate_fifo"; [[ "$permit" == start ]] || exit 0; exec env TMPDIR="$tmpdir" bash "$script" --env-file "$env_file" --keep-lock </dev/null >"$out" 2>&1 ) &
-  pid=$!
-  CONTAINMENT_GATE_WRAPPER_PID="$pid"
-  set +m
-  rc=0
-  pgid=$(private_process_group_for_leader "$pid") || {
-    HEALTH_CHECK_OUTPUT="Could not verify a private health-check process group."
-    exec 9>&-
-    CONTAINMENT_GATE_FD_OPEN=false
-    wait "$pid" 2>/dev/null || true
-    CONTAINMENT_GATE_WRAPPER_PID=""
-    rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
-    rm -rf "$tmpdir"
-    return 2
-  }
-  # Publish the verified group before authorizing the health-check command. If
-  # the heartbeat is signalled while the command is running, its EXIT trap can
-  # now terminate and reap this whole private group rather than waiting on a
-  # wedged leader or leaving descendants behind.
-  PROVISION_PGID="$pgid"
-  PROVISION_LEADER_PID="$pid"
-  printf 'start\n' >&9
-  exec 9>&-
-  CONTAINMENT_GATE_FD_OPEN=false
-  CONTAINMENT_GATE_WRAPPER_PID=""
-  rm -f "$gate_fifo"; rmdir "$gate_dir" 2>/dev/null || true
-  wait_with_group_backstop "$timeout" "$pid" "$pgid" || rc=$?
-  # Do not clear the shared containment state until the group wait/backstop has
-  # completed; heartbeat cleanup owns it while this function is blocked.
-  if [[ "$rc" -eq 124 ]]; then
-    HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)
+
+  HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)"
+  if [[ "$GATED_GROUP_EXIT" -eq 124 ]]; then
+    HEALTH_CHECK_OUTPUT="${HEALTH_CHECK_OUTPUT}
 [health-check did not finish within ${timeout}s and was stopped]"
-    PROVISION_PGID=""
-    PROVISION_LEADER_PID=""
     rm -rf "$tmpdir"
     return 1
   fi
-  HEALTH_CHECK_OUTPUT="$(cat "$out" 2>/dev/null || true)"
-  PROVISION_PGID=""
-  PROVISION_LEADER_PID=""
   rm -rf "$tmpdir"
-  return "$rc"
+  return "$GATED_GROUP_EXIT"
 }
 
 # dev_env_healthy <env_file>
@@ -706,45 +715,6 @@ $(tail_chars "$INTEG_SPOT_OUTPUT" 14000)"
 === Integration (api-wired) — exit ${INTEG_API_WIRED_EXIT} ===
 $(tail_chars "$INTEG_API_WIRED_OUTPUT" 14000)"
   fi
-}
-
-# run_integration_tests_with_protocol <pr_number>
-run_integration_tests_with_protocol() {
-  local pr_number="$1"
-  local lock_owner="prauto-${PRAUTO_WORKER_ID}"
-
-  if ! resolve_dev_env; then
-    info "Dev-env file not found. Skipping integration tests."
-    return 0
-  fi
-  if ! dev_env_healthy "$DEV_ENV_FILE"; then info "Dev-env unhealthy. Skipping integration tests."; return 0; fi
-  local lock_url="$DEV_LOCK_URL"
-  if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
-    warn "Dev-env lock endpoint not reachable (${lock_url}/status). Skipping integration tests."
-    return 0
-  fi
-
-  local lock_code
-  lock_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${lock_url}/acquire" \
-    -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${lock_owner}\", \"message\": \"prauto integration tests for PR #${pr_number}\"}")
-  if [[ "$lock_code" != "200" ]]; then
-    info "Could not acquire dev-env lock (HTTP ${lock_code}). Skipping integration tests."
-    return 0
-  fi
-  # Register the lock with the shared owner global so release_required_dev_lock —
-  # including the heartbeat EXIT trap's call — can release it if this loop dies.
-  REQUIRED_LOCK_OWNER="$lock_owner"
-  info "Dev-env lock acquired for integration tests."
-
-  run_integration_groups "$DEV_ENV_FILE"
-
-  release_required_dev_lock
-  info "Dev-env lock released."
-
-  post_test_results_comment "$pr_number" "Integration (spot)" "$INTEG_SPOT_EXIT" "$INTEG_SPOT_OUTPUT"
-  post_test_results_comment "$pr_number" "Integration (api-wired)" "$INTEG_API_WIRED_EXIT" "$INTEG_API_WIRED_OUTPUT"
-  info "Integration test results posted on PR #${pr_number}."
 }
 
 # Flake signatures. Every grep reads a here-string rather than a pipe: under
@@ -1324,7 +1294,7 @@ post_post_pr_regression_comment() {
     return 1
   fi
   chmod 700 "$body_dir" 2>/dev/null || true
-  if ! printf 'prauto(%s): %s' "$PRAUTO_WORKER_ID" "$body" > "${body_dir}/body.md"; then
+  if ! printf '%s%s' "$(prauto_comment_prefix)" "$body" > "${body_dir}/body.md"; then
     rm -rf "$body_dir"
     warn "Could not write the regression status body for PR #${BRANCH_PR_NUMBER}."
     return 1
@@ -1777,7 +1747,7 @@ run_pre_pr_selected_verification() {
 # APPROVED_PLAN_TEXT.
 fetch_approved_plan() {
   local issue_number="$1"
-  local plan_prefix="prauto(${PRAUTO_WORKER_ID}): Plan"
+  local plan_prefix="$(prauto_comment_prefix)Plan"
   local ready_ts="${READY_LABEL_TIMESTAMP:-}"
 
   APPROVED_PLAN_TEXT=$(gh issue view "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
@@ -1874,10 +1844,10 @@ run_integration_test_fix() {
     # (fixed-string, numbers-only) note into this same comment instead of
     # posting a second one — see the flake-classification block below, which
     # only sets is_flake_rerun and logs locally.
-    local attempt_comment="prauto(${PRAUTO_WORKER_ID}): Heartbeat — integration test fix loop: attempt ${attempt}/${max_retries}"
+    local attempt_comment="Heartbeat — integration test fix loop: attempt ${attempt}/${max_retries}"
     [[ "$is_flake_rerun" == true ]] && attempt_comment="${attempt_comment}, flake rerun ${flake_reruns}/${max_flake_reruns}"
     is_flake_rerun=false
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" --body "$attempt_comment" 2>/dev/null || true
+    prauto_issue_comment "$issue_number" "$attempt_comment"
 
     info "Integration test fix loop: attempt ${attempt}/${max_retries}"
     local tested_head
@@ -2084,8 +2054,7 @@ report_e2e_results() {
   fi
   local status_label="Passed"
   [[ "$exit_code" -ne 0 ]] && status_label="Failed (exit code ${exit_code})"
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — E2E test results: ${status_label}" 2>/dev/null || true
+  prauto_issue_comment "$issue_number" "Heartbeat — E2E test results: ${status_label}"
 }
 
 # run_e2e_test_fix <issue_number> <branch>
@@ -2126,11 +2095,11 @@ run_e2e_test_fix() {
   local attempt=1 e2e_output e2e_exit=0 deployed=false quota_paused=false
   local flake_reruns=0 is_flake_rerun=false
   while [[ "$attempt" -le "$max_retries" ]]; do
-    local attempt_comment="prauto(${PRAUTO_WORKER_ID}): Heartbeat — E2E stage: attempt ${attempt}/${max_retries}"
+    local attempt_comment="Heartbeat — E2E stage: attempt ${attempt}/${max_retries}"
     [[ "$is_flake_rerun" == true ]] && attempt_comment="${attempt_comment}, flake rerun ${flake_reruns}/${max_flake_reruns}"
     is_flake_rerun=false
     info "E2E stage: attempt ${attempt}/${max_retries}"
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" --body "$attempt_comment" 2>/dev/null || true
+    prauto_issue_comment "$issue_number" "$attempt_comment"
 
     if ! deploy_branch_frontend "$DEV_ENV_FILE"; then warn "Skipping E2E — frontend deploy failed."; break; fi
     if ! pnpm -C tests/e2e install --frozen-lockfile >/dev/null 2>&1; then warn "Skipping E2E — pnpm install failed."; break; fi
@@ -2272,11 +2241,11 @@ abandon_workflow_escalation() {
   details=$(scrub_secrets "$details")
   details=$(tail_chars "$details" 12000)
 
-  gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-    --body "prauto(${PRAUTO_WORKER_ID}): Abandoning — implementation workflow escalated. Either a per-stage reviewer's findings persisted after a fix pass, or the worker could not run the required workflow loop (for example the Workflow tool was absent from its session's tool list). The report below says which. Manual intervention needed.
+  prauto_issue_comment "$issue_number" \
+    "Abandoning — implementation workflow escalated. Either a per-stage reviewer's findings persisted after a fix pass, or the worker could not run the required workflow loop (for example the Workflow tool was absent from its session's tool list). The report below says which. Manual intervention needed.
 
 ${details}" \
-    2>/dev/null || warn "Failed to post workflow-escalation comment on issue #${issue_number}."
+    "Failed to post workflow-escalation comment on issue #${issue_number}."
   info "Job for issue #${issue_number} abandoned (workflow escalation)."
 }
 
@@ -2307,7 +2276,6 @@ implement_and_finalize() {
       "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" \
       "$PAUSED_SESSION_ID" "${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}" "$DENY_TOOLS" \
       "${IMPLEMENTATION_CLAUDE_ENV[@]}"
-    IMPL_SESSION_ID="$PAUSED_SESSION_ID"
     IMPL_RESULT="$AGENT_RESULT"
     IMPL_STDERR="$AGENT_STDERR"
     IMPL_ELAPSED_SECS="$AGENT_ELAPSED_SECS"
@@ -2352,8 +2320,7 @@ implement_and_finalize() {
   if implementation_escalated "$IMPL_RESULT"; then
     warn "Implementation workflow escalated for issue #${issue_number}. Abandoning."
     checkpoint_branch "$issue_number" "$branch"
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — workflow escalated" 2>/dev/null || true
+    prauto_issue_comment "$issue_number" "Heartbeat — workflow escalated"
     abandon_workflow_escalation "$issue_number" "$IMPL_OUTPUT"
     return 0
   fi
@@ -2451,8 +2418,7 @@ handle_phase_plan_approval() {
     info "Plan approved. Starting implementation..."
     gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
       --remove-label "${PRAUTO_GITHUB_LABEL_PLAN_REVIEW}" 2>/dev/null || true
-    gh issue comment "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
-      --body "prauto(${PRAUTO_WORKER_ID}): Heartbeat — implementation starting" 2>/dev/null || true
+    prauto_issue_comment "$issue_number" "Heartbeat — implementation starting"
     fetch_approved_plan "$issue_number"
     implement_and_finalize "$issue_number" "$branch" "$APPROVED_PLAN_TEXT" "$issue_title"
   elif [[ "$approval_status" -eq 2 ]]; then
