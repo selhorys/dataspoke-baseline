@@ -40,7 +40,7 @@ from src.shared.exceptions import (
     PreconditionFailedError,
 )
 from tests.unit.backend.conftest import mock_db_refresh
-from tests.unit.conftest import route_db_execute
+from tests.unit.conftest import compiled_sql, route_db_execute
 
 _VALID_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)"
 _VALID_URN2 = (
@@ -974,6 +974,56 @@ async def test_apply_per_item_budget_evicts_oldest_when_overwrite_pending_true(s
     assert added is True
     assert evicted is True
     db.delete.assert_called_once_with(oldest_llm)
+
+
+@pytest.mark.asyncio
+async def test_apply_per_item_budget_eviction_deletes_embedding_row_first(svc, db) -> None:
+    """Eviction deletes the evicted candidate's embedding row BEFORE the candidate row.
+
+    Spec: feature/BACKEND_SCHEMA.md §metagen_candidate_embeddings — the embedding row is
+    deleted together with its candidate, at the rejected clear and at per-(conf, item)
+    FIFO eviction. The FK carries no ON DELETE action and the relationship declares no
+    cascade, so deleting the candidate first would raise ForeignKeyViolationError.
+    """
+    conf = _make_conf_dto(result_limit=2, overwrite_pending=True)
+    item_row = _make_item_row()
+    oldest_llm = _make_candidate_row(status="llm_approved", conf_id=_CONF_UUID)
+
+    route_db_execute(
+        db,
+        [
+            ("count(", _make_result(scalar=2)),  # budget full
+            ("metagen_candidate_embeddings", _make_result()),
+            ("metagen_candidates", _make_result(scalar=oldest_llm)),
+        ],
+        default=_make_result(scalar=item_row),
+    )
+    mock_db_refresh(db)
+    svc._refresh_candidate_embedding = AsyncMock()
+
+    added, evicted = await svc._apply_per_item_budget(
+        urn=_VALID_URN,
+        item_id="dataset.description",
+        new_candidate_value="Replacement description.",
+        new_candidate_confidence=0.9,
+        new_candidate_evidence={},
+        run_id=uuid.uuid4(),
+        conf_id=_CONF_UUID,
+        conf=conf,
+    )
+
+    assert added is True
+    assert evicted is True
+    writes: list[str] = []
+    for name, call_args, _kwargs in db.mock_calls:
+        if name == "execute" and call_args:
+            sql = compiled_sql(call_args[0])
+            if "metagen_candidate_embeddings" in sql:
+                assert sql.startswith("delete from dataspoke.metagen_candidate_embeddings")
+                writes.append("embedding_delete")
+        elif name == "delete":
+            writes.append("candidate_delete")
+    assert writes == ["embedding_delete", "candidate_delete"]
 
 
 @pytest.mark.asyncio

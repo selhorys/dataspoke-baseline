@@ -1821,6 +1821,16 @@ class MetagenService:
             if oldest is None:
                 # No llm_approved to evict (all are approved); skip
                 return False, False
+            # `metagen_candidate_embeddings` carries a FK to
+            # `metagen_candidates.candidate_id` with no ON DELETE action, and the
+            # relationship declares no cascade; delete the evicted candidate's embedding
+            # row first so the candidate delete does not raise ForeignKeyViolationError
+            # (same order as _clear_rejected_candidates).
+            await self._db.execute(
+                delete(MetagenCandidateEmbedding).where(
+                    MetagenCandidateEmbedding.candidate_id == oldest.candidate_id
+                )
+            )
             await self._db.delete(oldest)
             await self._db.flush()
             evicted = True
