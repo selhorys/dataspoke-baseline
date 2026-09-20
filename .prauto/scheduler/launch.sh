@@ -62,10 +62,16 @@ if [[ -f "$MONITOR_LOCK" ]]; then
     exit 0
   fi
 fi
+# daemonize.py opens the log O_APPEND, so it accumulates across runs. Remember where this
+# monitor's output begins and read only from there — an earlier run's `monitor:` line must
+# never be reported as this run's failure reason.
+monitor_log_start=0
+[[ -f "$MONITOR_LOG" ]] && monitor_log_start=$(wc -c < "$MONITOR_LOG") && monitor_log_start=${monitor_log_start//[[:space:]]/}
+monitor_log_new() { tail -c +$(( ${monitor_log_start:-0} + 1 )) "$MONITOR_LOG" 2>/dev/null || true; }
 monitor_pid=$(python3 "$DAEMONIZE" "$MONITOR_LOG" -- bash "$SCRIPT_DIR/monitor.sh" "$exec_pid")
 if [[ -z "$monitor_pid" || ! "$monitor_pid" =~ ^[0-9]+$ ]]; then
   echo "MONITOR_FAILED pid=$exec_pid monitor_pid=${monitor_pid:-unknown}"
-  tail -5 "$MONITOR_LOG" 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' || true
+  monitor_log_new | tail -5 | sed -E 's/\x1b\[[0-9;]*m//g' || true
   exit 1
 fi
 # 5. Verify the monitor survived its first seconds too. daemonize.py prints a numeric PID even
@@ -79,13 +85,13 @@ if ! kill -0 "$monitor_pid" 2>/dev/null; then
   # cannot read the monitor log, so a bare MONITOR_EXITED_IMMEDIATELY hides the one
   # thing worth acting on — e.g. an unresolved Slack target, which is what a monitor
   # run under the wrong HERMES_HOME reports (see monitor.sh's preflight).
-  reason=$(grep -m1 -E '^monitor:' "$MONITOR_LOG" 2>/dev/null || true)
+  reason=$(monitor_log_new | grep -m1 -E '^monitor:' || true)
   if [[ -n "$reason" ]]; then
     echo "MONITOR_EXITED_IMMEDIATELY pid=$exec_pid monitor_pid=$monitor_pid reason=$reason"
   else
     echo "MONITOR_EXITED_IMMEDIATELY pid=$exec_pid monitor_pid=$monitor_pid"
   fi
-  tail -5 "$MONITOR_LOG" 2>/dev/null | sed -E 's/\x1b\[[0-9;]*m//g' || true
+  monitor_log_new | tail -5 | sed -E 's/\x1b\[[0-9;]*m//g' || true
   exit 1
 fi
 echo "STARTED pid=$exec_pid monitor_pid=$monitor_pid"

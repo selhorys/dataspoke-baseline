@@ -26,7 +26,7 @@ entire tick.
    - EXITED_IMMEDIATELY pid=N + tail → report "⚠️ exited immediately" + the reason line, stop.
    - LAUNCH_FAILED …                 → report the failure verbatim.
    - MONITOR_FAILED … / MONITOR_EXITED_IMMEDIATELY … → report "⚠️ reporting degraded" + the
-     status line.
+     status line, including its `reason=…` field when present (trailing log lines are context).
 
 Do not wait on the executor or monitor — they are detached and long-running; the monitor posts its
 own Slack notes until the coding agent finishes.

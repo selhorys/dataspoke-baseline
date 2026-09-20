@@ -56,6 +56,8 @@ INTERVAL_SECS="${PRAUTO_MONITOR_INTERVAL_SECS:-600}"
 SEND_RETRY_SECS="${PRAUTO_MONITOR_SEND_RETRY_SECS:-5}"
 WORKER="${PRAUTO_WORKER_ID:-prauto01}"
 UNRESOLVED_MARKER="$STATE_DIR/monitor-slack-unresolved"
+UNDELIVERED_LOG="$STATE_DIR/monitor-undelivered.log"
+UNDELIVERED_MAX_BYTES=262144
 
 # scrub <text> — redact credentials before anything leaves this machine. The
 # executor log can contain the worker's GH_TOKEN / ANTHROPIC_API_KEY (and, in a
@@ -84,10 +86,16 @@ resolve_slack_target() {
     return 1
   fi
   [[ -n "$listing" ]] || return 1
-  # A bare platform name ("slack") targets the platform's home channel, which --list
-  # proves exists; a qualified target must appear in the listing verbatim.
+  # A bare platform name ("slack") is accepted on a non-empty listing: --list shows the
+  # platform is configured but not that a home channel exists, so a wrong bare target
+  # surfaces at send time (and lands in the undelivered log). A qualified target must be
+  # a whole entry name — followed by end-of-line or whitespace — so "slack:hermes-dev"
+  # does not match "slack:hermes-dev-2".
   if [[ "$SLACK_TARGET" == *:* ]]; then
-    grep -Fq "$SLACK_TARGET" <<< "$listing" || return 1
+    awk -v t="$SLACK_TARGET" '
+      { sub(/^[ \t]+/, "") }
+      index($0, t) == 1 { rest = substr($0, length(t) + 1); if (rest == "" || rest ~ /^[ \t]/) found = 1 }
+      END { exit !found }' <<< "$listing" || return 1
   fi
   return 0
 }
@@ -106,13 +114,17 @@ say() {
   local attempt
   for attempt in 1 2; do
     if hermes send --to "$SLACK_TARGET" "$msg" >/dev/null 2>&1; then
-      rm -f "$UNRESOLVED_MARKER"
       return 0
     fi
     (( attempt < 2 )) && sleep "$SEND_RETRY_SECS"
   done
   printf 'monitor: slack send failed\n' >&2
-  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >> "$STATE_DIR/monitor-undelivered.log"
+  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >> "$UNDELIVERED_LOG"
+  # Bound the file: past the cap, keep only the newest half.
+  if [[ "$(wc -c < "$UNDELIVERED_LOG")" -gt "$UNDELIVERED_MAX_BYTES" ]]; then
+    tail -c $(( UNDELIVERED_MAX_BYTES / 2 )) "$UNDELIVERED_LOG" > "$UNDELIVERED_LOG.tmp" \
+      && mv "$UNDELIVERED_LOG.tmp" "$UNDELIVERED_LOG"
+  fi
   return 1
 }
 
@@ -161,6 +173,7 @@ if [[ "${PRAUTO_MONITOR_DRY_RUN:-0}" != "1" ]] && ! resolve_slack_target; then
   printf '%s\n' "$reason" > "$UNRESOLVED_MARKER"
   exit 2
 fi
+rm -f "$UNRESOLVED_MARKER"   # resolved now; a stale reason must not outlive the fix
 
 # --- at most one monitor per checkout -----------------------------------------
 if [[ -f "$MONITOR_LOCK" ]]; then

@@ -283,7 +283,7 @@ def _stub_hermes(
     stub.write_text(
         "#!/usr/bin/env bash\nset -uo pipefail\n"
         'if [[ " $* " == *" --list "* ]]; then\n'
-        f'  printf "%s\\n" {json.dumps(list_body)}\n'
+        f'  printf "%b\\n" {json.dumps(list_body)}\n'
         f"  exit {list_rc}\n"
         "fi\n"
         f"{send_body}"
@@ -343,6 +343,21 @@ def test_monitor_preflight_fails_loudly_when_target_unresolved(tmp_path: Path) -
     assert not (state / "monitor.lock").exists(), "a failed preflight must not take the lock"
 
 
+def test_monitor_preflight_requires_a_whole_entry_name(tmp_path: Path) -> None:
+    """`slack:hermes-dev` must not be satisfied by a longer entry such as `slack:hermes-dev-2`."""
+    repo = _scheduler_fixture(tmp_path, "monitor.sh")
+    (repo / ".prauto/state").mkdir(parents=True, exist_ok=True)
+    (repo / ".prauto/config.local.env").write_text('PRAUTO_SLACK_TARGET="slack:hermes-dev"\n')
+    bin_dir = _stub_hermes(
+        tmp_path / "bin", list_body="slack:\n  slack:hermes-dev-2  [C0BS779DV4L]"
+    )
+
+    result = _run_monitor(repo, _monitor_env(tmp_path, bin_dir))
+
+    assert result.returncode != 0, result.stdout
+    assert "cannot resolve Slack target" in result.stderr, result.stderr
+
+
 def test_monitor_pins_the_profile_home_over_an_inherited_one(tmp_path: Path) -> None:
     """The pinned profile home (not the plain shell's) is what `hermes` sees on a real send."""
     repo = _scheduler_fixture(tmp_path, "monitor.sh")
@@ -393,6 +408,27 @@ def test_monitor_records_undelivered_message_after_one_retry(tmp_path: Path) -> 
     assert "monitor attached but no live executor" in undelivered, undelivered
 
 
+def test_monitor_caps_the_undelivered_log(tmp_path: Path) -> None:
+    """The undelivered log is size-bounded: past the cap only the newest entries are kept."""
+    repo = _scheduler_fixture(tmp_path, "monitor.sh")
+    state = repo / ".prauto/state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "heartbeat_cron.log").write_text("Heartbeat complete\n")
+    (state / "monitor-undelivered.log").write_text("old entry\n" * 40000)
+    (repo / ".prauto/config.local.env").write_text(
+        'PRAUTO_SLACK_TARGET="slack:hermes-dev"\nPRAUTO_MONITOR_SEND_RETRY_SECS=0\n'
+    )
+    bin_dir = _stub_hermes(
+        tmp_path / "bin", list_body="slack:\n  slack:hermes-dev  [C0BS779DV4L]", send_rc=1
+    )
+
+    _run_monitor(repo, _monitor_env(tmp_path, bin_dir))
+
+    log = state / "monitor-undelivered.log"
+    assert log.stat().st_size <= 262144, log.stat().st_size
+    assert "monitor attached but no live executor" in log.read_text()
+
+
 def test_launch_reports_the_monitor_failure_reason(tmp_path: Path) -> None:
     """A monitor that dies at once surfaces WHY in the launcher's status line (reason=...)."""
     repo = _scheduler_fixture(tmp_path, "launch.sh", "daemonize.py")
@@ -415,4 +451,24 @@ def test_launch_reports_the_monitor_failure_reason(tmp_path: Path) -> None:
         result.stdout,
     )
     assert m is not None, result.stdout
+    _kill(int(m.group(1)))
+
+
+def test_launch_ignores_a_stale_monitor_log_line_when_reporting_the_reason(tmp_path: Path) -> None:
+    """monitor.log accumulates across runs; only this run's output may supply `reason=`."""
+    repo = _scheduler_fixture(tmp_path, "launch.sh", "daemonize.py")
+    _stub_executor(repo)
+    state = repo / ".prauto/state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "monitor.log").write_text("monitor: slack send failed\n")
+    _write_stub(repo / ".prauto/scheduler/monitor.sh", "exit 2\n")
+    marker = tmp_path / "executor-started"
+
+    result = _run_launch(repo, {"PRAUTO_TEST_MARKER": str(marker)})
+
+    assert result.returncode != 0, result.stdout
+    m = re.search(r"MONITOR_EXITED_IMMEDIATELY pid=(\d+) monitor_pid=\d+", result.stdout)
+    assert m is not None, result.stdout
+    assert "reason=" not in result.stdout, result.stdout
+    assert "slack send failed" not in result.stdout, result.stdout
     _kill(int(m.group(1)))
