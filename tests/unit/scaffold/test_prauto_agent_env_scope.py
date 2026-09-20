@@ -209,6 +209,9 @@ def test_run_implementation_passes_the_implementation_environment(tmp_path: Path
         tmp_path,
         [
             'render_prompt() { printf "prompt"; }',
+            # The capture itself is covered by test_prauto_evaluator_authority.py;
+            # here it only has to succeed so the dispatch is reached.
+            "capture_evaluator_authority() { return 0; }",
             "invoke_agent() { printf 'ARGV:%s\\n' \"$*\"; AGENT_STATUS=ok; }",
             "run_implementation 182 branch plan",
         ],

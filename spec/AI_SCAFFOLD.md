@@ -183,6 +183,14 @@ including their identities, then loads evaluator sessions from that immutable sn
 changes to those files cannot alter the active reviewers. A client that cannot preserve this
 authority fails closed and escalates before generation.
 
+This describes the interactive binding, where the parent session that will dispatch the generator
+is itself the capturing party — there is no separate process standing outside the session to do it
+on the parent's behalf. Prauto's unattended binding has one: its executor, a process the worker
+session never runs as and whose checkout the worker cannot write, captures the same authority
+before dispatching the worker at all, so the capture is neither self-supplied nor visible to
+generated work in progress. See `spec/AI_PRAUTO.md` §Pinned evaluator authority capture for that
+binding's capture point and on-disk contract.
+
 After every generator and fix pass, the parent captures complete repository evidence: status,
 staged and unstaged diffs, untracked inventory and relevant contents, diff-check results, and
 actual changed paths. The session-loaded evaluator receives `Pinned evaluator authority` and a

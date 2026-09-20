@@ -613,6 +613,115 @@ ${counter_proposal}"
   printf '%s' "$ANALYSIS_OUTPUT" > "${CUR_SESSION_DIR}/analysis.txt"
 }
 
+# EVALUATOR_TYPES — every reviewer binding wf-minimal can dispatch. The executor
+# snapshots all of them rather than deriving the subset from the plan's stage
+# list: parsing that list in shell is fragile, the files are small next to a
+# session transcript, and a snapshot that is present but unused costs nothing
+# while a missing one escalates the run.
+EVALUATOR_TYPES=(reviewer test-reviewer spec-reviewer security-reviewer)
+
+# capture_evaluator_authority <dest_dir>
+# Write the pinned evaluator authority — one file per reviewer type — that the
+# implementation phase's reviewers read.
+#
+# The executor does this, before dispatching the worker, for two reasons.
+#
+# Trust, and its limit. The snapshot is taken from REPO_DIR, this executor's own
+# checkout of the base branch, so branch CONTENT cannot reach the reviewers: a
+# branch that edits scaffold/roles/ does not weaken the reviewers judging it, and
+# those edits take effect once merged and human-reviewed like any other. It also
+# ends the worker supplying its own reviewers' instructions.
+#
+# It does NOT make the snapshot tamper-proof at read time. The worker runs as this
+# executor's OS user with a shell, so between this capture and the reviewers' read
+# it can rewrite the files or replace the directory with a symlink. DENY_TOOLS
+# covers the path for the parent session, which is defence in depth, not a
+# boundary. What this buys is removing branch content and worker self-supply from
+# the equation — not an unforgeable channel.
+#
+# Size: the authority totals several hundred KB, which the worker previously had
+# to inline into the workflow tool's arguments. That exceeds the tool's script
+# limit, so workers improvised — pinning a generated script under /tmp and
+# truncating memory notes — losing both the full text and any audit trail. Passing
+# paths keeps the snapshot whole, inside the session directory, and retained with
+# the rest of the attempt's artifacts.
+#
+# Returns 1 if any source is missing or any file cannot be written: reviewers
+# fail closed on absent authority, so a partial capture must not reach dispatch.
+capture_evaluator_authority() {
+  local dest_dir="$1" type role_file schema_file memory_dir out note
+  schema_file="${REPO_DIR}/scaffold/contracts/reviewer-verdict.schema.json"
+
+  # This function removes dest_dir before rewriting it, so establish first that
+  # dest_dir is the directory this function is allowed to own. An empty
+  # PRAUTO_DIR or issue number would otherwise expand to a path like
+  # `/authority/I-` and point the removal somewhere unintended.
+  if [[ -z "${PRAUTO_DIR:-}" ]] || [[ "${PRAUTO_DIR}" != /* ]]; then
+    warn "PRAUTO_DIR is unset or not absolute; refusing to capture evaluator authority."
+    return 1
+  fi
+  local authority_root="${PRAUTO_DIR%/}/authority"
+  if [[ "$dest_dir" != "${authority_root}/"?* ]]; then
+    warn "Refusing to capture evaluator authority outside ${authority_root}/ (got '${dest_dir}')."
+    return 1
+  fi
+  if [[ "$dest_dir" == *..* ]]; then
+    warn "Refusing a traversing evaluator-authority path: ${dest_dir}"
+    return 1
+  fi
+
+  if [[ ! -f "$schema_file" ]]; then
+    warn "Evaluator verdict schema not found at ${schema_file}."
+    return 1
+  fi
+  rm -rf "$dest_dir" 2>/dev/null || true
+  mkdir -p "$dest_dir" || return 1
+
+  for type in "${EVALUATOR_TYPES[@]}"; do
+    role_file="${REPO_DIR}/scaffold/roles/${type}.md"
+    memory_dir="${REPO_DIR}/scaffold/memory/${type}"
+    out="${dest_dir}/${type}.md"
+
+    if [[ ! -f "$role_file" ]]; then
+      warn "Evaluator role not found at ${role_file}."
+      return 1
+    fi
+
+    {
+      printf 'PINNED EVALUATOR AUTHORITY SNAPSHOT\n'
+      printf 'reviewer-binding: %s\n' "$type"
+      printf 'captured-at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf 'captured-from: %s @ %s\n' "$REPO_DIR" \
+        "$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+      printf 'Captured by the executor before any generator ran. Read this file as\n'
+      printf 'your authority for the pass; do not reload live scaffold/ paths.\n\n'
+      printf '===== BEGIN scaffold/roles/%s.md =====\n' "$type"
+      cat "$role_file"
+      printf '\n===== END scaffold/roles/%s.md =====\n\n' "$type"
+      printf '===== BEGIN scaffold/contracts/reviewer-verdict.schema.json =====\n'
+      cat "$schema_file"
+      printf '\n===== END scaffold/contracts/reviewer-verdict.schema.json =====\n\n'
+      printf '##### EVALUATOR MEMORY: scaffold/memory/%s/ #####\n' "$type"
+      if [[ -d "$memory_dir" ]]; then
+        for note in "$memory_dir"/*; do
+          [[ -f "$note" ]] || continue
+          printf '===== BEGIN %s =====\n' "$(basename "$note")"
+          cat "$note"
+          printf '\n===== END %s =====\n\n' "$(basename "$note")"
+        done
+      else
+        printf '(no memory notes)\n'
+      fi
+    } > "$out" || { warn "Could not write evaluator authority to ${out}."; return 1; }
+    # Read-only is a guard against accident, not against the worker: it runs as
+    # this same OS user and could chmod it back. Nothing rests on this.
+    chmod 0444 "$out" 2>/dev/null || true
+  done
+
+  info "Pinned evaluator authority captured for ${#EVALUATOR_TYPES[@]} reviewer type(s)."
+  return 0
+}
+
 # run_implementation <issue_number> <branch> <analysis_output>
 # Implementation phase: drive wf-minimal via the Workflow tool. Fresh session each
 # time; the workflow restarts rather than resumes, so only committed work is
@@ -621,10 +730,58 @@ ${counter_proposal}"
 # IMPL_ELAPSED_SECS (measured by this executor) and IMPL_OUTPUT (for reporting).
 run_implementation() {
   local issue_number="$1" branch="$2" analysis_output="$3"
-  local prompt
+
+  # The issue number reaches a recursive delete below, via the authority
+  # directory's name. Gate its shape here rather than trusting the caller.
+  if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
+    warn "Refusing to dispatch an implementation for a non-numeric issue '${issue_number}'."
+    AGENT_STATUS=error
+    return 0
+  fi
+  # Outside the state tree, and deliberately not relying on DENY_TOOLS to protect
+  # it. Under state/ the reviewers' ability to read their own authority would rest
+  # on --disallowedTools NOT being inherited by subagents — which this repo has not
+  # measured. If it were inherited, every reviewer's first action fails, every pass
+  # ESCALATEs, and the implementation phase wedges for every issue. That risk buys
+  # nothing: the parent holds Bash(uv run python3 *), so a deny on this path is
+  # advisory against the only party it would apply to. Correctness of the run beats
+  # a block the trust model already calls defence in depth.
+  #
+  # Still outside every worktree, so branch content cannot reach it. The snapshot is
+  # reproducible from the REPO_DIR commit its header records, so recreating it per
+  # attempt loses no audit trail.
+  local prompt authority_dir="${PRAUTO_DIR}/authority/I-${issue_number}"
+
+  # Fail before dispatch rather than after: reviewers escalate on absent
+  # authority, so a worker sent out without it burns an attempt to reach a
+  # verdict the executor could have predicted here.
+  if ! capture_evaluator_authority "$authority_dir"; then
+    warn "Could not capture pinned evaluator authority; not dispatching the implementation."
+    AGENT_STATUS=error
+    AGENT_SESSION_ID=""
+    AGENT_RESULT="Pinned evaluator authority could not be captured."
+    AGENT_STDERR=""
+    AGENT_OUTPUT="$AGENT_RESULT"
+    AGENT_ELAPSED_SECS=0
+    IMPL_SESSION_ID=""
+    IMPL_RESULT="$AGENT_RESULT"
+    IMPL_STDERR=""
+    IMPL_ELAPSED_SECS=0
+    IMPL_OUTPUT="$AGENT_OUTPUT"
+    [[ -n "${CUR_SESSION_DIR:-}" ]] && printf '%s' "$AGENT_OUTPUT" \
+      > "${CUR_SESSION_DIR}/implementation.json"
+    # No worker ran, so no attempt was spent on work. This is an executor-side
+    # harness fault of the same class as a CLI-truncated session: hand the
+    # attempt back rather than charging it to the job.
+    refund_retry_count "$issue_number" \
+      || warn "Could not refund the retry count for #${issue_number}; this attempt stays counted."
+    return 0
+  fi
+
   prompt=$(render_prompt "${PRAUTO_DIR}/prompts/implementation.md" \
     "number=${issue_number}" "branch=${branch}" "base_branch=${PRAUTO_BASE_BRANCH}" \
     "author_name=${PRAUTO_GIT_AUTHOR_NAME}" "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}" \
+    "authority_dir=${authority_dir}" \
     "analysis_output=${analysis_output}")
 
   invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_IMPLEMENTATION:-400}" \

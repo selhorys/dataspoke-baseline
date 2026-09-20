@@ -508,6 +508,53 @@ the branch holds a partial implementation. Prauto must not carry that forward to
 abandons the job ([Job completion and abandonment](#job-completion-and-abandonment)) rather than
 finalizing.
 
+### Pinned evaluator authority capture
+
+Each reviewer's role, the verdict schema, and its evaluator memory — the pinned evaluator authority
+`wf-minimal` reads before every review pass — is captured by the **executor**, never by the worker
+session it is about to dispatch. The executor writes one file per reviewer type (`reviewer`,
+`test-reviewer`, `spec-reviewer`, `security-reviewer`) to `${PRAUTO_DIR}/authority/I-<issue>/<type>.md`
+immediately before dispatching the implementation phase, sourced from `REPO_DIR` — the executor's
+own checkout of the base branch, held outside every worktree and therefore outside anything a branch
+under review can write. A branch that edits `scaffold/roles/`, `scaffold/memory/`, or the verdict
+schema cannot weaken the reviewers judging it; those edits take effect only once merged and reviewed
+by a human, like any other repository change. Each file's header names the commit it was captured
+from, so the snapshot is reproducible from that commit rather than being an artifact that itself
+needs preserving; capture happens fresh per attempt, with any stale directory from a prior attempt
+removed first.
+
+All four types are captured regardless of which stages the plan's metadata names, because deriving
+that subset in shell is fragile, and a snapshot the run does not end up needing costs nothing next
+to a missing one, which escalates the run.
+
+The implementation prompt receives the snapshot's directory path, not its contents: the four
+snapshots together run to several hundred kilobytes, well past what fits inline as workflow-tool
+arguments. The worker builds a `{reviewerType: path}` map from that directory and passes it as
+`wf-minimal`'s `authority` argument, so each reviewer subagent reads its own file directly rather
+than the worker relaying or truncating the text on the reviewers' behalf. The Codex binding has no
+workflow tool and therefore does relay the text itself, verbatim and in full — a weaker position the
+binding cannot avoid. The snapshot deliberately sits outside `${PRAUTO_DIR}/state`, the path
+`DENY_TOOLS` blocks: placing it there would make every review pass depend on whether a parent's
+`--disallowedTools` rule reaches the subagents it dispatches. If it did, each reviewer's first action
+would fail and the implementation phase would wedge for every issue. That risk buys nothing, since
+the parent's own grant already makes a deny on this path advisory. The directory is gitignored —
+derived output, not a source the repository tracks.
+
+**What this does and does not establish.** It removes two things: branch content cannot reach the
+reviewers judging it, and the worker no longer supplies its own reviewers' instructions. It does not
+make the snapshot tamper-proof between capture and read. The worker runs unreviewed branch code as
+the executor's own OS user with a shell (see
+[Prauto executes unreviewed branch code](#prauto-executes-unreviewed-branch-code)), so it can rewrite
+those files or replace the directory. `DENY_TOOLS` and the workflow's path validation raise the cost
+and stop the accidental cases; neither is a boundary. Treat the capture as removing whole classes of
+influence, not as an unforgeable channel.
+
+A capture that cannot complete — a missing role file, an unwritable destination — fails closed
+before the worker is ever invoked: the executor does not dispatch the implementation phase at all.
+Because the counter is advanced at dispatch, that attempt is refunded
+([Retry tracking](#retry-tracking)); a deterministic executor-side fault would otherwise consume an
+attempt on every wake and abandon the job without a line of work attempted.
+
 ### Executor-owned review gate
 
 In addition to the in-workflow per-stage review, the executor runs a **final adversarial review

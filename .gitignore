@@ -32,4 +32,7 @@ memory/
 .prauto/*.local.*
 .prauto/state/
 .prauto/worktrees/
+# Per-attempt evaluator authority snapshots — derived from scaffold/ at the commit
+# each snapshot's header records, so they are reproducible rather than sources.
+.prauto/authority/
 issues/

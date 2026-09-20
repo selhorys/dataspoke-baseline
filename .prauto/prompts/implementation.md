@@ -28,33 +28,50 @@ Either way, **each generator commits its own stage** before returning its report
    executed serially because generators commit in one shared worktree) and the `Security` subset.
    Extract those two JSON arrays verbatim.
 
-2. Capture the **pinned evaluator authority** for every reviewer type this run will use, BEFORE
-   invoking any generator. For each reviewer type named by `Stages` and `Security` — the mapping is
-   `spec`→`spec-reviewer`, `test`→`test-reviewer`, every other stage→`reviewer`, plus
-   `security-reviewer` for each `Security`-named stage — read these files and assemble a map:
+2. The **pinned evaluator authority** is already captured for you. The executor wrote it, from its
+   own checkout of the base branch, before this session started — so a branch that edits
+   `scaffold/roles/` cannot weaken the reviewers judging it. One file per reviewer type:
 
-   - `scaffold/roles/<reviewer-type>.md` (the reviewer's own instructions)
-   - `scaffold/memory/<reviewer-type>/` (its `MEMORY.md` index plus every note it lists)
-   - `scaffold/contracts/reviewer-verdict.schema.json` (the verdict contract)
+   ```
+   {authority_dir}/reviewer.md
+   {authority_dir}/test-reviewer.md
+   {authority_dir}/spec-reviewer.md
+   {authority_dir}/security-reviewer.md
+   ```
 
-   Build `authority = { "<reviewer-type>": "<concatenated content of the three sources above>", ... }`.
-   This snapshot is what makes the reviewers independent of any generator tampering mid-run; do not
-   skip it and do not point the reviewer at live paths.
+   Each holds that reviewer's role, the verdict schema, and its evaluator memory. Build
+   `authority = { "<reviewer-type>": "<absolute path above>", ... }` covering every type this run
+   needs — the mapping is `spec`→`spec-reviewer`, `test`→`test-reviewer`, every other stage→`reviewer`,
+   plus `security-reviewer` for each `Security`-named stage.
+
+   **Claude Code**: pass paths, not contents. The `Workflow` tool hands each reviewer its own file to
+   read, so you never need the text — do not read these files, do not edit them, and do not
+   substitute the live `scaffold/` paths.
+
+   **Codex**: you have no `Workflow` tool, so you relay each reviewer's authority yourself: read that
+   type's file and give its full contents as the reviewer subagent's pinned authority section. Relay
+   it verbatim and in full — never summarize or truncate it. Do not edit the files, and do not
+   substitute the live `scaffold/` paths.
+
+   If a file named above is missing, stop and escalate — a reviewer without its authority fails
+   closed, so continuing only wastes the attempt.
 
 3. Run the loop. **Claude Code** invokes the `Workflow` tool for `wf-minimal` with these args:
 
    ```
    args = {
-     "plan":      <the full approved plan text below, verbatim>,
-     "stages":    <the Stages array from the metadata block>,
-     "security":  <the Security array from the metadata block>,
-     "authority": <the authority map captured in step 2>,
-     "author":    "{author_name} <{author_email}>"
+     "plan":          <the full approved plan text below, verbatim>,
+     "stages":        <the Stages array from the metadata block>,
+     "security":      <the Security array from the metadata block>,
+     "authority":     <the map of reviewer type to authority file path from step 2>,
+     "authorityRoot": "{authority_dir}",
+     "author":        "{author_name} <{author_email}>"
    }
    ```
 
-   **Codex** orchestrates the same loop inline with the same plan, stages, security, and authority,
-   and passes `--author="{author_name} <{author_email}>"` to every generator's commit.
+   **Codex** orchestrates the same loop inline with the same plan, stages and security, relaying each
+   reviewer's authority as described in step 2, and passes `--author="{author_name} <{author_email}>"`
+   to every generator's commit.
 
    Prior committed work may exist on the branch from an earlier heartbeat. A fresh workflow run
    begins from the branch's current committed state and continues from there. The parent verifies
