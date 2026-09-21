@@ -1,5 +1,5 @@
 /**
- * Tests for lib/metagen-predicates.ts — all four exported predicates.
+ * Tests for lib/metagen-predicates.ts — all exported predicates.
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_METAGEN.md §Per-dataset:
@@ -8,10 +8,6 @@
  *     DataHub aspect"
  *   - src/api/schemas/metagen.py MetagenCandidate.status:
  *     "llm_approved" | "approved" | "rejected"
- *   - src/api/schemas/metagen.py MetagenItemSummary.status:
- *     "pending" | "llm_approved" | "approved"
- *   - src/api/schemas/metagen.py MetagenBoundaryPutRequest.allowed / MetagenItemSummary.kind:
- *     "dataset.description" | "column.description"
  *   - src/backend/metagen/service.py §review_candidate:
  *     reject is valid on both "llm_approved" and "approved"; rejecting an
  *     "approved" candidate flips it to "rejected" and removes the editable
@@ -29,11 +25,9 @@
 import { describe, it, expect } from "vitest";
 import {
   isRejectEligible,
-  isItemFinalized,
-  findApprovedCandidate,
   destinationAspectLabel,
 } from "./metagen-predicates";
-import type { CandidateStatus, ItemStatus } from "@/types/metagen";
+import type { CandidateStatus } from "@/types/metagen";
 
 // ---------------------------------------------------------------------------
 // Minimal factory helpers — fields not relevant to predicate logic are filled
@@ -55,18 +49,6 @@ function makeCandidate(status: CandidateStatus) {
     created_at: "2026-05-01T00:00:00Z",
     reviewed_at: null,
     reviewer_id: null,
-  };
-}
-
-function makeItemSummary(status: ItemStatus) {
-  return {
-    dataset_urn: "urn:li:dataset:(urn:li:dataPlatform:postgres,example_db.catalog.title_master,DEV)",
-    item_id: "dataset.description",
-    kind: "dataset.description" as const,
-    field_path: null,
-    status,
-    candidate_count: 2,
-    composite_id: "cid-1",
   };
 }
 
@@ -121,111 +103,7 @@ describe('isRejectEligible — reject valid on both llm_approved and approved ca
 });
 
 // ---------------------------------------------------------------------------
-// 2. isItemFinalized — item collapses when status === "approved"
-// ---------------------------------------------------------------------------
-//
-// isItemFinalized flags an item as finalized when its status is "approved"
-// (impl lib/metagen-predicates.ts). Item statuses from
-// src/api/schemas/metagen.py MetagenItemSummary.status:
-//   "pending" | "llm_approved" | "approved"
-
-describe('isItemFinalized — true when item status==="approved" (FRONTEND_METAGEN.md §Per-dataset)', () => {
-  type Row = { status: ItemStatus; expected: boolean };
-
-  const table: Row[] = [
-    { status: "approved",    expected: true  },
-    { status: "pending",     expected: false },
-    { status: "llm_approved", expected: false },
-  ];
-
-  table.forEach(({ status, expected }) => {
-    it(`status="${status}" → isItemFinalized=${expected}`, () => {
-      expect(isItemFinalized(makeItemSummary(status))).toBe(expected);
-    });
-  });
-
-  it("returns false for all non-approved item statuses", () => {
-    const nonApproved: ItemStatus[] = ["pending", "llm_approved"];
-    nonApproved.forEach((s) => {
-      expect(isItemFinalized(makeItemSummary(s))).toBe(false);
-    });
-  });
-
-  it("returns true only for 'approved' — the single finalized state", () => {
-    const allStatuses: ItemStatus[] = ["pending", "llm_approved", "approved"];
-    const finalizedStatuses = allStatuses.filter((s) => isItemFinalized(makeItemSummary(s)));
-    expect(finalizedStatuses).toEqual(["approved"]);
-  });
-
-  it("accepts a partial object with only status (type Pick<MetagenItemSummary, 'status'>)", () => {
-    expect(isItemFinalized({ status: "approved" })).toBe(true);
-    expect(isItemFinalized({ status: "pending" })).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 3. findApprovedCandidate — returns the approved candidate or null
-// ---------------------------------------------------------------------------
-//
-// spec/feature/FRONTEND_METAGEN.md: approved candidate shown as finalized row;
-// null when no approved candidate yet (item still in review queue).
-
-describe('findApprovedCandidate — returns approved candidate or null (FRONTEND_METAGEN.md §Per-dataset page)', () => {
-  it("returns null for an empty candidates array (no throw)", () => {
-    expect(findApprovedCandidate([])).toBeNull();
-  });
-
-  it("returns null when no candidate has status 'approved'", () => {
-    const candidates = [
-      makeCandidate("llm_approved"),
-      makeCandidate("rejected"),
-    ];
-    expect(findApprovedCandidate(candidates)).toBeNull();
-  });
-
-  it("returns the approved candidate when present", () => {
-    const approved = makeCandidate("approved");
-    const candidates = [makeCandidate("llm_approved"), approved, makeCandidate("rejected")];
-    const result = findApprovedCandidate(candidates);
-    expect(result).not.toBeNull();
-    expect(result!.status).toBe("approved");
-    expect(result!.candidate_id).toBe("cand-approved");
-  });
-
-  it("returns the first approved candidate when only one is approved (backend partial-unique index)", () => {
-    // Backend: UNIQUE (dataset_urn, item_id) WHERE status='approved' — at most one approved
-    // per item at any given moment. The UI must handle whichever one is approved.
-    const candidates = [
-      { ...makeCandidate("llm_approved"), candidate_id: "c1" },
-      { ...makeCandidate("approved"),     candidate_id: "c2" },
-    ];
-    const result = findApprovedCandidate(candidates);
-    expect(result!.candidate_id).toBe("c2");
-  });
-
-  it("returns a candidate object (not just status) with all fields accessible", () => {
-    const approved = { ...makeCandidate("approved"), value: "Catalog of Imazon book titles" };
-    const result = findApprovedCandidate([makeCandidate("llm_approved"), approved]);
-    expect(result!.value).toBe("Catalog of Imazon book titles");
-    expect(result!.confidence_score).toBe(0.92);
-  });
-
-  it("returns null for a list of all llm_approved candidates (none human-approved yet)", () => {
-    const candidates = [
-      { ...makeCandidate("llm_approved"), candidate_id: "c1" },
-      { ...makeCandidate("llm_approved"), candidate_id: "c2" },
-      { ...makeCandidate("llm_approved"), candidate_id: "c3" },
-    ];
-    expect(findApprovedCandidate(candidates)).toBeNull();
-  });
-
-  it("returns null for a single rejected candidate", () => {
-    expect(findApprovedCandidate([makeCandidate("rejected")])).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 4. destinationAspectLabel — aspect name table (critical correctness guard)
+// 2. destinationAspectLabel — aspect name table (critical correctness guard)
 // ---------------------------------------------------------------------------
 //
 // This section is the primary regression guard for the aspect-name bug.
@@ -402,46 +280,5 @@ describe('destinationAspectLabel — aspect names derived from service.py §_emi
       const label = destinationAspectLabel("some.future.kind", null);
       expect(label).toBe("some.future.kind");
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. Cross-predicate consistency: isRejectEligible + isItemFinalized alignment
-// ---------------------------------------------------------------------------
-//
-// When an item is "approved" (finalized), it holds an approved candidate that is
-// still reject-eligible (rejecting it removes the DataHub description). Only a
-// "rejected" candidate is not reject-eligible. These invariants must be
-// consistent across the two predicates.
-
-describe('cross-predicate consistency — approved state is coherent across isRejectEligible and isItemFinalized', () => {
-  it("approved candidate is reject-eligible AND approved item is finalized", () => {
-    const approvedCandidate = makeCandidate("approved");
-    const approvedItem = makeItemSummary("approved");
-
-    expect(isRejectEligible(approvedCandidate)).toBe(true);
-    expect(isItemFinalized(approvedItem)).toBe(true);
-  });
-
-  it("llm_approved candidate is reject-eligible AND llm_approved item is not finalized", () => {
-    const llmCandidate = makeCandidate("llm_approved");
-    const llmItem = makeItemSummary("llm_approved");
-
-    expect(isRejectEligible(llmCandidate)).toBe(true);
-    expect(isItemFinalized(llmItem)).toBe(false);
-  });
-
-  it("rejected candidate is not reject-eligible — the single non-eligible status", () => {
-    expect(isRejectEligible(makeCandidate("rejected"))).toBe(false);
-  });
-
-  it("findApprovedCandidate returning non-null corresponds to a reject-eligible approved candidate", () => {
-    const candidates = [makeCandidate("approved"), makeCandidate("llm_approved")];
-    const approved = findApprovedCandidate(candidates);
-
-    // The approved candidate found is still reject-eligible (Reject removes the
-    // DataHub description it wrote).
-    expect(approved).not.toBeNull();
-    expect(isRejectEligible(approved!)).toBe(true);
   });
 });

@@ -200,7 +200,9 @@ summary (`{covered}`), and the `metagen` conf list (`[{conf_id, name}]`, possibl
 - **`MetagenService.match_confs_for_urns(urns)`** — inverts the enabled-conf `dataset_filter`
   resolution into a `urn → [{conf_id, name}]` map. It evaluates each enabled conf's compiled
   filter clause against the page's URNs (the same matcher `list_uncovered` uses) and buckets
-  matches by URN; cost is bounded by the conf count, not the dataset count.
+  matches by URN, each URN's confs in conf-name order. Confs ride along as one boolean column
+  each in batches of 8 per statement, so the statement's bind-parameter count stays bounded
+  regardless of how many confs exist.
 
 **Unified timeline aggregation**: a dataset's events live in two places — validation and
 metagen events are booked on `entity_type="dataset"` (`entity_id=urn`), while ingestion run
@@ -894,9 +896,9 @@ Future scope: `domains` and `globalTags` proposals.
 |--------|-----------|
 | `approved` | The item has one candidate with `status='approved'` (the partial unique index guarantees at most one). |
 | `llm_approved` | No approved candidate, but at least one `llm_approved` candidate awaits review. |
-| `pending` | No non-rejected candidates exist for the item yet — typically a freshly enumerated slot before its first successful debate run. |
+| `pending` | No non-rejected candidates remain on the item — every candidate it held was rejected (or already cleared by a later run). An item row exists only once a candidate has been persisted for the slot, so a slot no run has produced a candidate for is not listed at all. |
 
-Status is not persisted; it is computed per request from `(has_approved, candidate_count)` over the item's candidates.
+Status is not persisted; it is computed per request from `(has_approved, non_rejected_count)` over the item's candidates.
 
 **Scheduled fan-out**. The Airflow tier DAGs (`metagen-{hourly,daily,weekly}`)
 call the internal activity `POST /internal/activities/metagen/run {tier}`. That
@@ -911,16 +913,18 @@ fired `tier` and runs each one under its own per-conf lock. A conf already runni
    `dataset_filter` resolves to **intersected** with the set of datasets
    that have a `metagen_boundary` row with `is_enabled=true`. Boundary-less or
    boundary-disabled datasets are excluded regardless of the conf's
-   `dataset_filter`. Literal `dataset_urn` values matching no registered dataset are
+   `dataset_filter`. The optional run-body `dataset_urns` only narrows this
+   set; it never widens it past the filter. Literal `dataset_urn` values matching no registered dataset are
    accumulated for the run-complete event's `unresolved_urns`. If the in-scope set is empty, the run
    still completes successfully and emits `METAGEN.RUN_COMPLETE` with all
    counts at zero so reviewers and ops dashboards see every scheduled
    tick.
-2. **Clear this conf's `rejected` candidates** across the in-scope datasets so the
-   per-`(conf, item)` budget frees up.
+2. **Clear this conf's `rejected` candidates** (with their embedding rows) across the
+   in-scope datasets so the per-`(conf, item)` budget frees up. A dry-run skips this step.
 3. Per in-scope dataset, assemble the Producer evidence dictionary from four
    sources. The Producer prompt is the union of all four — the LLM never
-   queries DataHub or pgvector itself.
+   queries DataHub or pgvector itself. The prompt renders at most 30 schema
+   fields per dataset; every enumerated column is still a target item.
 
    - **DataHub static + editable aspects.** `datasetProperties`,
      `schemaMetadata`, `editableDatasetProperties`, `editableSchemaMetadata`,
@@ -949,18 +953,21 @@ fired `tier` and runs each one under its own per-conf lock. A conf already runni
      to empty lists and the run proceeds.
 4. **Enumerate target items** — `(dataset_urn, dataset.description)` and one
    `(dataset_urn, column.<fieldPath>.description)` per column. Items are shared
-   across confs (keyed by `(dataset_urn, item_id)`). Drop items whose kind is
+   across confs (keyed by `(dataset_urn, item_id)`); the `metagen_items` row for a
+   slot is created when the first candidate for it is persisted. Drop items whose kind is
    outside the dataset's `metagen_boundary.allowed`. Drop items that currently
    have an `approved` candidate **from any conf** — the reviewer has expressed a
    settled preference, so every conf pauses on this item until the approval is
    moved to a different sibling.
-5. **Producer-Reviewer Adversarial Debate** generates candidates per
-   surviving (dataset, item) pair. See
+5. **Producer-Reviewer Adversarial Debate** generates candidates for the
+   surviving items — one debate per in-scope dataset, covering all of that dataset's
+   surviving items. See
    [BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate).
    The producer emits candidate `value`s; the reviewer evaluates each
    against ontology context and existing approved descriptions; only
    candidates with reviewer outcome `accept` and
-   `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD` persist.
+   `confidence_score >= runtime_config.metagen_confidence_threshold` (default `0.7`,
+   `PATCH /admin/conf`) persist; below-threshold candidates are dropped.
 6. **Apply per-`(conf, item)` budget** — for each (dataset, item) whose surviving
    candidate count for **this conf** exceeds the slack (`result_limit -
    non_rejected_count` counted over this conf's candidates on the item), either
@@ -970,9 +977,10 @@ fired `tier` and runs each one under its own per-conf lock. A conf already runni
    untouched.
 7. **Persist** the accepted candidates as `metagen_candidates` rows with the
    producing `conf_id` and `status='llm_approved'`. Refresh
-   `metagen_candidate_embeddings` for these newly `llm_approved` candidates (and again
-   when a candidate is later promoted to `approved` via review) that will inform
-   the next run's Reviewer RAG (the anchor pool is global per `kind`, conf-agnostic).
+   `metagen_candidate_embeddings` (best-effort) for each newly `llm_approved`
+   candidate, and again when a candidate is later promoted to `approved` via review.
+   Only `approved` candidates serve as the next run's Reviewer RAG anchors (the anchor
+   pool is global per `kind`, conf-agnostic).
 
 The LLM step in step 5 runs inside the
 [Inference Loop](BACKEND_LLM.md#inference-loop) with the producer-reviewer
@@ -1605,7 +1613,7 @@ delete event would be self-defeating. Domain-specific actions:
 |---|---|---|
 | `INGESTION` (`ingestion_source`, `entity_id=source_id`) | `COMPLETE` / `FAIL` | An ingestion run completes, or the sync sweep observes that a dataset was ingested. Always booked on a source, never on the dataset; projected onto a dataset's timeline via reverse-lookup plus the `detail.dataset_urn` predicate (see [Querying Events](#querying-events)). Four producers, discriminated by `detail.source` — see [producers and `detail` vocabulary](#ingestioncomplete--ingestionfail-producers) below |
 | `VALIDATION` (`dataset`) | `RESULT_RECORDED` | `POST attr/validation/result` succeeds (one event per accepted result) |
-| `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations`, `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`) |
+| `METAGEN` (`metagen`, `entity_id=conf_id`) | `RUN_COMPLETE` / `RUN_FAILED` | per-conf generation run end; `RUN_COMPLETE` recorded for both dry-run and non-dry-run, `dry_run` flag in detail. Detail keys: `run_id` (uuid4), `conf_id`, `conf_name`, `unresolved_urns` (list, same shape as METRIC), `counts` (dict — `items_considered`, `candidates_added`, `candidates_evicted`, `rejected_cleared` on real-run; `items_considered`, `candidates_proposed` on dry-run), `dry_run`, `producer_iterations` and `debate_outcome` (`accept` / `turns_exhausted` / `cycle_detected`), both taken from the last dataset debated in the run and null when no dataset reached a debate. `RUN_FAILED` detail keys: `error`, `run_id`, `conf_id`, `conf_name` |
 | `METAGEN` (`dataset`) | `CANDIDATE_APPROVE` / `CANDIDATE_REJECT` | `POST attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` with `verdict: "approve"\|"reject"`. Detail keys: `item_id`, `candidate_id`, `reason` |
 | `METRIC` (`metric`) | `RUN_COMPLETE` | `POST method/run` succeeds. Detail keys: `run_id`, `metric_id`, `values` (dict[str,float] — the persisted result), `dry_run`, `unresolved_urns` (list — literal `dataset_urn` values in `dataset_filter` that matched no registered dataset), `breakdown_summary` (`{dataset_count, affected_count}`) |
 | `ONTOGEN` (`ontogen`) | `SEED_CREATE` / `SEED_UPDATE` / `SEED_DELETE` | seed CRUD on `attr/seed/{seed_id}` |
@@ -2088,7 +2096,6 @@ Resilience and tuning constants defined in `src/shared/config.py`:
 | `CIRCUIT_BREAKER_RESET_MS` | 60000 | Time before probe attempt |
 | `EMBEDDING_DIMENSION` | 1536 | Vector dimension (matches LLM model) |
 | `ONTOLOGY_CONFIDENCE_THRESHOLD` | 0.7 | Ontogen: below this -> row persists as `llm_pending` |
-| `METAGEN_CONFIDENCE_THRESHOLD` | 0.7 | Metagen: below this -> candidate is dropped (metagen has no `llm_pending`). Default only — the live value is the runtime-tunable `runtime_config.metagen_confidence_threshold` (`PATCH /admin/conf`), not a static constant |
 
 ---
 

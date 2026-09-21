@@ -39,7 +39,7 @@ dataset's metagen events fold into that page's unified **Events** panel.
 |---|---|---|
 | `/metagen/conf` | `GET /spoke/metagen/conf` | — (a "Create conf" button routes to `/metagen/conf/new`) |
 | `/metagen/conf/new` | — | `POST /spoke/metagen/conf` (fields: `name`, `is_enabled`, `schedule_tier`, `dataset_filter`, `result_limit`, `overwrite_pending`) |
-| `/metagen/conf/[id]` | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/dataset` (with `include_disallowed` toggle), `GET /spoke/metagen/conf/{conf_id}/event` | `PUT/PATCH /spoke/metagen/conf/{conf_id}`; `DELETE /spoke/metagen/conf/{conf_id}`; `POST /spoke/metagen/conf/{conf_id}/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
+| `/metagen/conf/[id]` | `GET /spoke/metagen/conf/{conf_id}`, `GET /spoke/metagen/conf/{conf_id}/dataset` (with `include_disallowed` toggle), `GET /spoke/metagen/conf/{conf_id}/event` | `PUT /spoke/metagen/conf/{conf_id}`; `DELETE /spoke/metagen/conf/{conf_id}`; `POST /spoke/metagen/conf/{conf_id}/method/run` (optional body `{dataset_urns?}`; `?dry_run=true`) |
 | `/metagen/result` | `GET /spoke/metagen/dataset`, `GET /spoke/metagen/event` | — (review happens on the MetaGen panel of `/data/[urn]`) |
 | `/metagen/uncovered` | `GET /spoke/metagen/uncovered` (with `include_disallowed` toggle) | — |
 | `/data/[urn]` MetaGen panel | `GET …/attr/metagen/boundary`, `GET …/attr/metagen/item`, `GET …/attr/metagen/item/{item_id}` (per-item candidates) | `PUT/DELETE …/attr/metagen/boundary` (fields: `is_enabled`, `allowed[]`); `POST …/attr/metagen/item/{item_id}/candidate/{candidate_id}/method/review` body `{verdict: "approve"\|"reject", reason}` |
@@ -75,8 +75,8 @@ The detail page opens as a read-only **view** rendering the conf fields
 (`is_enabled`, `schedule_tier`, `result_limit`, `overwrite_pending`,
 `dataset_filter`) as plain text rather than disabled inputs; the `schedule_tier`
 value links to its backing Airflow DAG (`metagen-<tier>`) as in the conf list.
-`Edit` swaps the view for the form over the same fields (`PUT` full replace /
-`PATCH` partial). The detail page also
+`Edit` swaps the view for the form over the same fields; `Save` submits a full
+`PUT` replace. The detail page also
 deletes the conf (button → ConfirmDialog → `DELETE`; the dialog notes that this
 conf's generated items and candidates are retained as parentless results while
 already-approved descriptions stay in DataHub), and triggers a run with a `dry_run` toggle
@@ -145,9 +145,10 @@ submit the optional backend query and reset `offset` to zero on submit or clear.
 The MetaGen panel on the unified [`/data/[urn]`](FRONTEND_BASIC.md#per-dataset-page-dataurn) page
 has a **Boundary Config** section over `attr/metagen/boundary`, then a **Generated Items**
 section listing the dataset's candidates in **two foldable panels —
-one per item kind**: `dataset.description` and `column.description`. The header
-renders an enabled/disabled badge beside the dataset URN. Each panel holds a
-single **table whose rows are candidates** (fetched per item via
+one per item kind**: `dataset.description` and `column.description`; a panel renders
+only when the dataset has items of its kind. The unified page's MetaGen summary card
+carries the boundary enabled/disabled badge and candidate count. Each
+panel holds a single **table whose rows are candidates** (fetched per item via
 `GET …/attr/metagen/item/{item_id}`). Common columns:
 
 | Column | Source |

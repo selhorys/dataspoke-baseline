@@ -19,7 +19,9 @@ ROOT = Path(__file__).parents[3]
 PRAUTO = ROOT / ".prauto"
 
 
-def _run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run_bash(
+    script: str, *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run an issues-library snippet against a stubbed gh, in its own process."""
     return subprocess.run(
         ["bash", "-c", script],

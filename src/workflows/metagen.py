@@ -3,9 +3,9 @@
 Orchestration is handled by the Airflow DAG definitions in:
   - dags/metagen_hourly.py / metagen_daily.py / metagen_weekly.py (tier)
 
-Manual API runs go through `POST /spoke/metagen/method/run`, which calls
-MetagenService.run() synchronously in-process. Business logic lives in
-src/backend/metagen/service.py.
+Manual API runs go through `POST /spoke/metagen/conf/{conf_id}/method/run`,
+which calls MetagenService.run() synchronously in-process for that one conf.
+Business logic lives in src/backend/metagen/service.py.
 Activity endpoint: POST /internal/activities/metagen/run
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue, §Concurrency Guards
@@ -17,12 +17,14 @@ from pydantic import BaseModel
 
 
 class MetagenRunParams(BaseModel):
-    """Parameters for a metagen tier run.
+    """Optional scope and dry-run flag for a metagen run.
 
-    The activity endpoint fans out across all enabled metagen confs whose
-    schedule_tier matches the requested tier. Each conf runs under its own
-    per-conf lock; the dataset scope for each conf is determined server-side
-    from that conf's dataset_filter intersected with enabled boundaries.
+    The tier DAGs supply the tier on the activity body
+    (`src/api/routers/internal/activities.MetagenRunRequest.tier`); the activity
+    then fans out across all enabled metagen confs whose schedule_tier matches.
+    Each conf runs under its own per-conf lock; the dataset scope for each conf
+    is determined server-side from that conf's dataset_filter intersected with
+    enabled boundaries.
 
     - dataset_urns: optional list of DataHub dataset URNs to further scope the
       run. When omitted, the full per-conf dataset_filter applies.

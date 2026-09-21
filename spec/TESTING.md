@@ -503,7 +503,7 @@ Route namespaces: `/api/v1/spoke/{governance,ingestion,validation,ontogen,metage
 
 | Side effect | How to check |
 |---|---|
-| Event logged | `GET /api/v1/spoke/<feature>/data/{urn}/event` (one of `ingestion`, `validation`, `metagen`) |
+| Event logged | `GET /api/v1/spoke/common/data/{urn}/event/<feature>` (one of `ingestion`, `validation`, `metagen`) |
 | Airflow DAG | `curl http://airflow.<INGRESS_IP>.nip.io/api/v2/dags/{dag_id}` |
 | DB row | `psql -h $DATASPOKE_DEV_POSTGRES_HOST -p $DATASPOKE_DEV_POSTGRES_PORT -U $DATASPOKE_DEV_POSTGRES_USER -d $DATASPOKE_DEV_POSTGRES_DB` |
 | DataHub aspect | `curl $DATASPOKE_DEV_DATAHUB_GMS_URL/aspects?urn={urn}&aspect={aspect}` (`http://datahub-gms.<INGRESS_IP>.nip.io`) |

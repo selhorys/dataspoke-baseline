@@ -436,7 +436,7 @@ async function runConfFromDetail(
  *   → **drop all candidates from this run**. The next scheduled run is the recovery path."
  * spec: BACKEND_LLM.md §Metagen Adversarial Debate (Persistence threshold row) —
  *   "**Below-threshold candidates are dropped** — metagen has no `llm_pending` state. Only
- *   candidates with `outcome=accept` AND `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD`
+ *   candidates with `outcome=accept` AND `confidence_score >= runtime_config.metagen_confidence_threshold`
  *   persist as `status='llm_approved'`."
  */
 function diagnoseEmptyEuRun(): string {
@@ -472,7 +472,7 @@ function diagnoseEmptyEuRun(): string {
   }
   return (
     `${where} With debate_outcome=accept and nothing persisted, every produced candidate ` +
-    "fell below METAGEN_CONFIDENCE_THRESHOLD (below-threshold candidates are dropped — " +
+    "fell below runtime_config.metagen_confidence_threshold (below-threshold candidates are dropped — " +
     "metagen has no llm_pending state) or the Producer targeted no item at all."
   );
 }

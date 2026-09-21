@@ -1,22 +1,15 @@
 /**
- * Pure predicate functions for MetaGen item and candidate states.
+ * Pure predicates over MetaGen candidate state and the DataHub
+ * destination-aspect label.
  *
  * Exported as named functions so the test agent can import and unit-test
  * them directly.
  *
  * Source of truth: src/backend/metagen/service.py §review_candidate and
- * _metagen_mappers.py §item_status.
+ * §_emit_to_datahub.
  */
 
-import type { MetagenCandidate, MetagenItemSummary } from "@/types/metagen";
-
-/**
- * Returns true when the item has at least one human-approved candidate.
- * An item in this state collapses to a single approved row in the UI.
- */
-export function isItemFinalized(item: Pick<MetagenItemSummary, "status">): boolean {
-  return item.status === "approved";
-}
+import type { MetagenCandidate } from "@/types/metagen";
 
 /**
  * Returns true when the candidate is eligible for a Reject action.
@@ -32,15 +25,6 @@ export function isItemFinalized(item: Pick<MetagenItemSummary, "status">): boole
  */
 export function isRejectEligible(candidate: Pick<MetagenCandidate, "status">): boolean {
   return candidate.status === "llm_approved" || candidate.status === "approved";
-}
-
-/**
- * Returns the approved candidate from a list, or null if none exists.
- */
-export function findApprovedCandidate(
-  candidates: MetagenCandidate[],
-): MetagenCandidate | null {
-  return candidates.find((c) => c.status === "approved") ?? null;
 }
 
 /**

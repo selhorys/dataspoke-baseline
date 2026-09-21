@@ -696,9 +696,9 @@ did not happen must still be reported.
 
 ## Per-dataset page (`/data/[urn]`)
 
-The single hub for everything DataSpoke knows about one dataset. It supersedes the former
-per-feature detail routes — `/ingestion/data/[urn]`, `/validation/data/[urn]`, and
-`/metagen/data/[urn]` now **redirect** here (preserving deep links). It consumes only the
+The single hub for everything DataSpoke knows about one dataset. The per-feature detail
+routes — `/ingestion/data/[urn]`, `/validation/data/[urn]`, and `/metagen/data/[urn]` —
+**redirect** here (preserving deep links). It consumes only the
 per-dataset `/spoke/common/data/{urn}/…` routes verbatim, no invented endpoints.
 
 Layout, top to bottom:
@@ -742,7 +742,7 @@ Layout, top to bottom:
     the score and per-variable charts
     (see [FRONTEND_VALIDATION](FRONTEND_VALIDATION.md)).
   - *MetaGen* — the `MetagenDataPanel`, with a **Boundary Config** sub-section
-    (`GET/PUT/PATCH …/attr/metagen/boundary`; its `is_enabled` and `allowed` fields render as two
+    (`GET/PUT/DELETE …/attr/metagen/boundary`; its `is_enabled` and `allowed` fields render as two
     outlined group boxes laid out horizontally in a single row) and a **Generated Items**
     sub-section (`GET …/attr/metagen/item`, item/candidate review) (see
     [FRONTEND_METAGEN](FRONTEND_METAGEN.md#per-dataset-dataurn-metagen-panel)).
