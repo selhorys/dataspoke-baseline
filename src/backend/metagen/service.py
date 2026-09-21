@@ -1194,7 +1194,6 @@ class MetagenService:
             debate_result = await run_debate(
                 llm=self._llm,
                 vector=self._vector,
-                db=self._db,
                 producer_prompt=prompt,
                 validate_tool=validate_tool,
                 review_tool=review_tool,

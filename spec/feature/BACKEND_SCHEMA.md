@@ -255,8 +255,8 @@ any conf may write on this dataset.
 
 #### `metagen_items`
 
-One row per (dataset, item slot). Materialized lazily by each run for in-scope
-(dataset, allowed kind) pairs. The item carries identity only — whether it
+One row per (dataset, item slot). Materialized lazily when the first candidate for the
+slot is persisted, so a slot no run has produced a candidate for has no row. The item carries identity only — whether it
 currently has an approved candidate is derived from the sibling rows in
 `metagen_candidates`.
 
@@ -285,7 +285,7 @@ are deleted at the start of the next run.
 | `item_id` | `TEXT` | Item this candidate belongs to (FK `(dataset_urn, item_id)` → `metagen_items`) |
 | `run_id` | `UUID` | The metagen run that produced this candidate |
 | `value` | `TEXT` | Markdown proposal (≤ 16 KiB) |
-| `confidence_score` | `REAL` | Producer-Reviewer debate confidence (`[0.0, 1.0]`) |
+| `confidence_score` | `FLOAT` | Producer-Reviewer debate confidence (`[0.0, 1.0]`) |
 | `status` | `TEXT` | `llm_approved` (debate-accepted, awaiting human), `approved` (human accepted, emitted to DataHub), `rejected` (human rejected, deleted next run) |
 | `evidence` | `JSONB` | Debate transcript plus per-item Reviewer verdicts |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -304,8 +304,9 @@ transaction (see [BACKEND §Metadata Generation Service](BACKEND.md#metadata-gen
 
 #### `metagen_candidate_embeddings`
 
-Vector embeddings of `approved` candidate `value`s. Used by the Reviewer's
-RAG anchor pool in subsequent runs (see
+Vector embeddings of candidate `value`s (one row per candidate that has been
+embedded). The Reviewer's RAG anchor pool in subsequent runs is the `approved`
+subset, selected at query time by joining `metagen_candidates.status` (see
 [BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate)).
 
 | Column | Type | Description |
@@ -353,7 +354,7 @@ There is no parent/child hierarchy.
 | `id` | `TEXT` PK | Node identifier (slug, e.g. `book`, `customer`, `order_line`); `__` is forbidden (reserved as triple-ID separator) |
 | `name` | `TEXT` UNIQUE | Node display name |
 | `description` | `TEXT` | LLM-generated description |
-| `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
+| `confidence_score` | `FLOAT` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — `llm_pending` is the LLM-created default; `llm_approved` is set when the Adversarial Debate ends with `outcome=accept` and confidence ≥ `ONTOLOGY_CONFIDENCE_THRESHOLD`; `approved` and `rejected` are written only by the human review endpoint |
 | `run_id` | `UUID` NULL | The inference run that produced this row, written **only on insert** (never overwritten on reuse/update). `NULL` for seeded rows. Identifies the run's Langfuse session (`session_id = run_id`) holding the debate transcript — see [BACKEND_LLM §Evidence](BACKEND_LLM.md#evidence--the-runs-langfuse-session) |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -367,7 +368,7 @@ Maps datasets to nodes with confidence scores.
 |--------|------|-------------|
 | `dataset_urn` | `TEXT` PK | Dataset URN |
 | `node_id` | `TEXT` PK, FK → `ontogen_nodes(id)` | Node |
-| `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
+| `confidence_score` | `FLOAT` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same vocabulary as `ontogen_nodes`; cascaded from the parent node row on human review |
 | `is_primary` | `BOOLEAN` | True for the primary (authoritative) member dataset of the node — distinct from `dataset_registry.is_primary`, the DataHub sibling-leadership mirror a `dataset_filter` reads |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -382,7 +383,7 @@ on its own and is reused across many triples.
 | `id` | `TEXT` PK | Edge identifier (slug, e.g. `references`, `placed_by`); `__` is forbidden (reserved as triple-ID separator) |
 | `label` | `TEXT` UNIQUE | Edge display label |
 | `semantics` | `TEXT` NULL | LLM-generated short semantics description |
-| `confidence_score` | `REAL` | LLM inference confidence (0.0–1.0) |
+| `confidence_score` | `FLOAT` | LLM inference confidence (0.0–1.0) |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same semantics as `ontogen_nodes.status` |
 | `run_id` | `UUID` NULL | The inference run that produced this row; same semantics as `ontogen_nodes.run_id` (insert-only, `NULL` for seeded rows) |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -400,7 +401,7 @@ themselves `approved`.
 | `subject_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Subject node |
 | `edge_id` | `TEXT` FK → `ontogen_edges(id)` | Predicate edge |
 | `object_node_id` | `TEXT` FK → `ontogen_nodes(id)` | Object node |
-| `confidence_score` | `REAL` | LLM inference confidence |
+| `confidence_score` | `FLOAT` | LLM inference confidence |
 | `status` | `TEXT` | `llm_pending`, `llm_approved`, `approved`, `rejected` — same semantics as `ontogen_nodes.status`. Human approval is gated on all three component rows (`subject_node_id`, `edge_id`, `object_node_id`) being `approved`; an LLM-approved component does NOT satisfy the gate |
 | `run_id` | `UUID` NULL | The inference run that produced this row; same semantics as `ontogen_nodes.run_id` (insert-only, `NULL` for seeded rows) |
 | `created_at` | `TIMESTAMPTZ` | |
@@ -667,7 +668,7 @@ Primary table for natural language search and similarity matching. Lives in the
 | `platform` | `TEXT` | Data platform (`oracle`, `postgres`, etc.) |
 | `tags` | `JSONB` | DataHub tag URNs |
 | `owners` | `JSONB` | Owner URNs |
-| `quality_score` | `REAL` NULL | Best-effort cached quality score |
+| `quality_score` | `FLOAT` NULL | Best-effort cached quality score |
 | `has_pii` | `BOOLEAN` | PII classification flag |
 | `updated_at` | `TIMESTAMPTZ` NOT NULL | Last sync timestamp |
 
@@ -770,9 +771,9 @@ DAG or manual `POST /spoke/ontogen/method/run` that refreshes `node_embeddings`.
 
 ### `metagen_candidate_embeddings`
 
-Embeddings over `approved` UC4 metagen candidate `value`s. Used by the
-Metagen Adversarial Debate Reviewer to sample RAG anchors of prior
-human-approved descriptions of the same kind (see
+Embeddings over UC4 metagen candidate `value`s. Used by the Metagen
+Adversarial Debate Reviewer to sample RAG anchors of prior human-approved
+(`status='approved'`) descriptions of the same kind (see
 [BACKEND_LLM §Metagen Adversarial Debate](BACKEND_LLM.md#metagen-adversarial-debate)).
 Lives in the `dataspoke` schema.
 
@@ -788,10 +789,11 @@ Lives in the `dataspoke` schema.
 **Embedding input**: The candidate's Markdown `value`. Processed through the
 LLM embedding endpoint.
 
-**Sync triggers**: Inserted at the moment a candidate flips to
-`status='approved'` (synchronous with the DataHub emit). Deleted only when
-the candidate row is deleted (which baseline metagen never does for
-approved rows).
+**Sync triggers**: Upserted (best-effort) when a candidate is persisted as
+`llm_approved`, and again when it flips to `status='approved'` (after the DataHub
+emit). The row is always deleted together with its candidate row — at the next
+run's `rejected`-candidate clear and at per-`(conf, item)` FIFO eviction; baseline
+metagen never deletes `approved` candidate rows.
 
 ### Graph (Apache AGE, reserved)
 

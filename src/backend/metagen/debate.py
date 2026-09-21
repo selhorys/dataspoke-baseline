@@ -10,7 +10,6 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.backend.metagen.debate_models import (
     DebateHistoryEntry,
@@ -39,7 +38,6 @@ async def run_debate(
     *,
     llm: LLMClient,
     vector: PgVectorManager,
-    db: AsyncSession,
     producer_prompt: str,
     validate_tool: StructuredTool,
     review_tool: StructuredTool,

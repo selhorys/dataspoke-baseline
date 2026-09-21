@@ -148,7 +148,6 @@ async def _run(
     reviewer_model: str | None = None,
 ) -> DebateResult:
     """Call run_debate with minimal wiring; patch away all pgvector calls."""
-    db = MagicMock()
     vector = MagicMock()
 
     with (
@@ -164,7 +163,6 @@ async def _run(
         return await run_debate(
             llm=producer,  # type: ignore[arg-type]
             vector=vector,
-            db=db,
             producer_prompt="generate metadata for dataset urn:x",
             validate_tool=_fake_validate_tool(),
             review_tool=_fake_review_tool(),
@@ -387,7 +385,7 @@ async def test_run_debate_accept_payload_carries_confidence_scores() -> None:
     """On accept, the debate payload contains candidates with confidence_score.
 
     The MetagenService.run() filters accepted candidates by confidence_score >=
-    DATASPOKE_METAGEN_CONFIDENCE_THRESHOLD.  This test asserts that the payload
+    runtime_config.metagen_confidence_threshold.  This test asserts that the payload
     field is present so the service can apply the threshold gate.
 
     Spec: BACKEND_LLM.md §Metagen Adversarial Debate — below-threshold candidates
@@ -455,7 +453,6 @@ async def test_run_debate_reviewer_model_override_calls_make_llm_client() -> Non
     producer_llm = FakeLLM([_producer_result_1()])
     reviewer_fake_llm = FakeLLM([_accept_result()])
 
-    db = MagicMock()
     vector = MagicMock()
 
     with (
@@ -471,7 +468,6 @@ async def test_run_debate_reviewer_model_override_calls_make_llm_client() -> Non
         result = await run_debate(
             llm=producer_llm,  # type: ignore[arg-type]
             vector=vector,
-            db=db,
             producer_prompt="generate metadata",
             validate_tool=_fake_validate_tool(),
             review_tool=_fake_review_tool(),
@@ -519,7 +515,6 @@ async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: b
     producer_llm = FakeLLM([_producer_result_1()])
     reviewer_fake_llm = FakeLLM([_accept_result()])
 
-    db = MagicMock()
     vector = MagicMock()
 
     with (
@@ -535,7 +530,6 @@ async def test_run_debate_threads_stub_llm_client_to_reviewer_model(stub_flag: b
         await run_debate(
             llm=producer_llm,  # type: ignore[arg-type]
             vector=vector,
-            db=db,
             producer_prompt="generate metadata",
             validate_tool=_fake_validate_tool(),
             review_tool=_fake_review_tool(),

@@ -14,15 +14,17 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
 PRAUTO = ROOT / ".prauto"
 
 
-def _run_bash(script: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run_bash(
+    script: str, *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run a phase-library snippet in its own process."""
     return subprocess.run(
         ["bash", "-c", script],
@@ -240,8 +242,8 @@ def test_the_retry_consumed_flag_is_set_and_reset_inside_the_issue_loop() -> Non
     """
     lines = (PRAUTO / "heartbeat.sh").read_text().splitlines()
 
-    sets = [i for i, l in enumerate(lines) if l.strip() == "RETRY_COUNT_CONSUMED=true"]
-    resets = [i for i, l in enumerate(lines) if l.strip() == "RETRY_COUNT_CONSUMED=false"]
+    sets = [i for i, line in enumerate(lines) if line.strip() == "RETRY_COUNT_CONSUMED=true"]
+    resets = [i for i, line in enumerate(lines) if line.strip() == "RETRY_COUNT_CONSUMED=false"]
     assert sets, "nothing marks an attempt consumed, so refund_retry_count never refunds"
     assert resets, "the per-issue reset is gone: a refund could take another issue's attempt"
 
@@ -255,6 +257,6 @@ def test_the_retry_consumed_flag_is_set_and_reset_inside_the_issue_loop() -> Non
 
     # The mark must follow the increment it reports.
     increment = next(
-        i for i, l in enumerate(lines) if l.strip().startswith("if ! increment_retry_count")
+        i for i, line in enumerate(lines) if line.strip().startswith("if ! increment_retry_count")
     )
     assert min(sets) > increment, "expected the consumed mark after the increment"

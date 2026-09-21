@@ -128,11 +128,6 @@ export interface MetagenBoundaryPutBody {
   allowed: AllowedKind[];
 }
 
-export interface MetagenBoundaryPatchBody {
-  is_enabled?: boolean;
-  allowed?: AllowedKind[];
-}
-
 // ── Item & candidate ──────────────────────────────────────────────────────────
 
 export interface MetagenItemSummary {

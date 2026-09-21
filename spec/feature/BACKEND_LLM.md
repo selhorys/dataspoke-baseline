@@ -93,7 +93,7 @@ confidence_score}`.
 | Pydantic shape of `MetagenLLMOutput` | `SCHEMA` |
 | `dataset_urn` ∈ the run's in-scope dataset set (intersection of `dataset_filter` and `metagen_boundary.is_enabled=true`) | `OUT_OF_SCOPE_URN` |
 | `item_id` matches `^dataset\.description$` or `^column\.[^.]+\.description$` | `INVALID_ITEM_ID` |
-| For `column.<field_path>.description`: `field_path` resolves to a real column in the dataset's `schemaMetadata` | `UNKNOWN_FIELD_PATH` |
+| For `column.<field_path>.description`: `field_path` resolves to a real column in the dataset's `schemaMetadata` (checked only when that schema yields at least one field path) | `UNKNOWN_FIELD_PATH` |
 | `item_id`'s element kind (`dataset.description` / `column.description`) ∈ the dataset's `metagen_boundary.allowed` | `KIND_NOT_ALLOWED` |
 | `value` is non-empty Markdown ≤ 16 KiB | `EMPTY_VALUE` / `VALUE_TOO_LARGE` |
 | `confidence_score ∈ [0.0, 1.0]` | `CONF_OUT_OF_RANGE` |
@@ -303,11 +303,14 @@ via `src/backend/metagen/debate.py`. Differences from ontogen:
 | Producer output schema | `OntogenLLMOutput` (nodes / edges / triples) | `MetagenLLMOutput` (list of `{dataset_urn, item_id, value, confidence_score}` candidates) |
 | Validator tool | `ontogen_validate` | `metagen_validate` |
 | Reviewer tool | `ontogen_review` (per-item verdict `item_kind ∈ {node, edge, triple}`) | `metagen_review` (per-item verdict `item_kind ∈ {dataset_description, column_description}`, addresses `dataset_urn` + `item_id`) |
+| Debate scope | One debate per run | One debate per in-scope dataset per run, over all of that dataset's surviving items |
+| Producer revision | Apply, drop, or rebut (`producer_rebuttal`) each non-accept item | Apply the `suggested_revision` or drop the item — `MetagenLLMCandidate` has no rebuttal field |
 | Issue taxonomy | `naming_format`, `confidence_miscalibrated`, `duplicates_existing`, `weak_evidence`, `ontology_incoherent`, `out_of_scope` | `value_too_generic`, `value_factually_wrong`, `value_redundant_with_approved`, `confidence_miscalibrated`, `style_inconsistent`, `out_of_scope` |
 | RAG anchors | Approved nodes / edges / triples | Approved candidate `value`s grouped by `kind` (dataset descriptions in one pool, column descriptions in another); embedded in `metagen_candidate_embeddings` |
-| Confidence threshold | `ONTOLOGY_CONFIDENCE_THRESHOLD` (default `0.7`) | `METAGEN_CONFIDENCE_THRESHOLD` (default `0.7`) |
-| Persistence threshold | Below-threshold rows persist as `status='llm_pending'` for human triage | **Below-threshold candidates are dropped** — metagen has no `llm_pending` state. Only candidates with `outcome=accept` AND `confidence_score >= METAGEN_CONFIDENCE_THRESHOLD` persist as `status='llm_approved'`. |
+| Confidence threshold | `ONTOLOGY_CONFIDENCE_THRESHOLD` (default `0.7`) | `runtime_config.metagen_confidence_threshold` (default `0.7`, `PATCH /admin/conf`) |
+| Persistence threshold | Below-threshold rows persist as `status='llm_pending'` for human triage | **Below-threshold candidates are dropped** — metagen has no `llm_pending` state. Only candidates with `outcome=accept` AND `confidence_score >= runtime_config.metagen_confidence_threshold` persist as `status='llm_approved'`. |
 | Termination | `accept` → persist; `turns_exhausted` / `cycle_detected` → keep last candidate with `status='llm_pending'` | `accept` → persist surviving candidates as `llm_approved`; `turns_exhausted` / `cycle_detected` → **drop all candidates from this run**. The next scheduled run is the recovery path. |
+| Debate evidence | Not persisted on the rows; each row records only its `run_id`, linking to the run's Langfuse session ([§Evidence](#evidence--the-runs-langfuse-session)) | Each persisted candidate's `evidence` JSONB holds the debate transcript (outcome, history, RAG anchors, per-item Reviewer verdicts, `producer_iterations`, `producer_errors_dropped`), alongside its `run_id` Langfuse link |
 
 The shared scaffolding (cycle detection by SHA-256 hash, soft-fail
 philosophy, per-turn Langfuse trace, test-mode stub behaviour) is

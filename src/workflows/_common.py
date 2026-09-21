@@ -256,25 +256,3 @@ async def make_ontogen(db: "AsyncSession", *, rc: "RuntimeConfigDTO | None" = No
     vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
     # db session and llm are provided by callers via async context manager
     return OntogenService, datahub, cache, vector
-
-
-async def make_metagen(db: "AsyncSession", *, rc: "RuntimeConfigDTO | None" = None) -> tuple:  # type: ignore[type-arg]
-    """Construct MetagenService dependencies (without LLM — caller loads RC from DB first).
-
-    Spec: spec/feature/BACKEND.md §Feature Services — MetagenService requires
-    datahub, db, cache, llm, vector.
-
-    LLM is excluded from this tuple; callers must load RuntimeConfigDTO via
-    ``get_runtime_config(db)`` and then call ``make_llm_client(stub=...,
-    provider=..., model=..., langfuse_host=..., langfuse_public_key=...)``.
-    """
-    from src.backend.admin.config_service import get_runtime_config
-    from src.backend.metagen.service import MetagenService
-
-    if rc is None:
-        rc = await get_runtime_config(db)
-    datahub = await make_datahub(db)
-    cache = make_redis_client(stub=rc.stub_redis_client)
-    vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
-    # db session and llm are provided by callers via async context manager
-    return MetagenService, datahub, cache, vector

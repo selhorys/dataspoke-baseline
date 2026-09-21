@@ -1,7 +1,7 @@
 """Confidence-threshold gate test for the metagen run pipeline.
 
 After the adversarial debate accepts a payload, only candidates whose
-``confidence_score >= METAGEN_CONFIDENCE_THRESHOLD`` may persist; below-threshold
+``confidence_score >= runtime_config.metagen_confidence_threshold`` may persist; below-threshold
 candidates are dropped (metagen has no llm_pending state). This test drives
 ``MetagenService._run_inner`` with an accepted payload whose candidates straddle the
 threshold and asserts that only the at/above-threshold candidates reach persistence
@@ -10,9 +10,10 @@ threshold and asserts that only the at/above-threshold candidates reach persiste
 Spec:
   spec/feature/BACKEND_LLM.md §Metagen Adversarial Debate — "Below-threshold candidates
     are dropped ... Only candidates with outcome=accept AND
-    confidence_score >= METAGEN_CONFIDENCE_THRESHOLD persist as status='llm_approved'."
-  spec/feature/BACKEND_LLM.md §Metagen Adversarial Debate — Confidence threshold
-    METAGEN_CONFIDENCE_THRESHOLD (default 0.7).
+    confidence_score >= runtime_config.metagen_confidence_threshold persist as
+    status='llm_approved'."
+  spec/feature/BACKEND_LLM.md §Metagen Adversarial Debate — Confidence threshold:
+    runtime_config.metagen_confidence_threshold (default 0.7, PATCH /admin/conf).
 """
 
 import types
@@ -47,7 +48,7 @@ def _make_conf(conf_id: str) -> MetagenConfDTO:
 
 @pytest.mark.asyncio
 async def test_below_threshold_candidate_dropped_at_or_above_persists(monkeypatch) -> None:
-    """Only candidates at/above METAGEN_CONFIDENCE_THRESHOLD reach persistence.
+    """Only candidates at/above runtime_config.metagen_confidence_threshold reach persistence.
 
     Seeds THREE accepted candidates straddling the threshold (above, exactly at, below)
     and asserts persistence is attempted for exactly the above + at-threshold pair and
