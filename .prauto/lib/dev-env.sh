@@ -29,9 +29,9 @@ env_file_value() {
 # resolve_dev_env
 # Resolve the dev-env file and lock endpoint, anchored to $REPO_DIR (the checkout),
 # NEVER the worktree — a branch must not redirect deploys. Sets DEV_ENV_FILE,
-# DEV_LOCK_URL. Returns 0 if the env file is present, 1 otherwise.
+# DEV_LOCK_URL, DEV_LOCK_HEALTH_URL. Returns 0 if the env file is present, 1 otherwise.
 resolve_dev_env() {
-  DEV_ENV_FILE=""; DEV_LOCK_URL=""
+  DEV_ENV_FILE=""; DEV_LOCK_URL=""; DEV_LOCK_HEALTH_URL=""
   [[ -z "${REPO_DIR:-}" ]] && return 1
 
   local configured="${PRAUTO_DEV_ENV_FILE:-helm-charts/.env.dev}" candidate
@@ -41,7 +41,11 @@ resolve_dev_env() {
 
   local lock_base
   lock_base=$(env_file_value "$DEV_ENV_FILE" "DATASPOKE_DEV_LOCK_URL")
-  DEV_LOCK_URL="${lock_base:-http://localhost:9221}/lock"
+  local resolved_base="${lock_base:-http://localhost:9221}"
+  DEV_LOCK_URL="${resolved_base}/lock"
+  # The service's liveness route hangs off the BASE, not off /lock — a probe at
+  # ${DEV_LOCK_URL}/health is a 404 the service answers happily.
+  DEV_LOCK_HEALTH_URL="${resolved_base}/health"
   return 0
 }
 
@@ -401,6 +405,64 @@ write_dev_env_state_marker() {
   mv -f "$tmp_file" "$DEV_ENV_STATE_FILE"
 }
 
+# dev_env_namespaces_absent <env_file>
+# Confirm the dev profile's namespaces are actually gone. Fails CLOSED: only a
+# clean answer from the API server OF THE CLUSTER THIS ENV FILE NAMES counts as
+# proof of deletion. An auth failure, a DNS outage, a missing kubectl, an
+# unresolvable context, a malformed namespace name, or a timeout is "could not
+# ask" — not evidence, and never to be read as success. That conflation is
+# exactly what lets a cluster survive its own teardown.
+#
+# The --context pin is load-bearing, not hygiene. Ambient current-context is
+# mutable global state (helpers.sh:110-158 pins a private kubeconfig copy for
+# this reason), and uninstall.sh's own EXIT trap deletes that copy before we get
+# here, so this call inherits nothing from the teardown it is checking. Against
+# any other cluster the dev namespaces are trivially absent — which would delete
+# the durable marker and reproduce the very failure this function exists to stop.
+#
+# --ignore-not-found reads absence from the API server's own answer (exit 0, no
+# output) instead of matching its error prose, so this does not depend on how a
+# given kubectl release words "not found".
+#
+# Hard-bounded by run_with_timeout because this runs from the EXIT trap and its
+# expected bad case is an unreachable cluster. --request-timeout is a per-request
+# bound, not a wall-clock one: the discovery calls underneath it are retried, and
+# how long an unreachable endpoint takes to fail depends on whether the network
+# refuses the connection or blackholes it. Only the outer bound is a guarantee.
+dev_env_namespaces_absent() {
+  local env_file="$1" key ns cluster out rc output
+  local timeout_secs="${PRAUTO_DEV_ENV_NS_PROBE_TIMEOUT_SECS:-20}"
+  local -a namespaces=()
+  [[ "$timeout_secs" =~ ^[1-9][0-9]*$ ]] || timeout_secs=20
+  command -v kubectl >/dev/null 2>&1 || return 1
+  declare -F run_with_timeout >/dev/null 2>&1 || return 1
+
+  cluster=$(env_file_value "$env_file" "DATASPOKE_KUBE_CLUSTER")
+  [[ -n "$cluster" ]] || return 1
+
+  for key in DATASPOKE_KUBE_DATASPOKE_NAMESPACE DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE \
+             DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE; do
+    ns=$(env_file_value "$env_file" "$key")
+    [[ -n "$ns" ]] || continue
+    # DNS-1123, so a malformed or partially-written env value cannot arrive as a
+    # kubectl OPTION. `--selector=...` as a namespace name would return exit 0
+    # and no output — indistinguishable here from "all four are gone".
+    [[ "$ns" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#ns}" -le 63 ]] || return 1
+    namespaces+=("$ns")
+  done
+  [[ "${#namespaces[@]}" -gt 0 ]] || return 1
+
+  out=$(mktemp) || return 1
+  rc=0
+  run_with_timeout "$timeout_secs" \
+    kubectl --context "$cluster" get namespace "${namespaces[@]}" --ignore-not-found -o name \
+    --request-timeout="${PRAUTO_KUBECTL_REQUEST_TIMEOUT:-3s}" >"$out" 2>&1 || rc=$?
+  output=$(cat "$out" 2>/dev/null || true)
+  rm -f "$out"
+  [[ "$rc" -eq 0 ]] || return 1        # timed out, unreachable, unauthorized, or no such context
+  [[ -z "$output" ]]                   # any name printed = still present
+}
+
 # teardown_provisioned_dev_env
 # Remove a dev profile that this heartbeat (or a recovered earlier one, via
 # recover_orphaned_dev_env) provisioned. Full deletion includes PVCs and
@@ -430,8 +492,30 @@ teardown_provisioned_dev_env() {
     warn "Leaving the durable marker in place for a later heartbeat to retry."
     return 0
   fi
+  # An exit status is a claim, not evidence. uninstall.sh reports what it did;
+  # only the API server reports what is gone. Clear the marker — the one thing
+  # that lets a later heartbeat find this cluster at all — on confirmation only.
+  if ! dev_env_namespaces_absent "$env_file"; then
+    warn "uninstall.sh exited 0 but the dev namespaces are not confirmed gone."
+    warn "Leaving the durable marker in place for a later heartbeat to retry."
+    return 0
+  fi
   rm -f "$DEV_ENV_STATE_FILE"
   info "Provisioned dev cluster torn down."
+}
+
+# dev_env_marker_path_is_sane <path>
+# The marker's env_file must be exactly the dev env file this worker resolves for
+# itself. Compared after realpath so a symlink or a `..` segment cannot point
+# somewhere else that merely spells the same.
+dev_env_marker_path_is_sane() {
+  local candidate="$1" expected resolved_candidate resolved_expected
+  [[ -f "$candidate" ]] || return 1
+  resolve_dev_env || return 1
+  expected="$DEV_ENV_FILE"
+  resolved_candidate=$(cd "$(dirname "$candidate")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename "$candidate")") || return 1
+  resolved_expected=$(cd "$(dirname "$expected")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename "$expected")") || return 1
+  [[ "$resolved_candidate" == "$resolved_expected" ]]
 }
 
 # recover_orphaned_dev_env
@@ -447,6 +531,17 @@ recover_orphaned_dev_env() {
   env_file=$(jq -r '.env_file // empty' "$DEV_ENV_STATE_FILE" 2>/dev/null)
   if [[ -z "$env_file" ]]; then
     warn "Dev-env state marker is unreadable; removing it without a teardown attempt."
+    rm -f "$DEV_ENV_STATE_FILE"
+    return 0
+  fi
+  # This path is the target of a non-interactive `--profile dev --delete-all`
+  # teardown, so it is checked before it is acted on rather than trusted because
+  # this worker wrote it. It must be the dev env file this worker is configured
+  # for, resolved under $REPO_DIR — never an arbitrary path, and never a prod
+  # env file. The marker is now deliberately long-lived across failed teardowns,
+  # which makes validating it matter more, not less.
+  if ! dev_env_marker_path_is_sane "$env_file"; then
+    warn "Dev-env state marker names an unexpected env file (${env_file}); removing it without a teardown attempt."
     rm -f "$DEV_ENV_STATE_FILE"
     return 0
   fi
@@ -560,6 +655,159 @@ dev_env_probe_healthy() {
   return 0
 }
 
+# DEV_LOCK_TOKEN_FILE — where this worker keeps the token the service minted for
+# its current acquisition. The token, not the owner name, is what lets this
+# worker reclaim a lock it left behind: the name is published on every GitHub
+# comment and is identical between two workers sharing PRAUTO_WORKER_ID, so a
+# name match cannot tell a leaked lock from a sibling's live one.
+#
+# Scope of the guarantee, stated precisely: the token stops an honest sibling
+# from reclaiming a live lock by name. It is NOT an access control on the
+# service, which is unauthenticated over plain HTTP and still offers both
+# `DELETE /lock` and an owner-only release to any caller that can reach it.
+# Mode 600 all the same — it is this worker's own claim, and cheap to protect.
+DEV_LOCK_TOKEN_FILE="${DEV_LOCK_TOKEN_FILE:-${PRAUTO_DIR:-.prauto}/state/dev-lock-token.json}"
+# The token for the acquisition currently held, and the PID of the process
+# renewing its lease. Declared here rather than left to first assignment so both
+# are defined for the heartbeat's `set -u` EXIT trap even when no lock was ever
+# taken — the trap runs on every exit path, including ones that never acquired.
+DEV_LOCK_TOKEN=""
+DEV_LOCK_RENEWER_PID=""
+DEV_LOCK_RENEWER_PGID=""
+
+# dev_lock_json_body <key> <value> [key value ...]
+# Build a request body with jq so a value carrying a quote, a backslash or a
+# newline cannot reshape the JSON. Every field here is operator- or
+# service-supplied rather than attacker-supplied today, but a hand-interpolated
+# body is one config edit away from being a body-shaping primitive.
+dev_lock_json_body() {
+  local filter="{}" key
+  local -a names=() values=()
+  while [[ "$#" -gt 0 ]]; do
+    key="$1"; shift
+    # Values are inert (read from the environment below), but the KEY is
+    # interpolated into the jq program, so it is constrained too.
+    if [[ ! "$key" =~ ^[a-z][a-z0-9_]*$ ]]; then
+      printf '{}'
+      return 1
+    fi
+    names+=("$key"); values+=("${1:-}"); shift
+    filter="${filter} | .${key} = env.DEV_LOCK_JQV_${key}"
+  done
+  # Values reach jq through its ENVIRONMENT, not its argv: a token passed as
+  # `--arg` is visible to any local user in ps(1) and, on Linux, in the
+  # world-readable /proc/<pid>/cmdline. /proc/<pid>/environ is owner-only.
+  (
+    local i
+    for (( i = 0; i < ${#names[@]}; i++ )); do
+      export "DEV_LOCK_JQV_${names[$i]}=${values[$i]}"
+    done
+    jq -nc "$filter" 2>/dev/null
+  ) || { printf '{}'; return 1; }
+}
+
+# dev_lock_store_token <owner> <token>
+# The owner is passed in, NOT read from REQUIRED_LOCK_OWNER: that global is set
+# only after the acquire returns, so reading it here would file every token under
+# an empty owner and dev_lock_load_token would never match one again — which
+# silently disables the reclaim this token exists for.
+dev_lock_store_token() {
+  local owner="$1" token="$2" dir tmp
+  DEV_LOCK_TOKEN="$token"
+  [[ -n "$token" ]] || return 0
+  dir=$(dirname "$DEV_LOCK_TOKEN_FILE")
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmp=$(mktemp "${DEV_LOCK_TOKEN_FILE}.tmp.XXXXXX") || return 0
+  chmod 600 "$tmp" 2>/dev/null || true
+  # Only install a body jq actually produced. The fallback used to be a literal
+  # `{}`, which installs cleanly and then never matches on load — silently
+  # disabling the very reclaim this file exists for.
+  if dev_lock_json_body url "${DEV_LOCK_URL:-}" owner "$owner" token "$token" > "$tmp"; then
+    mv -f "$tmp" "$DEV_LOCK_TOKEN_FILE" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+    warn "Could not record the dev-env lock token; a leaked lock will not be reclaimable by this worker."
+  fi
+  return 0
+}
+
+# dev_lock_load_token
+# Echo the stored token, but only when it was minted for THIS lock endpoint and
+# owner — a token from another cluster's service must never authorize anything here.
+dev_lock_load_token() {
+  local owner="$1"
+  [[ -f "$DEV_LOCK_TOKEN_FILE" ]] || return 0
+  jq -r --arg url "${DEV_LOCK_URL:-}" --arg owner "$owner" '
+    select(.url == $url and .owner == $owner) | .token // empty
+  ' "$DEV_LOCK_TOKEN_FILE" 2>/dev/null || true
+}
+
+# dev_lock_clear_token
+dev_lock_clear_token() {
+  DEV_LOCK_TOKEN=""
+  rm -f "$DEV_LOCK_TOKEN_FILE" 2>/dev/null || true
+  return 0
+}
+
+# dev_lock_adopt_token <owner>
+# Load the token dev_lock_acquire persisted into this shell. Required because
+# that function necessarily runs in a subshell (see its docstring).
+dev_lock_adopt_token() {
+  DEV_LOCK_TOKEN=$(dev_lock_load_token "$1")
+  [[ -n "$DEV_LOCK_TOKEN" ]]
+}
+
+# dev_lock_acquire <owner> <message>
+# Echo the HTTP status of one acquire attempt and, on 200, persist the token the
+# service minted to DEV_LOCK_TOKEN_FILE.
+#
+# Callers invoke this in a command substitution to read the status, which makes
+# it a SUBSHELL: the DEV_LOCK_TOKEN it assigns cannot reach the caller. The file
+# is the crossing point — the caller adopts the token with dev_lock_adopt_token
+# once the acquire has succeeded. NEVER fails: a transport error echoes 000 and returns 0, so a
+# bare `code=$(dev_lock_acquire ...)` assignment cannot abort a `set -e` caller
+# before it has had the chance to report the block and release its lock.
+dev_lock_acquire() {
+  local owner="$1" message="$2" body resp code
+  # `|| body='{}'` preserves this function's never-fails contract: a bare
+  # assignment inheriting jq's non-zero status would abort a `set -e` caller
+  # before it could report the block or release its lock. An empty body reaches
+  # the service as a 400, which the caller already handles as a failed acquire.
+  body=$(dev_lock_json_body owner "$owner" message "$message") || body='{}'
+  resp=$(printf '%s' "$body" | curl -s -w $'\n%{http_code}' \
+    --connect-timeout 5 --max-time 30 \
+    -X POST "${DEV_LOCK_URL}/acquire" \
+    -H "Content-Type: application/json" \
+    --data-binary @- 2>/dev/null) || resp=$'\n000'
+  code="${resp##*$'\n'}"
+  if [[ "$code" == 200 ]]; then
+    dev_lock_store_token "$owner" \
+      "$(printf '%s' "${resp%$'\n'*}" | jq -r '.token // empty' 2>/dev/null || true)"
+  fi
+  printf '%s' "${code:-000}"
+  return 0
+}
+
+# dev_lock_release_request <owner> <token>
+# Echo the HTTP status of one release attempt. Never fails, same reasoning as above.
+dev_lock_release_request() {
+  local owner="$1" token="${2:-}" body code
+  if [[ -n "$token" ]]; then
+    body=$(dev_lock_json_body owner "$owner" token "$token") || body='{}'
+  else
+    body=$(dev_lock_json_body owner "$owner") || body='{}'
+  fi
+  # Body on stdin, not argv — it carries the acquisition token and argv is
+  # world-readable via /proc on Linux.
+  code=$(printf '%s' "$body" | curl -s -o /dev/null -w "%{http_code}" \
+    --connect-timeout 5 --max-time 30 \
+    -X POST "${DEV_LOCK_URL}/release" \
+    -H "Content-Type: application/json" \
+    --data-binary @- 2>/dev/null) || code="000"
+  printf '%s' "${code:-000}"
+  return 0
+}
+
 # acquire_required_dev_lock <issue> <purpose>
 # Sets REQUIRED_LOCK_OWNER only once the lock is actually held, so a release
 # (including the heartbeat EXIT trap's) never targets a lock this worker does
@@ -568,30 +816,220 @@ dev_env_probe_healthy() {
 acquire_required_dev_lock() {
   local issue_number="$1" purpose="$2" lock_code
   local owner="prauto-${PRAUTO_WORKER_ID}"
+  # Surrender anything already held rather than just forgetting it: a bare reset
+  # here, followed by a pre-flight failure below, would strand an acquisition
+  # that release_required_dev_lock can no longer even see. Idempotent when
+  # nothing is held.
+  release_required_dev_lock
   REQUIRED_LOCK_OWNER=""
   if ! resolve_dev_env; then regression_blocked "$issue_number" "dev env file is unavailable" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
   if ! dev_env_healthy "$DEV_ENV_FILE"; then regression_blocked "$issue_number" "dev cluster health/provisioning failed" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
-  if ! curl -s --connect-timeout 2 "${DEV_LOCK_URL}/status" >/dev/null 2>&1; then
+  if ! dev_lock_endpoint_reachable; then
     regression_blocked "$issue_number" "dev-env lock endpoint is unreachable" "${CURRENT_REGRESSION_BRANCH:-}"; return 1
   fi
-  lock_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DEV_LOCK_URL}/acquire" \
-    -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${owner}\", \"message\": \"prauto ${purpose} for issue #${issue_number}\"}")
+  lock_code=$(dev_lock_acquire "$owner" "prauto ${purpose} for issue #${issue_number}")
+  # A 409 is reclaimable only on PROOF, never on a name. The holder's owner
+  # string is published on every GitHub comment and is byte-identical between two
+  # workers sharing PRAUTO_WORKER_ID, so matching it would let this worker
+  # force-release a live sibling's lock on the shared dev cluster. The stored
+  # token is the evidence: the service minted it for this worker's own earlier
+  # acquisition, so presenting it releases exactly that acquisition — a sibling
+  # that has since taken the lock answers 403 and the acquire stays blocked.
+  if [[ "$lock_code" == 409 ]]; then
+    local stale_token release_code
+    stale_token=$(dev_lock_load_token "$owner")
+    if [[ -n "$stale_token" ]]; then
+      release_code=$(dev_lock_release_request "$owner" "$stale_token")
+      if [[ "$release_code" == 200 ]]; then
+        warn "Reclaimed a stale dev-env lock left by this worker (owner=${owner})."
+        dev_lock_clear_token
+        lock_code=$(dev_lock_acquire "$owner" "prauto ${purpose} for issue #${issue_number}")
+      else
+        # 403 = the token is not the current holder's. Someone else holds it.
+        dev_lock_clear_token
+      fi
+    fi
+  fi
   if [[ "$lock_code" != 200 ]]; then regression_blocked "$issue_number" "dev-env lock acquisition returned HTTP ${lock_code}" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
   REQUIRED_LOCK_OWNER="$owner"
+  dev_lock_adopt_token "$owner" || true
+  if ! dev_lock_start_renewer "$owner"; then
+    release_required_dev_lock
+    regression_blocked "$issue_number" "dev-env lock cannot be renewed (no acquisition token)" "${CURRENT_REGRESSION_BRANCH:-}"
+    return 1
+  fi
+  return 0
+}
+
+# dev_lock_endpoint_reachable
+# -f, so a route the service does not implement fails the probe. Without it a
+# 404 exits 0 and every "live server, wrong path" fault survives to the acquire.
+dev_lock_endpoint_reachable() {
+  [[ -n "${DEV_LOCK_HEALTH_URL:-}" ]] || return 1
+  curl -sf --connect-timeout 2 --max-time 10 "$DEV_LOCK_HEALTH_URL" >/dev/null 2>&1
+}
+
+# dev_lock_start_renewer <owner>
+# The lease measures time since last contact, not total run length — that is what
+# lets the TTL be short enough to free a lock a dead holder left behind. A live
+# holder must therefore keep renewing.
+#
+# An UNBOUNDED renewer would defeat the very lease it supports: orphaned by a
+# SIGKILL or an OOM kill (either of which skips every trap), it would keep
+# extending the lease every interval forever, and the lock would never become
+# reclaimable by anyone — the exact wedge the TTL exists to end, reintroduced by
+# its own helper. So it is bounded three independent ways, any one of which ends
+# it:
+#   * the parent heartbeat's PID disappears (covers a trapless death),
+#   * a hard wall-clock ceiling (covers PID reuse, where the check above can be
+#     fooled by an unrelated new process),
+#   * the service answers 403 or 409, both of which mean this acquisition no
+#     longer exists — someone else holds the lock, or nothing does.
+# dev_lock_stop_renewer remains the fast, ordinary path.
+dev_lock_start_renewer() {
+  local owner="$1" interval="${PRAUTO_DEV_LOCK_RENEW_SECS:-300}"
+  local max_secs="${PRAUTO_DEV_LOCK_RENEW_MAX_SECS:-21600}"   # 6h ceiling
+  [[ "$interval" =~ ^[1-9][0-9]*$ ]] || interval=300
+  [[ "$max_secs" =~ ^[1-9][0-9]*$ ]] || max_secs=21600
+  dev_lock_stop_renewer
+  # No token means no renewal, and with a lease measured from last contact that
+  # is a lock which expires mid-stage while this worker still believes it holds
+  # the cluster. Report it; the caller treats it as a failed acquisition.
+  if [[ -z "${DEV_LOCK_TOKEN:-}" ]]; then
+    warn "Dev-env lock acquired but no renewal token was returned; the lease cannot be extended."
+    return 1
+  fi
+  local url="$DEV_LOCK_URL" token="$DEV_LOCK_TOKEN" body parent_pid=$$
+  # A renewer that cannot build its request is not a renewer; fail rather than
+  # start a loop that will only ever post an empty body.
+  if ! body=$(dev_lock_json_body owner "$owner" token "$token"); then
+    warn "Could not build the dev-env lock renewal request; the lease will not be extended."
+    return 1
+  fi
+
+  # A separate `bash -c` child with all three descriptors redirected, NOT a
+  # backgrounded `( ... ) &` subshell. Measured: with the subshell form, any
+  # caller that captures output around an acquire (`out=$(...)`) blocks until
+  # the renewer exits — it waits for EOF on a pipe the renewer still holds, and
+  # the renewer runs for the length of the regression. Redirecting the subshell
+  # is not sufficient; giving the loop its own process with `</dev/null` is.
+  #
+  # setsid additionally makes it a process-group leader, which is what
+  # dev_lock_stop_renewer's `kill -TERM -<pid>` needs to reach the in-flight
+  # `sleep`. It is absent on stock macOS, where the plain-child form above is
+  # used and the stop path falls through to killing the pid directly.
+  local renew_loop='
+    body="$DEV_LOCK_RENEW_BODY"
+    url="$1"; interval="$2"; max_secs="$3"; parent_pid="$4"
+    deadline=$(( $(date +%s) + max_secs ))
+    while sleep "$interval"; do
+      kill -0 "$parent_pid" 2>/dev/null || exit 0
+      [ "$(date +%s)" -lt "$deadline" ] || exit 0
+      code=$(printf "%s" "$body" | curl -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout 5 --max-time 20 \
+        -X POST "${url}/renew" -H "Content-Type: application/json" \
+        --data-binary @- 2>/dev/null) || code="000"
+      case "$code" in
+        403|409) exit 0 ;;
+      esac
+    done'
+  # The body carries the acquisition token, so it travels in the child's
+  # ENVIRONMENT and never on its command line: this process lives for the whole
+  # regression, and an argv word there is readable by any local user for that
+  # entire span (ps(1); /proc/<pid>/cmdline is world-readable on Linux, whereas
+  # /proc/<pid>/environ is owner-only). Only non-secret arguments go in argv.
+  if command -v setsid >/dev/null 2>&1; then
+    DEV_LOCK_RENEW_BODY="$body" setsid bash -c "$renew_loop" _ \
+      "$url" "$interval" "$max_secs" "$parent_pid" \
+      </dev/null >/dev/null 2>&1 &
+    DEV_LOCK_RENEWER_PID=$!
+    # Group-signalling is only safe against a PROVEN group leader, so the pgid is
+    # recorded only when setsid actually made one.
+    DEV_LOCK_RENEWER_PGID=$(private_process_group_for_leader "$DEV_LOCK_RENEWER_PID" 2>/dev/null || true)
+  else
+    DEV_LOCK_RENEW_BODY="$body" bash -c "$renew_loop" _ \
+      "$url" "$interval" "$max_secs" "$parent_pid" \
+      </dev/null >/dev/null 2>&1 &
+    DEV_LOCK_RENEWER_PID=$!
+    DEV_LOCK_RENEWER_PGID=""
+  fi
+  # Drop it from the job table: otherwise bash announces its termination
+  # ("Terminated: 15" plus the whole subshell body) into the executor log every
+  # time the renewer is stopped, which is on every release. wait_for_pid_bounded
+  # reaps it by polling `kill -0`, not by `wait`, so disowning costs nothing.
+  disown "$DEV_LOCK_RENEWER_PID" 2>/dev/null || true
+  return 0
+}
+
+# dev_lock_stop_renewer
+# dev_lock_stop_renewer
+# Bounded, because this runs from the heartbeat EXIT trap — the one place in the
+# harness that must not block. A plain `wait` here would block on an in-flight
+# `sleep` of up to the renew interval.
+#
+# Group-signals ONLY a proven group leader. `kill -TERM -<pid>` against an
+# unverified pgid is not a harmless no-op: if the renewer is not a leader (no
+# setsid) and the kernel has recycled that number for an unrelated group, the
+# signal lands on someone else's processes. This mirrors the verified-PGID rule
+# private_process_group_for_leader exists to enforce elsewhere in this file.
+dev_lock_stop_renewer() {
+  [[ -n "${DEV_LOCK_RENEWER_PID:-}" ]] || return 0
+  local pid="$DEV_LOCK_RENEWER_PID" pgid="${DEV_LOCK_RENEWER_PGID:-}"
+  DEV_LOCK_RENEWER_PID=""
+  DEV_LOCK_RENEWER_PGID=""
+  if [[ -n "$pgid" ]] && pgid=$(private_process_group_for_leader "$pgid" 2>/dev/null); then
+    kill -TERM -"$pgid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+  if declare -F wait_for_pid_bounded >/dev/null 2>&1; then
+    wait_for_pid_bounded "$pid" "${PRAUTO_DEV_LOCK_RENEWER_STOP_SECS:-5}" || true
+  fi
+  # Only escalate against a process that is still alive: a pid that already
+  # exited may since have been recycled by an unrelated process.
+  if kill -0 "$pid" 2>/dev/null; then
+    if [[ -n "$pgid" ]]; then
+      kill -KILL -"$pgid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    else
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
   return 0
 }
 
 # release_required_dev_lock
-# Idempotent: the owner is cleared after one release attempt, so a later call
-# (e.g. from the heartbeat EXIT trap) is a no-op. Bounded so the trap cannot hang
-# on an unreachable lock endpoint.
+# Clears the owner only once the SERVICE confirms the release — HTTP 200, not
+# merely a completed exchange. curl exits 0 for a 403, a 404 and a 500 alike, so
+# trusting its exit status would clear the owner while the lock is still held and
+# recreate the structural no-op this function exists to remove.
+#
+# Bounded (attempts x --max-time) so the trap cannot hang on a dead endpoint.
+#
+# Always returns 0. Most call sites invoke this bare under `set -euo pipefail`
+# and one is a function's final command, so a non-zero return would abort the
+# heartbeat over a lock the retained owner already schedules for another try.
+# A failure is reported through warn(), not through the exit status.
 release_required_dev_lock() {
   [[ -n "${DEV_LOCK_URL:-}" && -n "${REQUIRED_LOCK_OWNER:-}" ]] || return 0
-  local owner="$REQUIRED_LOCK_OWNER"
-  REQUIRED_LOCK_OWNER=""
-  curl -s --connect-timeout 5 --max-time 30 -X POST "${DEV_LOCK_URL}/release" -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${owner}\"}" >/dev/null 2>&1 || warn "Failed to release dev-env lock."
+  local owner="$REQUIRED_LOCK_OWNER" attempts="${PRAUTO_DEV_LOCK_RELEASE_ATTEMPTS:-3}" attempt code
+  local retry_secs="${PRAUTO_DEV_LOCK_RELEASE_RETRY_SECS:-5}"
+  [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || attempts=3
+  [[ "$retry_secs" =~ ^[0-9]+$ ]] || retry_secs=5
+  dev_lock_stop_renewer
+  for (( attempt = 1; attempt <= attempts; attempt++ )); do
+    code=$(dev_lock_release_request "$owner" "${DEV_LOCK_TOKEN:-}")
+    case "$code" in
+      200)
+        REQUIRED_LOCK_OWNER=""; dev_lock_clear_token; return 0 ;;
+      403)
+        # Someone else holds it now; this worker's claim is void either way.
+        warn "Dev-env lock is held by another owner; dropping this worker's claim (owner=${owner})."
+        REQUIRED_LOCK_OWNER=""; dev_lock_clear_token; return 0 ;;
+    esac
+    if [[ "$attempt" -lt "$attempts" ]]; then sleep "$retry_secs"; fi
+  done
+  warn "Failed to release dev-env lock (owner=${owner}, last HTTP ${code}); keeping the owner set so a later release retries."
+  return 0
 }
 
 # deploy_branch_api <env_file>

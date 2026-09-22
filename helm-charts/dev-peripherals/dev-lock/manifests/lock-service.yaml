@@ -11,22 +11,140 @@ metadata:
 data:
   lock_service.py: |
     #!/usr/bin/env python3
-    """DataSpoke dev-env lock service — pure stdlib, no dependencies."""
+    """DataSpoke dev-env lock service — pure stdlib, no dependencies.
+
+    Renew: POST /lock/renew {owner, token} extends the lease of a currently-held
+    lock. Returns 409 (not 404) when nothing is held — chosen to mirror acquire's
+    own use of 409 for "the lock-state precondition you expected does not hold";
+    a renewer only ever calls this while it believes it holds the lock, so 409
+    reads the same way acquire's 409 does for the opposite case (something is
+    held when the caller expected otherwise). Returns 403 when the supplied
+    token does not match the current holder's.
+    """
     import json
     import os
+    import secrets
     import threading
+    import time
     from datetime import datetime, timezone
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     _lock = threading.Lock()
-    _state = {"owner": None, "acquired_at": None, "message": None}
+    _state = {
+        "owner": None,
+        "token": None,
+        "acquired_at": None,
+        "acquired_at_epoch": None,
+        # Expiry is compared on a MONOTONIC clock. Wall time is not a
+        # duration-safe basis: a forward step would expire a live, actively
+        # renewing holder and hand the cluster to a peer mid-run, and a backward
+        # step would extend a dead one. Wall time is kept only for the
+        # human-facing ISO fields.
+        "lease_basis_mono": None,
+        "lease_basis_epoch": None,
+        "message": None,
+    }
 
 
-    def _now_iso():
-        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    def _parse_ttl_secs():
+        """Read LOCK_SERVICE_TTL_SECS defensively. Falls back to the 1800s
+        default on anything that is not a positive integer, rather than crashing
+        the service or (by accepting e.g. 0 or a negative) disabling expiry."""
+        default = 1800
+        raw = os.environ.get("LOCK_SERVICE_TTL_SECS")
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+
+    _LOCK_TTL_SECS = _parse_ttl_secs()
+
+
+    def _iso_from_epoch(epoch):
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+    def _held_and_unexpired_locked():
+        """True when a lock is held and its lease has not expired. Caller must
+        hold `_lock`. Reads `lease_basis_epoch` (last acquire OR renew), never
+        `acquired_at_epoch` (first acquire only) — a renewed lock's lease is
+        measured from the last renewal, not from the original acquisition."""
+        if _state["owner"] is None or _state["lease_basis_mono"] is None:
+            return False
+        return time.monotonic() < _state["lease_basis_mono"] + _LOCK_TTL_SECS
+
+
+    def _clear_state_locked():
+        """Reset all fields to unlocked. Caller must hold `_lock`."""
+        _state["owner"] = None
+        _state["token"] = None
+        _state["acquired_at"] = None
+        _state["acquired_at_epoch"] = None
+        _state["lease_basis_mono"] = None
+        _state["lease_basis_epoch"] = None
+        _state["message"] = None
+
+
+    class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+        """Thread-per-connection with a hard ceiling on concurrent handlers.
+
+        Excess connections are closed immediately rather than queued behind a
+        new thread, so a connection flood costs a refused socket instead of the
+        pod's memory. The semaphore is released in shutdown_request, which
+        ThreadingMixIn calls on the handler thread for every request it starts.
+        """
+
+        daemon_threads = True
+        request_queue_size = 16
+
+        def __init__(self, *args, **kwargs):
+            limit = 16
+            raw = os.environ.get("LOCK_SERVICE_MAX_INFLIGHT")
+            if raw is not None:
+                try:
+                    parsed = int(raw)
+                    if parsed > 0:
+                        limit = parsed
+                except (TypeError, ValueError):
+                    pass
+            self._slots = threading.BoundedSemaphore(limit)
+            super().__init__(*args, **kwargs)
+
+        def process_request(self, request, client_address):
+            if not self._slots.acquire(blocking=False):
+                # close_request, NOT shutdown_request: the latter is our
+                # release path, and releasing a slot never acquired would
+                # raise and inflate the ceiling.
+                self.close_request(request)
+                return
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self._slots.release()
+                raise
+
+        def shutdown_request(self, request):
+            try:
+                super().shutdown_request(request)
+            finally:
+                try:
+                    self._slots.release()
+                except ValueError:
+                    pass
+
+
+    class _BadRequest(Exception):
+        """A client-side framing error — answered 400, never fatal."""
 
 
     class LockHandler(BaseHTTPRequestHandler):
+        # Bound how long one client can hold a connection open mid-request.
+        timeout = 15
+
         def log_message(self, fmt, *args):
             pass  # silence default access log
 
@@ -38,32 +156,75 @@ data:
             self.end_headers()
             self.wfile.write(payload)
 
+        # A stalled or oversized body must not be able to take the service
+        # down. Single-threaded, an unbounded read blocks every other caller —
+        # including the liveness probe, whose failure restarts the pod and
+        # silently force-releases whatever lock was held, because all state is
+        # in process memory.
+        MAX_BODY_BYTES = 8192
+
         def _read_body(self):
-            length = int(self.headers.get("Content-Length", 0))
-            return json.loads(self.rfile.read(length)) if length else {}
+            raw = self.headers.get("Content-Length", 0)
+            try:
+                length = int(raw)
+            except (TypeError, ValueError):
+                raise _BadRequest("invalid Content-Length")
+            if length < 0 or length > self.MAX_BODY_BYTES:
+                raise _BadRequest("request body too large")
+            if not length:
+                return {}
+            body = self.rfile.read(length)
+            try:
+                return json.loads(body)
+            except (ValueError, UnicodeDecodeError):
+                raise _BadRequest("body is not valid JSON")
 
         def do_GET(self):
             path = self.path.rstrip("/") or "/"
             if path == "/health":
                 self._send_json(200, {"status": "ok"})
             elif path in ("/lock", "/"):
+                # Unauthenticated read — never includes the token.
                 with _lock:
-                    snap = dict(_state)
-                snap["locked"] = snap["owner"] is not None
+                    if _held_and_unexpired_locked():
+                        snap = {
+                            "locked": True,
+                            "owner": _state["owner"],
+                            "acquired_at": _state["acquired_at"],
+                            "message": _state["message"],
+                            "lease_expires_at": _iso_from_epoch(
+                                _state["lease_basis_epoch"] + _LOCK_TTL_SECS
+                            ),
+                        }
+                    else:
+                        # An expired-but-not-yet-reclaimed lock reports as
+                        # unlocked, same shape as a genuinely unlocked service.
+                        snap = {
+                            "locked": False,
+                            "owner": None,
+                            "acquired_at": None,
+                            "message": None,
+                        }
                 self._send_json(200, snap)
             else:
                 self._send_json(404, {"error": "not found"})
 
         def do_POST(self):
             path = self.path.rstrip("/")
-            body = self._read_body()
+            try:
+                body = self._read_body()
+            except _BadRequest as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
             if path == "/lock/acquire":
                 owner = (body.get("owner") or "").strip()
                 if not owner:
                     self._send_json(400, {"error": "'owner' field is required"})
                     return
                 with _lock:
-                    if _state["owner"] is not None:
+                    if _held_and_unexpired_locked():
+                        # 409 never includes a token — it is minted only to the
+                        # acquirer that actually wins the lock.
                         self._send_json(409, {
                             "error": "already locked",
                             "owner": _state["owner"],
@@ -71,27 +232,91 @@ data:
                             "message": _state["message"],
                         })
                         return
+                    # Either genuinely free, or held by an expired lease — in
+                    # both cases this acquisition takes it: fresh token, fresh
+                    # acquired_at, fresh lease basis.
+                    now_epoch = time.time()
+                    token = secrets.token_urlsafe(32)
+                    message = (body.get("message") or "").strip()
                     _state["owner"] = owner
-                    _state["acquired_at"] = _now_iso()
-                    _state["message"] = (body.get("message") or "").strip()
-                    snap = dict(_state)
-                snap["locked"] = True
+                    _state["token"] = token
+                    _state["acquired_at"] = _iso_from_epoch(now_epoch)
+                    _state["acquired_at_epoch"] = now_epoch
+                    _state["lease_basis_mono"] = time.monotonic()
+                    _state["lease_basis_epoch"] = now_epoch
+                    _state["message"] = message
+                    lease_expires_at = _iso_from_epoch(now_epoch + _LOCK_TTL_SECS)
+                    snap = {
+                        "locked": True,
+                        "owner": owner,
+                        "acquired_at": _state["acquired_at"],
+                        "message": message,
+                        "token": token,
+                        "lease_expires_at": lease_expires_at,
+                    }
                 self._send_json(200, snap)
-            elif path == "/lock/release":
+            elif path == "/lock/renew":
                 owner = (body.get("owner") or "").strip()
+                token = (body.get("token") or "").strip()
                 with _lock:
-                    if _state["owner"] is None:
-                        self._send_json(200, {"locked": False, "message": "already unlocked"})
+                    if not _held_and_unexpired_locked():
+                        self._send_json(409, {"error": "not locked"})
                         return
-                    if owner and _state["owner"] != owner:
+                    if not token or token != _state["token"] or (owner and owner != _state["owner"]):
                         self._send_json(403, {
-                            "error": "not the lock owner",
+                            "error": "token does not match current holder",
                             "current_owner": _state["owner"],
                         })
                         return
-                    _state["owner"] = None
-                    _state["acquired_at"] = None
-                    _state["message"] = None
+                    _state["lease_basis_mono"] = time.monotonic()
+                    _state["lease_basis_epoch"] = time.time()
+                    lease_expires_at = _iso_from_epoch(
+                        _state["lease_basis_epoch"] + _LOCK_TTL_SECS
+                    )
+                    snap = {
+                        "locked": True,
+                        "owner": _state["owner"],
+                        "acquired_at": _state["acquired_at"],
+                        "message": _state["message"],
+                        "lease_expires_at": lease_expires_at,
+                    }
+                self._send_json(200, snap)
+            elif path == "/lock/release":
+                owner = (body.get("owner") or "").strip()
+                token = (body.get("token") or "").strip()
+                with _lock:
+                    if not _held_and_unexpired_locked():
+                        _clear_state_locked()
+                        self._send_json(200, {"locked": False, "message": "already unlocked"})
+                        return
+                    if token:
+                        if token != _state["token"]:
+                            self._send_json(403, {
+                                "error": "not the lock owner",
+                                "current_owner": _state["owner"],
+                            })
+                            return
+                    else:
+                        # No token supplied — fall back to the owner-name check.
+                        # This is the documented human/manual-release path
+                        # (TESTING.md §Integration Testing step 7), which always
+                        # names an owner. An owner-less body is refused: it would
+                        # release whatever is held, by anyone, with no credential
+                        # at all, which is a second unauthenticated force-release
+                        # beside DELETE /lock rather than "the owner check".
+                        if not owner:
+                            self._send_json(403, {
+                                "error": "owner or token is required to release",
+                                "current_owner": _state["owner"],
+                            })
+                            return
+                        if _state["owner"] != owner:
+                            self._send_json(403, {
+                                "error": "not the lock owner",
+                                "current_owner": _state["owner"],
+                            })
+                            return
+                    _clear_state_locked()
                 self._send_json(200, {"locked": False, "message": "released"})
             else:
                 self._send_json(404, {"error": "not found"})
@@ -100,9 +325,7 @@ data:
             path = self.path.rstrip("/")
             if path == "/lock":
                 with _lock:
-                    _state["owner"] = None
-                    _state["acquired_at"] = None
-                    _state["message"] = None
+                    _clear_state_locked()
                 self._send_json(200, {"locked": False, "message": "force-released"})
             else:
                 self._send_json(404, {"error": "not found"})
@@ -110,7 +333,12 @@ data:
 
     if __name__ == "__main__":
         port = int(os.environ.get("LOCK_SERVICE_PORT", 8080))
-        server = HTTPServer(("0.0.0.0", port), LockHandler)
+        # Threaded so one slow client cannot serialise every other caller
+        # (including the liveness probe), but BOUNDED: unbounded thread-per-
+        # connection on a 64Mi pod is just a different denial of service, and
+        # because all lock state is in process memory, an OOM-killed pod
+        # silently force-releases whatever lock was held.
+        server = BoundedThreadingHTTPServer(("0.0.0.0", port), LockHandler)
         print(f"Lock service listening on port {port}", flush=True)
         server.serve_forever()
 
@@ -148,6 +376,13 @@ spec:
           env:
             - name: LOCK_SERVICE_PORT
               value: "8080"
+            # Un-renewed-lock lease, in seconds — TESTING.md §Integration
+            # Testing. A live holder extends it via POST /lock/renew rather
+            # than being bound by it; only a holder that stops renewing
+            # becomes reclaimable, once this many seconds have passed since
+            # its last acquire/renew.
+            - name: LOCK_SERVICE_TTL_SECS
+              value: "1800"
           resources:
             requests:
               cpu: "10m"

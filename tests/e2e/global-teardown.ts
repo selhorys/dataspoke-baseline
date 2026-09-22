@@ -11,9 +11,11 @@
  */
 
 import { execSync } from "child_process";
+import * as fs from "fs";
 import * as path from "path";
 import type { FullConfig } from "@playwright/test";
 import { loadDotenv, lockUrl, lockOwner } from "./fixtures/env";
+import { stopLockRenewal } from "./global-setup";
 
 function resetSeed(): void {
   console.log("[e2e teardown] Running --reset-seed to restore baseline...");
@@ -36,14 +38,29 @@ async function releaseLock(): Promise<void> {
     console.log("[e2e teardown] Lock pre-acquired; skipping release.");
     return;
   }
+  // Stop renewing BEFORE releasing: a timer still armed after the release would
+  // renew an acquisition this run no longer holds. (Playwright runs setup and
+  // teardown in the same process, so this reaches the live timer; in a separate
+  // process it is a harmless no-op.)
+  stopLockRenewal();
   const url = lockUrl();
   const owner = lockOwner();
+  // Release the exact acquisition global-setup took, by its token — a name
+  // alone cannot distinguish this run's lock from a later one held by another
+  // process that derived the same owner string.
+  const tokenFile = path.join(path.resolve(__dirname, ".auth"), "dev-lock-token.txt");
+  let token = "";
+  try {
+    token = fs.readFileSync(tokenFile, "utf8").trim();
+  } catch {
+    /* no token recorded; fall back to the owner-only release */
+  }
   console.log(`[e2e teardown] Releasing dev-env lock at ${url} (owner: ${owner})...`);
   try {
     const resp = await fetch(`${url}/lock/release`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ owner }),
+      body: JSON.stringify(token ? { owner, token } : { owner }),
     });
     if (resp.ok) {
       console.log("[e2e teardown] Lock released.");
@@ -53,6 +70,12 @@ async function releaseLock(): Promise<void> {
   } catch (err) {
     // Non-fatal — the lock has a TTL; this is best-effort.
     console.warn("[e2e teardown] Lock release request failed (network error):", err);
+  } finally {
+    try {
+      fs.rmSync(tokenFile, { force: true });
+    } catch {
+      /* best effort */
+    }
   }
 }
 

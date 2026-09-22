@@ -141,12 +141,17 @@ def test_provision_fails_closed_when_the_state_marker_cannot_be_written(
 def test_release_required_dev_lock_releases_the_registered_owner_once(
     tmp_path: Path,
 ) -> None:
-    """The release names the registered owner, and only releases once.
+    """The release names the registered owner, and clears it only once the
+    service confirms an HTTP 200 -- never merely because a request was sent.
 
-    spec: spec/AI_PRAUTO.md §Dev Cluster and Deploys — the heartbeat's EXIT trap
-    releases through release_required_dev_lock, which acts only on
-    REQUIRED_LOCK_OWNER. This covers the release half; that each acquire site opts
-    in is covered separately.
+    spec: spec/AI_PRAUTO.md §Provisioning -- "The executor keeps its owner and
+    token state until a release call actually succeeds, so a release that fails
+    ... is retried rather than silently treated as done." The heartbeat's EXIT
+    trap releases through release_required_dev_lock, which acts only on
+    REQUIRED_LOCK_OWNER. This covers the confirmed-success half; that each
+    acquire site opts in is covered separately, and the failed-release retry
+    half is covered by test_release_required_dev_lock_keeps_the_owner_on_a_
+    failed_release (test_prauto_regression_gate_classification.py).
     """
     script = "\n".join(
         [
@@ -154,9 +159,17 @@ def test_release_required_dev_lock_releases_the_registered_owner_once(
             'DEV_LOCK_URL="http://lock.invalid"',
             'PRAUTO_WORKER_ID="w1"',
             'REQUIRED_LOCK_OWNER=""',
-            # Record what the release actually asks for.
+            # Record what the release actually asks for. The request BODY
+            # arrives on stdin, not in argv: it carries the acquisition token,
+            # and argv is world-readable through /proc on Linux. So the stub
+            # logs both, and the owner assertion below reads the body.
+            # The service confirms the release with an HTTP 200 -- a curl stub
+            # that merely logs the call without echoing a status code would
+            # leave `code` empty, which the new contract reads as a failed
+            # release (HTTP 000).
             f'RELEASE_LOG={shlex.quote(str(tmp_path / "release.txt"))}',
-            'curl() { printf "%s\\n" "$*" >> "$RELEASE_LOG"; }',
+            'curl() { printf "args: %s\\n" "$*" >> "$RELEASE_LOG"; '
+            'printf "body: %s\\n" "$(cat)" >> "$RELEASE_LOG"; printf "200"; }',
             # Simulate the registration the fix loops perform after a 200 acquire.
             'lock_owner="prauto-${PRAUTO_WORKER_ID}"',
             'REQUIRED_LOCK_OWNER="$lock_owner"',
@@ -171,7 +184,11 @@ def test_release_required_dev_lock_releases_the_registered_owner_once(
     # The release must name the same owner the acquire registered...
     assert "prauto-w1" in released
     assert "/release" in released
-    # ...and the helper must be idempotent, so the EXIT trap's later call no-ops.
+    # ...and it must name it in the BODY, never in argv, so a credential-bearing
+    # request is not exposed to any local process that can read /proc.
+    assert "prauto-w1" not in released.split("body:")[0]
+    # ...and a confirmed (HTTP 200) release clears the owner, so the EXIT
+    # trap's later call finds nothing to release.
     assert "owner_after=[]" in result.stdout
 
 

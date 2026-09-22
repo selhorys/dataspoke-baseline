@@ -799,6 +799,16 @@ def test_a_refund_that_cannot_be_persisted_leaves_the_attempt_counted(
 
     The lifecycle anchor stays set so the write is actually attempted; the state
     directory is made unwritable so mktemp fails inside write_retry_count.
+
+    The second sourcing deliberately skips ``ensure_state_dirs``: that helper now
+    also ``chmod 700``s STATE_DIR on every call (it holds the dev-lock token
+    capability, the provisioning marker, and undelivered report bodies -- all
+    decisions this worker acts on, so the directory is hardened back to the
+    worker's own mode each time it is ensured). Since the state dir already
+    exists from the seeding call above, re-running ``ensure_state_dirs`` here
+    would silently restore write access as the directory's own owner (chmod is
+    always permitted for the owner, regardless of the target's current mode)
+    and defeat the read-only simulation before ``refund_retry_count`` ever ran.
     """
     state_root = tmp_path / "prauto"
     setup = _source_state_library(state_root, FIRST_READY_TIMESTAMP)
@@ -815,6 +825,16 @@ def test_a_refund_that_cannot_be_persisted_leaves_the_attempt_counted(
     )
     assert seeded.returncode == 0, seeded.stderr
 
+    # Same sourcing as `setup`, minus the trailing `ensure_state_dirs` call.
+    setup_without_ensure = "\n".join(
+        [
+            f"PRAUTO_DIR={shlex.quote(str(state_root))}",
+            f"READY_LABEL_TIMESTAMP={shlex.quote(FIRST_READY_TIMESTAMP)}",
+            f"source {shlex.quote(str(HELPERS_LIBRARY))}",
+            f"source {shlex.quote(str(STATE_LIBRARY))}",
+        ]
+    )
+
     state_dir = state_root / "state"
     original_mode = state_dir.stat().st_mode
     state_dir.chmod(0o500)  # readable and traversable, not writable
@@ -822,7 +842,7 @@ def test_a_refund_that_cannot_be_persisted_leaves_the_attempt_counted(
         result = _run_bash(
             "\n".join(
                 [
-                    setup,
+                    setup_without_ensure,
                     "RETRY_COUNT_CONSUMED=true",
                     f"refund_retry_count {ISSUE_NUMBER} && rc=0 || rc=$?",
                     'printf "rc=%s\\n" "$rc"',

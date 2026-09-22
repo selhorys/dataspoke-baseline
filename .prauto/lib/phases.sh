@@ -99,8 +99,27 @@ regression_set_wip() {
   return 0
 }
 
+# Tracks whether this dispatch already handed its attempt back. Dispatch-scoped,
+# NOT wake-scoped: heartbeat.sh resets it per claimed issue beside
+# RETRY_COUNT_CONSUMED, because one outage blocks every issue in a wake and each
+# must be able to refund its own dispatch. The reasons themselves go to durable
+# per-issue state, not to a shell variable: the abandonment that reads them runs
+# in a LATER heartbeat process.
+REGRESSION_BLOCK_REFUNDED=false
+
 regression_blocked() {
   local issue_number="$1" reason="$2" branch="${3:-}"
+  record_blocked_reason "$issue_number" "$reason"
+  # An attempt the infrastructure never let start is not an attempt at the issue.
+  # Hand it back through the existing refund path, which keeps its own
+  # PRAUTO_MAX_REFUNDS_PER_JOB cap — a persistent outage still abandons, only a
+  # transient one stops eating the budget. Once per dispatch: this dispatch
+  # consumed one retry, so it can return at most one, however many stages block.
+  if [[ "$REGRESSION_BLOCK_REFUNDED" != true ]]; then
+    REGRESSION_BLOCK_REFUNDED=true
+    refund_retry_count "$issue_number" \
+      || warn "Could not refund the retry count for #${issue_number}; this attempt stays counted."
+  fi
   regression_set_wip "$issue_number" "$branch" || return 1
   prauto_issue_comment "$issue_number" \
     "Regression blocked by infrastructure/setup: ${reason}. The PR remains in prauto:wip and will retry on a later heartbeat."
@@ -201,20 +220,46 @@ run_integration_test_fix() {
 
   if ! resolve_dev_env; then info "Dev-env file not found. Skipping integration fix loop."; return 0; fi
   if ! dev_env_healthy "$DEV_ENV_FILE"; then info "Dev-env unhealthy. Skipping integration fix loop."; return 0; fi
-  local lock_url="$DEV_LOCK_URL"
-  if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
-    warn "Dev-env lock endpoint not reachable (${lock_url}/status). Skipping integration fix loop."
+  # Same primitives as acquire_required_dev_lock: the /health probe with -f (the
+  # service answers 404 to anything else, which a bare `curl -s` reads as
+  # reachable), and dev_lock_acquire, so this second holder of the SAME cluster
+  # lock cannot run under weaker rules than the required one. The only
+  # difference is what a failure means here — skip, not block.
+  if ! dev_lock_endpoint_reachable; then
+    warn "Dev-env lock endpoint not reachable (${DEV_LOCK_HEALTH_URL}). Skipping integration fix loop."
     return 0
   fi
 
   local lock_code
-  lock_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${lock_url}/acquire" \
-    -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${lock_owner}\", \"message\": \"prauto integration fix for issue #${issue_number}\"}")
+  lock_code=$(dev_lock_acquire "$lock_owner" "prauto integration fix for issue #${issue_number}")
+  if [[ "$lock_code" == 409 ]]; then
+    # Reclaim this worker's own leaked lock on proof of the stored token — never
+    # on a name match. See acquire_required_dev_lock for why.
+    local stale_token release_code
+    stale_token=$(dev_lock_load_token "$lock_owner")
+    if [[ -n "$stale_token" ]]; then
+      release_code=$(dev_lock_release_request "$lock_owner" "$stale_token")
+      dev_lock_clear_token
+      if [[ "$release_code" == 200 ]]; then
+        warn "Reclaimed a stale dev-env lock left by this worker (owner=${lock_owner})."
+        lock_code=$(dev_lock_acquire "$lock_owner" "prauto integration fix for issue #${issue_number}")
+      fi
+    fi
+  fi
   if [[ "$lock_code" != "200" ]]; then info "Could not acquire dev-env lock. Skipping."; return 0; fi
   # Register the lock with the shared owner global so release_required_dev_lock —
   # including the heartbeat EXIT trap's call — can release it if this loop dies.
   REQUIRED_LOCK_OWNER="$lock_owner"
+  dev_lock_adopt_token "$lock_owner" || true
+  # Fail closed, exactly as acquire_required_dev_lock does: this stage is one of
+  # the two longest cluster runs, and a lease it cannot extend expires partway
+  # through while the executor still believes it holds the cluster. Proceeding on
+  # a warning would reintroduce the concurrent-run hazard the lease prevents.
+  if ! dev_lock_start_renewer "$lock_owner"; then
+    release_required_dev_lock
+    warn "Dev-env lock cannot be renewed (no acquisition token). Skipping integration fix loop."
+    return 0
+  fi
   info "Dev-env lock acquired for integration test fix loop."
 
   # A plain `if`: as an `&& ... ||` chain this warned "uv sync failed" whenever
@@ -414,20 +459,46 @@ run_e2e_test_fix() {
   local max_flake_reruns="${PRAUTO_E2E_FLAKE_RERUNS:-2}"
   if ! resolve_dev_env; then info "Dev-env file not found. Skipping E2E stage."; return 0; fi
   if ! dev_env_healthy "$DEV_ENV_FILE"; then info "Dev-env unhealthy. Skipping E2E stage."; return 0; fi
-  local lock_url="$DEV_LOCK_URL"
-  if ! curl -s --connect-timeout 2 "${lock_url}/status" >/dev/null 2>&1; then
-    warn "Dev-env lock endpoint not reachable (${lock_url}/status). Skipping E2E stage."
+  # Same primitives as acquire_required_dev_lock: the /health probe with -f (the
+  # service answers 404 to anything else, which a bare `curl -s` reads as
+  # reachable), and dev_lock_acquire, so this second holder of the SAME cluster
+  # lock cannot run under weaker rules than the required one. The only
+  # difference is what a failure means here — skip, not block.
+  if ! dev_lock_endpoint_reachable; then
+    warn "Dev-env lock endpoint not reachable (${DEV_LOCK_HEALTH_URL}). Skipping E2E stage."
     return 0
   fi
 
   local lock_code
-  lock_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${lock_url}/acquire" \
-    -H "Content-Type: application/json" \
-    -d "{\"owner\": \"${lock_owner}\", \"message\": \"prauto E2E for issue #${issue_number}\"}")
+  lock_code=$(dev_lock_acquire "$lock_owner" "prauto E2E for issue #${issue_number}")
+  if [[ "$lock_code" == 409 ]]; then
+    # Reclaim this worker's own leaked lock on proof of the stored token — never
+    # on a name match. See acquire_required_dev_lock for why.
+    local stale_token release_code
+    stale_token=$(dev_lock_load_token "$lock_owner")
+    if [[ -n "$stale_token" ]]; then
+      release_code=$(dev_lock_release_request "$lock_owner" "$stale_token")
+      dev_lock_clear_token
+      if [[ "$release_code" == 200 ]]; then
+        warn "Reclaimed a stale dev-env lock left by this worker (owner=${lock_owner})."
+        lock_code=$(dev_lock_acquire "$lock_owner" "prauto E2E for issue #${issue_number}")
+      fi
+    fi
+  fi
   if [[ "$lock_code" != "200" ]]; then info "Could not acquire dev-env lock. Skipping E2E."; return 0; fi
   # Register the lock with the shared owner global so release_required_dev_lock —
   # including the heartbeat EXIT trap's call — can release it if this loop dies.
   REQUIRED_LOCK_OWNER="$lock_owner"
+  dev_lock_adopt_token "$lock_owner" || true
+  # Fail closed, exactly as acquire_required_dev_lock does: this stage is one of
+  # the two longest cluster runs, and a lease it cannot extend expires partway
+  # through while the executor still believes it holds the cluster. Proceeding on
+  # a warning would reintroduce the concurrent-run hazard the lease prevents.
+  if ! dev_lock_start_renewer "$lock_owner"; then
+    release_required_dev_lock
+    warn "Dev-env lock cannot be renewed (no acquisition token). Skipping E2E stage."
+    return 0
+  fi
   info "Dev-env lock acquired for E2E stage."
 
   # attempt only advances when a real (non-flake) run happens; a flake-only

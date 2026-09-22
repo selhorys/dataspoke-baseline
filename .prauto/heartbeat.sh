@@ -97,6 +97,9 @@ cleanup() {
   # A regression interrupted mid-stage must not strand the dev-env lock; the
   # release is idempotent, so a lock already released is left alone.
   if declare -F release_required_dev_lock >/dev/null; then release_required_dev_lock || true; fi
+  # Belt and braces for the renewer: release stops it, but returns early when no
+  # owner is set, and a renewer outliving its lock would defeat the lease.
+  if declare -F dev_lock_stop_renewer >/dev/null; then dev_lock_stop_renewer || true; fi
   # provision_dev_env now writes the durable marker before launching install.sh
   # (not only after it succeeds), so a cluster this heartbeat only partially
   # built — including one whose install.sh was just stopped above — still has
@@ -266,6 +269,10 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
     # Reset per issue: only the normal dispatch path below sets this true, and it
     # must never carry over from the previous issue in this wake.
     RETRY_COUNT_CONSUMED=false
+    # Same scope, same reason: one shared outage blocks every claimed issue, and
+    # each one must be able to refund its own dispatch. A flag left true by issue
+    # A would silently charge every later issue in this wake for that outage.
+    REGRESSION_BLOCK_REFUNDED=false
 
     # Terminal states — nothing to do.
     if labels_contain "$CUR_LABELS" "$PRAUTO_GITHUB_LABEL_DONE" || \
@@ -357,7 +364,7 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
       read_retry_count "$CUR_ISSUE_NUMBER"
       if [[ "$RETRY_COUNT" -ge "$PRAUTO_MAX_RETRIES_PER_JOB" ]]; then
         warn "Issue #${CUR_ISSUE_NUMBER} exceeded max retries (${RETRY_COUNT}/${PRAUTO_MAX_RETRIES_PER_JOB})."
-        abandon_job_github "$CUR_ISSUE_NUMBER" "$RETRY_COUNT"
+        abandon_job_github "$CUR_ISSUE_NUMBER" "$RETRY_COUNT" "$(read_blocked_reasons "$CUR_ISSUE_NUMBER")"
         claim_i=$((claim_i + 1)); continue
       fi
       if ! increment_retry_count "$CUR_ISSUE_NUMBER"; then
@@ -383,7 +390,7 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
         implementation) handle_phase_implementation "$CUR_ISSUE_NUMBER" "$CUR_ISSUE_TITLE" "$CUR_BRANCH" ;;
         pr)             handle_phase_pr "$CUR_ISSUE_NUMBER" "$CUR_ISSUE_TITLE" "$CUR_BRANCH" ;;
         *)              warn "Unknown phase: ${DERIVED_PHASE}. Abandoning."
-                        abandon_job_github "$CUR_ISSUE_NUMBER" "$RETRY_COUNT" ;;
+                        abandon_job_github "$CUR_ISSUE_NUMBER" "$RETRY_COUNT" "$(read_blocked_reasons "$CUR_ISSUE_NUMBER")" ;;
       esac
       info "WIP issue #${CUR_ISSUE_NUMBER} processing complete."
       cleanup_worktree

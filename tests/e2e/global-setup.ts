@@ -48,6 +48,28 @@ const STORAGE_STATE_FILES: Record<string, string> = {
  *  worker-scoped adminApi fixture. Keeps /auth/token calls to a handful per run
  *  (well under the 10/min limit) and avoids 15-min access-token expiry mid-run. */
 const ADMIN_API_TOKEN_FILE = path.join(AUTH_DIR, "admin-api-token.txt");
+const LOCK_TOKEN_FILE = path.join(AUTH_DIR, "dev-lock-token.txt");
+// Renew well inside the service's default lease (1800s) so a missed tick or two
+// is harmless. Validated, mirroring the shell client: Number("5m") is NaN, and
+// setInterval coerces a NaN delay to ~1ms, which would turn the renewer into a
+// request flood against the dev-lock pod for the length of the run.
+// Held at module scope so stopLockRenewal() can clear it from teardown.
+let lockRenewTimer: NodeJS.Timeout | undefined;
+
+export function stopLockRenewal(): void {
+  if (lockRenewTimer !== undefined) {
+    clearInterval(lockRenewTimer);
+    lockRenewTimer = undefined;
+  }
+}
+
+function lockRenewMs(): number {
+  const parsed = Number(process.env["DATASPOKE_DEV_LOCK_RENEW_SECS"] ?? "300");
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 300_000;
+  }
+  return parsed * 1000;
+}
 
 async function acquireLock(): Promise<void> {
   if (process.env["DATASPOKE_DEV_LOCK_PREACQUIRED"]) {
@@ -85,6 +107,42 @@ async function acquireLock(): Promise<void> {
   }
   if (!resp!.ok) {
     throw new Error(`Lock acquire failed: ${resp!.status} ${await resp!.text()}`);
+  }
+
+  // The lease measures time since last contact (spec/TESTING.md §Integration
+  // Testing step 2), so a holder that never renews becomes reclaimable once
+  // LOCK_SERVICE_TTL_SECS elapses — and a full E2E run outlasts it. Without a
+  // renewer a long run would silently lose the cluster to a concurrent
+  // acquirer, which is the contention the lock exists to prevent.
+  const body = (await resp!.json().catch(() => ({}))) as { token?: string };
+  const token = body.token ?? "";
+  if (token) {
+    fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
+    // The token is this run's claim on the shared cluster; teardown reads it
+    // back to release the exact acquisition it holds.
+    fs.writeFileSync(LOCK_TOKEN_FILE, token, { mode: 0o600 });
+    // unref'd: the renewer must never be the reason the runner stays alive.
+    // Module-scoped, so teardown can stop it BEFORE it releases the lock —
+    // otherwise a timer armed here could renew an acquisition this run no
+    // longer holds.
+    const timer = setInterval(() => {
+      void fetch(`${url}/lock/renew`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner, token }),
+      })
+        .then((r) => {
+          // 403/409 mean this acquisition is gone — stop renewing it.
+          if (r.status === 403 || r.status === 409) clearInterval(timer);
+        })
+        .catch(() => {
+          /* transient; the next tick retries */
+        });
+    }, lockRenewMs());
+    timer.unref();
+    lockRenewTimer = timer;
+  } else {
+    console.warn("[e2e setup] Lock acquired but no token returned; lease will not be renewed.");
   }
   console.log("[e2e setup] Lock acquired.");
 }
@@ -279,7 +337,7 @@ async function mintAdminApiToken(adminToken: string): Promise<void> {
     throw new Error(`API token mint failed: ${resp.status} ${await resp.text()}`);
   }
   const { token } = (await resp.json()) as { token: string };
-  fs.writeFileSync(ADMIN_API_TOKEN_FILE, token, { encoding: "utf-8" });
+  fs.writeFileSync(ADMIN_API_TOKEN_FILE, token, { encoding: "utf-8", mode: 0o600 });
   console.log(`[e2e setup] Admin API token saved: ${ADMIN_API_TOKEN_FILE}`);
 }
 
@@ -288,7 +346,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   loadDotenv();
 
   // 2. Ensure .auth dir exists
-  fs.mkdirSync(AUTH_DIR, { recursive: true });
+  fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 });
 
   // 3. Acquire dev-env lock
   await acquireLock();

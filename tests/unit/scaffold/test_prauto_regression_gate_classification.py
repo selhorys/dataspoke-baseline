@@ -725,13 +725,24 @@ def _integration_fix_script(*, deployed_api_sha: str, run_integration_groups_bod
     resolve_dev_env() {{
       DEV_ENV_FILE=/dev/null
       DEV_LOCK_URL=http://example.invalid/lock
+      DEV_LOCK_HEALTH_URL=http://example.invalid/lock/health
       return 0
     }}
     dev_env_healthy() {{ return 0; }}
+    # Kept out of the repo: PRAUTO_DIR points at the real .prauto, and a stubbed
+    # acquire now mints a token the client persists.
+    DEV_LOCK_TOKEN_FILE="$(mktemp -t devlocktok.XXXXXX)"
+    # Models the real service: a 200 acquire returns a JSON body carrying the
+    # per-acquisition token, then the status code on its own line (the client
+    # reads it with -w $'\\n%{{http_code}}'). A stub returning only the status
+    # leaves the client with no token, which it correctly treats as an
+    # unrenewable lock and refuses to run a long stage on.
     curl() {{
       case "$*" in
-        *"/status"*) return 0 ;;
-        *"/acquire"*) printf '200' ;;
+        *"/health"*) return 0 ;;
+        *"/acquire"*) printf '{{"token":"stub-token"}}\n200' ;;
+        *"/renew"*) printf '200' ;;
+        *"/release"*) printf '200' ;;
         *) return 0 ;;
       esac
     }}
@@ -755,7 +766,12 @@ def test_integration_fix_records_pass_only_when_tested_head_matches_deployed_api
     ('that same stage passed earlier in the same heartbeat'); plan: item 4 (pass
     bound to the clean tested commit and deployed artifact); source:
     .prauto/lib/phases.sh run_integration_test_fix. Records a pass only when the
-    exact tested commit is the deployed branch API."""
+    exact tested commit is the deployed branch API. The dev-env lock preflight
+    this loop runs before acquiring now probes DEV_LOCK_HEALTH_URL
+    (.../health, via dev_lock_endpoint_reachable's `curl -sf`) rather than
+    `.../status`, so the fixture's resolve_dev_env stub and curl stub must
+    supply and match that route or the loop skips before ever reaching the
+    pass-recording logic under test."""
     repo = tmp_path / "repo"
     _init_git_repo(repo)
     (repo / "tests" / "integration" / "spot").mkdir(parents=True)
@@ -990,6 +1006,7 @@ def _e2e_fix_script(
     resolve_dev_env() {{
       DEV_ENV_FILE=/dev/null
       DEV_LOCK_URL=http://example.invalid/lock
+      DEV_LOCK_HEALTH_URL=http://example.invalid/lock/health
       return 0
     }}
     dev_env_healthy() {{ return 0; }}
@@ -1002,10 +1019,20 @@ def _e2e_fix_script(
       return 0
     }}
     get_pr_number_for_branch() {{ BRANCH_PR_NUMBER=""; }}
+    # Kept out of the repo: PRAUTO_DIR points at the real .prauto, and a stubbed
+    # acquire now mints a token the client persists.
+    DEV_LOCK_TOKEN_FILE="$(mktemp -t devlocktok.XXXXXX)"
+    # Models the real service: a 200 acquire returns a JSON body carrying the
+    # per-acquisition token, then the status code on its own line (the client
+    # reads it with -w $'\\n%{{http_code}}'). A stub returning only the status
+    # leaves the client with no token, which it correctly treats as an
+    # unrenewable lock and refuses to run a long stage on.
     curl() {{
       case "$*" in
-        *"/status"*) return 0 ;;
-        *"/acquire"*) printf '200' ;;
+        *"/health"*) return 0 ;;
+        *"/acquire"*) printf '{{"token":"stub-token"}}\n200' ;;
+        *"/renew"*) printf '200' ;;
+        *"/release"*) printf '200' ;;
         *) return 0 ;;
       esac
     }}
@@ -1022,7 +1049,9 @@ def test_e2e_fix_records_pass_only_when_both_frontend_and_api_sha_match(tmp_path
     plan: item 4 (pass bound to the clean tested commit and deployed artifact);
     source: .prauto/lib/phases.sh run_e2e_test_fix. E2E exercises both the deployed
     frontend and the API it calls, so its recorded pass requires the tested commit
-    to equal *both* DEPLOYED_FRONTEND_SHA and DEPLOYED_API_SHA."""
+    to equal *both* DEPLOYED_FRONTEND_SHA and DEPLOYED_API_SHA. Like the
+    integration fix loop, this stage's dev-env lock preflight now probes
+    DEV_LOCK_HEALTH_URL (.../health via `curl -sf`) rather than `.../status`."""
     repo = tmp_path / "repo"
     _init_git_repo(repo)
     (repo / "tests" / "e2e").mkdir(parents=True)
@@ -1621,12 +1650,18 @@ def test_post_post_pr_regression_comment_uses_body_file_and_removes_temp_dir(
 
 
 def test_release_required_dev_lock_is_idempotent(tmp_path: Path) -> None:
-    """plan: item 8 (lock release is idempotent: the owner is cleared after one
-    release attempt, so a later call -- e.g. from the heartbeat EXIT trap -- is a
-    no-op); source: .prauto/lib/phases.sh release_required_dev_lock."""
+    """spec: AI_PRAUTO.md §Provisioning -- "The executor keeps its owner and
+    token state until a release call actually succeeds"; plan: item 8 (lock
+    release is idempotent: the owner is cleared only once the service confirms
+    the release with HTTP 200, so a later call -- e.g. from the heartbeat EXIT
+    trap -- finds nothing left to release); source: .prauto/lib/dev-env.sh
+    release_required_dev_lock. A curl stub that only logged the call without
+    echoing a status code would leave the captured HTTP code empty ("000" under
+    the function's own fallback), which the confirmed-success contract reads as
+    a failed release that keeps retrying -- so the stub must echo 200."""
     events = tmp_path / "events"
     script = _source_phases() + """
-    curl() { echo curl-release >> "$EVENTS"; return 0; }
+    curl() { echo curl-release >> "$EVENTS"; printf '200'; }
     DEV_LOCK_URL=http://example.invalid/lock
     REQUIRED_LOCK_OWNER=prauto-test
     release_required_dev_lock

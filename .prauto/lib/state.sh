@@ -16,6 +16,11 @@ CUR_SESSION_DIR=""
 # Ensure the state/worktree directories exist.
 ensure_state_dirs() {
   mkdir -p "$STATE_DIR" "$SESSIONS_DIR" "$NATIVE_SESSIONS_DIR" "${PRAUTO_DIR}/worktrees"
+  # STATE_DIR holds the dev-lock token (a capability), the provisioning marker
+  # whose env_file path aims a --delete-all teardown, and undelivered report
+  # bodies. All three are decisions this worker acts on, so the directory is the
+  # worker's own, not the umask's.
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
   chmod 700 "$NATIVE_SESSIONS_DIR" 2>/dev/null || true
 }
 
@@ -182,10 +187,13 @@ abandon_job_github() {
   if ! comment_exists "issue" "$issue_number" "Abandoning"; then
     local body="Abandoning after ${retry_count} retries. Manual intervention needed."
     [[ -n "$reason" ]] && body="${body}
-${reason}"
+Blocked by: ${reason}"
     prauto_issue_comment "$issue_number" "$body" \
       "Failed to post abandonment comment on issue #${issue_number}"
   fi
+
+  # The lifecycle is over; a re-queue must not inherit these notes.
+  clear_blocked_reasons "$issue_number"
 }
 
 # Record job completion to history.
@@ -204,6 +212,7 @@ complete_job() {
     '{issue_number: $issue_number, completed_at: $completed_at}' \
     > "$history_file"
   info "Job for issue #${issue_number} completed -> ${history_file}"
+  clear_blocked_reasons "$issue_number"
 }
 
 # ---- Retry counter (local state, not GitHub comments) ------------------------
@@ -219,6 +228,99 @@ retry_count_file() {
   local issue_number="$1"
   [[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
   printf '%s/retry-count-%s.json' "$STATE_DIR" "$issue_number"
+}
+
+# Infrastructure blocks are recorded beside the counter, under the same
+# ready-label lifecycle anchor, because the abandonment that needs them happens in
+# a LATER heartbeat process: a block recorded on attempt 3 must still be readable
+# when attempt 5 finds the budget exhausted, and a shell variable cannot cross
+# that gap. Without this, an issue the infrastructure never let start leaves a
+# record indistinguishable from one whose code genuinely failed.
+
+# blocked_reasons_file <issue_number>
+blocked_reasons_file() {
+  local issue_number="$1"
+  [[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
+  printf '%s/blocked-reasons-%s.json' "$STATE_DIR" "$issue_number"
+}
+
+# record_blocked_reason <issue_number> <reason>
+# Append one reason for the current lifecycle, de-duplicated and capped. Failure
+# to persist is never fatal: losing a diagnostic note must not block a run.
+record_blocked_reason() {
+  local issue_number="$1" reason="$2" bf ready_ts existing tmp_file
+  # Validated before it reaches jq, like PRAUTO_MAX_REFUNDS_PER_JOB below. A
+  # non-numeric value makes the write fail silently and every reason is dropped —
+  # the F7 state this record exists to fix. Zero is worse than a no-op: jq's
+  # `.[-0:]` is `.[0:]`, which disables the cap instead of applying it.
+  local cap="${PRAUTO_MAX_BLOCKED_REASONS:-10}"
+  if [[ ! "$cap" =~ ^[1-9][0-9]*$ ]]; then
+    warn "Invalid PRAUTO_MAX_BLOCKED_REASONS='${cap}'; using the default of 10."
+    cap=10
+  fi
+  [[ -n "$reason" ]] || return 0
+  bf=$(blocked_reasons_file "$issue_number") || return 0
+  ready_ts="${READY_LABEL_TIMESTAMP:-}"
+  [[ -n "$ready_ts" ]] || return 0
+  existing=$(read_blocked_reasons_json "$issue_number")
+  tmp_file=$(mktemp "${bf}.tmp.XXXXXX") || return 0
+  if jq -n \
+    --argjson issue_number "$issue_number" \
+    --argjson reasons "$existing" \
+    --arg reason "$reason" \
+    --argjson cap "$cap" \
+    --arg ready_label_timestamp "$ready_ts" \
+    --arg last_updated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{issue_number: $issue_number,
+      reasons: (($reasons + [$reason])
+                | reduce .[] as $r ([]; if index($r) then . else . + [$r] end)
+                | .[-$cap:]),
+      ready_label_timestamp: $ready_label_timestamp,
+      last_updated: $last_updated}' \
+    > "$tmp_file" 2>/dev/null; then
+    mv -f "$tmp_file" "$bf" 2>/dev/null || rm -f "$tmp_file"
+  else
+    rm -f "$tmp_file"
+  fi
+  return 0
+}
+
+# read_blocked_reasons_json <issue_number>
+# Echo the current lifecycle's reasons as a JSON array; `[]` when missing,
+# malformed, or from a different ready-label lifecycle.
+read_blocked_reasons_json() {
+  local issue_number="$1" bf ready_ts out
+  bf=$(blocked_reasons_file "$issue_number") || { printf '[]'; return 0; }
+  ready_ts="${READY_LABEL_TIMESTAMP:-}"
+  [[ -n "$ready_ts" ]] || { printf '[]'; return 0; }
+  out=$(jq -ec \
+    --argjson issue_number "$issue_number" \
+    --arg ready_label_timestamp "$ready_ts" '
+      select(
+        (.issue_number | type) == "number"
+        and .issue_number == $issue_number
+        and (.reasons | type) == "array"
+        and (.ready_label_timestamp | type) == "string"
+        and .ready_label_timestamp == $ready_label_timestamp
+      )
+      | [.reasons[] | select(type == "string" and . != "")]
+    ' "$bf" 2>/dev/null) || out="[]"
+  printf '%s' "${out:-[]}"
+}
+
+# read_blocked_reasons <issue_number>
+# Echo the reasons as one human-readable line, or nothing.
+read_blocked_reasons() {
+  local issue_number="$1"
+  read_blocked_reasons_json "$issue_number" | jq -r 'join("; ")' 2>/dev/null || true
+}
+
+# clear_blocked_reasons <issue_number>
+clear_blocked_reasons() {
+  local issue_number="$1" bf
+  bf=$(blocked_reasons_file "$issue_number") || return 0
+  rm -f "$bf"
+  return 0
 }
 
 # read_retry_count <issue_number>

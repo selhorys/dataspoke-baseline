@@ -306,6 +306,13 @@ Reverse order of install. Both profiles tear down the umbrella Helm release.
 The dev profile additionally removes peripherals and dev-lock. `--no-question`
 suppresses every interactive prompt (gate, PVC, namespace).
 
+After selecting its Kubernetes context, `uninstall.sh` makes one live API round-trip and aborts
+non-zero if the cluster is unreachable at that instant — a preflight check, not a completion
+guarantee. Every later existence probe in the script is still `if <cmd> >/dev/null 2>&1`, so a
+credential expiring or the cluster going away mid-run still reads as "does not exist" and still
+exits 0; a zero exit therefore means the preflight found the cluster reachable, never that the
+teardown completed. Confirming deletion is left to the caller (`AI_PRAUTO.md` §Provisioning).
+
 ### What a prod uninstall leaves behind
 
 Teardown is deliberately non-destructive to state: it removes the Helm release
@@ -1723,9 +1730,11 @@ server (pure stdlib, no deps) in the DataSpoke namespace.
 | Deployment | `dev-lock` — 1 replica, `python:3.13-slim`, 64 Mi / 100m CPU |
 | Service | `dev-lock` — ClusterIP, port 8080; ingress TCP passthrough on `9221` |
 
-Lock state is in-memory only — resets on pod restart. Full protocol in
-`TESTING.md §Integration Testing`; HTTP surface (GET/POST acquire/release +
-DELETE force-release) in `helm-charts/README.md`.
+Lock state is in-memory only — resets on pod restart. The `dev-lock` Deployment manifest
+configures the un-renewed-lock lease via `LOCK_SERVICE_TTL_SECS`; a live holder extends it with the
+renew endpoint rather than being bound by it. Full protocol, including the lease's default,
+per-acquisition token, and renewal and reclaim semantics, in `TESTING.md §Integration Testing`;
+HTTP surface (GET/POST acquire/release/renew + DELETE force-release) in `helm-charts/README.md`.
 
 ---
 

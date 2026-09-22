@@ -14,6 +14,7 @@ install scripts.  Tier B TCP defaults:
 import asyncio
 import json
 import os
+import threading
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -508,6 +509,24 @@ def schema_bootstrap(integration_db_url: URL) -> None:
     yield  # type: ignore[misc]
 
 
+# Renew well inside the service's default lease (LOCK_SERVICE_TTL_SECS, 1800s)
+# so a missed tick or two is harmless. Parsed defensively, mirroring the shell
+# client's own regex guard: this runs at import, so a non-numeric value would
+# fail collection of the entire integration suite with a traceback naming
+# conftest rather than the variable, and a zero or negative one would turn the
+# renewer into an unthrottled POST loop against the single-pod lock service.
+def _renew_secs() -> float:
+    raw = os.environ.get("DATASPOKE_DEV_LOCK_RENEW_SECS", "300")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 300.0
+    return value if value > 0 else 300.0
+
+
+_LOCK_RENEW_SECS = _renew_secs()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def acquire_lock() -> None:
     # When run from prauto phases.sh, the lock is already held externally.
@@ -533,12 +552,45 @@ def acquire_lock() -> None:
     except httpx.ConnectError:
         pytest.skip(f"Lock service not reachable at {lock_url}")
 
+    # The lease measures time since last contact (spec/TESTING.md §Integration
+    # Testing step 2), so a holder that never renews is reclaimable once
+    # LOCK_SERVICE_TTL_SECS elapses -- and a full api-wired or E2E run outlasts
+    # it. Without this renewer a long local run would silently lose the cluster
+    # to a concurrent acquirer, which is exactly the contention the lock exists
+    # to prevent. Daemon thread, so it can never outlive the pytest process.
+    token = (resp.json() or {}).get("token", "")
+    stop_renewing = threading.Event()
+
+    def _renew() -> None:
+        while not stop_renewing.wait(_LOCK_RENEW_SECS):
+            try:
+                renewed = httpx.post(
+                    f"{lock_url}/lock/renew",
+                    json={"owner": _lock_owner, "token": token},
+                    timeout=5.0,
+                )
+            except httpx.HTTPError:
+                continue  # transient; the next tick tries again
+            # 403/409 mean this acquisition no longer exists -- someone else
+            # holds the lock, or nothing does. Renewing it further is wrong.
+            if renewed.status_code in (403, 409):
+                return
+
+    renewer: threading.Thread | None = None
+    if token:
+        renewer = threading.Thread(target=_renew, name="dev-lock-renewer", daemon=True)
+        renewer.start()
+
     yield  # type: ignore[misc]
+
+    stop_renewing.set()
+    if renewer is not None:
+        renewer.join(timeout=5.0)
 
     try:
         release_resp = httpx.post(
             f"{lock_url}/lock/release",
-            json={"owner": _lock_owner},
+            json={"owner": _lock_owner, "token": token},
             timeout=5.0,
         )
     except httpx.ConnectError:

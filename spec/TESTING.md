@@ -218,8 +218,20 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
    per-concern tests under `integration/spot/`; reserve `integration/api_wired/` for the five
    UC user-story tests (see [Spot vs Api-Wired Integration Tests](#spot-vs-api-wired-integration-tests)).
 2. **Acquire dev-env lock** -- `POST $DATASPOKE_DEV_LOCK_URL/lock/acquire` with
-   `{"owner": "...", "message": "..."}`. Returns `409` if held by another tester. Set
-   `DATASPOKE_DEV_LOCK_PREACQUIRED=1` if an outer process already holds it.
+   `{"owner": "...", "message": "..."}`. A `200` response mints a random per-acquisition **token**
+   and returns it to the acquirer only; a `409` response (held by another tester) reports `owner`,
+   `acquired_at`, and `message`, but never a token. A held lock past its lease
+   (`LOCK_SERVICE_TTL_SECS`, default `1800` -- 30 minutes) is acquired instead of returning `409`;
+   `GET $DATASPOKE_DEV_LOCK_URL/lock` reports an expired lock as unlocked. The lease bounds only an
+   **un-renewed** lock, not a live one: any client holding the lock longer than the lease must renew
+   it via `POST $DATASPOKE_DEV_LOCK_URL/lock/renew` with `{"owner": "...", "token": "..."}` --
+   `conftest.py` and the E2E `global-setup` do this automatically (roughly every 300s), same as
+   prauto's own executor -- so a legitimate long run is never preempted, and only a holder that
+   stops renewing (crashed, killed, or otherwise gone) becomes reclaimable -- within minutes rather
+   than hours, now that the lease measures time since last renewal instead of having to exceed the
+   longest possible run outright. The lease is independent of, and does not replace, the
+   force-release below. Set `DATASPOKE_DEV_LOCK_PREACQUIRED=1` if an outer process already holds
+   the lock; that process then owns both the lock and its renewal for the duration.
    `DATASPOKE_DEV_LOCK_URL` is auto-populated in `helm-charts/.env.dev` by `install.sh`
    (`http://<INGRESS_IP>:9221` in managed ingress mode; `http://127.0.0.1:9221`
    via `bin/port-forward.sh` in shared ingress mode).
@@ -231,8 +243,15 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
 5. **Run and iterate** -- `uv run pytest tests/integration/`. Re-run from Step 3 as needed.
 6. **Reset on exit** -- module-scoped teardowns restore baseline. Manual fallback:
    `--reset-seed`.
-7. **Release lock** -- `POST $DATASPOKE_DEV_LOCK_URL/lock/release` with `{"owner": "..."}`.
-   Force-release: `DELETE $DATASPOKE_DEV_LOCK_URL/lock`.
+7. **Release lock** -- `POST $DATASPOKE_DEV_LOCK_URL/lock/release` with `{"owner": "...", "token":
+   "..."}` when the acquisition token is on hand -- a mismatched token is rejected with `403`.
+   Omitting `token` falls back to a non-empty `owner` match; an absent or empty `owner` with no
+   token is refused `403` rather than releasing whatever is held, so
+   `DELETE $DATASPOKE_DEV_LOCK_URL/lock` (operator escape hatch, no credential required) is the only
+   way to release without either. The token stops an honest sibling worker from reclaiming a *live*
+   lock by matching its owner name; it is not access control on the service, which is
+   unauthenticated plain HTTP and still answers `DELETE /lock` to any caller that can reach it --
+   restricting that endpoint is a deferred follow-up, not part of this protocol.
 
 #### Per-Module Dummy-Data Reset
 

@@ -311,11 +311,13 @@ At `PRAUTO_MAX_RETRIES_PER_JOB` (default 4), the issue is abandoned. The counter
 **before** incrementing: a dispatch at count 3 with max 4 checks `3 >= 4` → false → proceeds
 → increments to 4. The next dispatch sees `4 >= 4` → abandon.
 
-### Refunding a harness-truncated attempt
+### Refunding a truncated or infrastructure-blocked attempt
 
-A dispatch is counted at the moment it starts, before its outcome is known. One outcome must be
-handed back rather than kept: the implementation phase's agent CLI can terminate its own session
-on its background-task wait ceiling — the CLI exits 0 and prints
+A dispatch is counted at the moment it starts, before its outcome is known. Two distinct outcomes
+must be handed back rather than kept, through the same mechanism and the same cap.
+
+The first is a **harness-truncated session**: the implementation phase's agent CLI can terminate
+its own session on its background-task wait ceiling — the CLI exits 0 and prints
 `Background tasks still running after <N>s; terminating.` — before the workflow ever emits its
 `PRAUTO_WORKFLOW_OUTCOME` sentinel, even though the stages that already ran have committed their
 work to the branch. That is a harness limitation (see `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` in
@@ -330,6 +332,17 @@ each dispatch to zero, never reaching `PRAUTO_MAX_RETRIES_PER_JOB`, and looping 
 while holding an open-issue slot. A session whose elapsed time reaches the configured ceiling must
 have been terminated by the CLI; the elapsed span is the one account of the session the worker cannot
 author. A ceiling of `0` means wait indefinitely, so no truncation is possible.
+
+The second is an **infrastructure-blocked regression** that consumed a dispatch — a wedged dev-env
+lock, a provisioning or health-check failure, not a defect in the worker's code — refunded through
+the same `refund_retry_count` path under the same `PRAUTO_MAX_REFUNDS_PER_JOB` cap. The
+classification is read from `CLUSTER_REGRESSION_EXIT=2`, an exit code the **executor** itself
+assigns when it judges a regression infrastructure-blocked
+([Deterministic environmental-flake exception](#deterministic-environmental-flake-exception));
+the worker session never sets or observes it.
+That executor-only origin is what makes the signal legitimate here, for the same reason the
+wall-clock measurement above is: nothing the worker authors decides whether its own attempt comes
+back.
 
 **Two bounds keep the abandonment guarantee intact even with refunds in play**:
 
@@ -362,7 +375,7 @@ costs a worker a full ceiling of wall-clock per attempt and is capped either way
 | New issue -> PR | Push and create or update the PR in `prauto:wip`; run the required post-PR regression and, when needed, its bounded targeted retry; move the issue and PR to `prauto:review` only after readiness succeeds |
 | PR feedback | Return to `prauto:wip`, address with commits, push, run the required post-PR regression and, when needed, its bounded targeted retry; restore `prauto:review` only on readiness success |
 | Workflow ESCALATE | Do **not** finalize a PR; remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment naming the escalating stage and its findings |
-| Max retries | Remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment |
+| Max retries | Remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment (naming any accumulated infrastructure-block reasons, see [Deterministic environmental-flake exception](#deterministic-environmental-flake-exception)) |
 
 ---
 
@@ -607,7 +620,32 @@ shared cluster the per-worker binding exists to avoid. The health check addition
 `--keep-lock` and runs with stdin closed: an unattended gate must never wait on a release prompt,
 and prauto meets a held lock through its own acquire. A lock conflict for required cluster tests
 is infrastructure-blocked: the issue and PR remain `prauto:wip`, `prauto:review` is not applied,
-and the same regression retries on a later heartbeat.
+and the same regression retries on a later heartbeat — except when the executor holds a persisted
+**token** the lock service accepts for the reported lock, in which case it force-releases with that
+token and re-acquires once before falling back to blocked. Reclaim is authorized by the token, never
+by the owner name: `prauto-<worker id>` is printed on every GitHub comment and the lock service is
+unauthenticated plain HTTP, so a name match alone would let anyone — or a second worker sharing the
+default worker id — force-release a live peer's lock. No accepted token leaves the conflict blocked
+as before, the same as any other lock conflict. The token comes from the acquire call and is
+persisted in local state (mode `600`); prauto never calls the operator's `DELETE /lock` force-release
+escape hatch, since its own reclaim always releases with the token it holds, never by name. The
+executor keeps its owner and token state until a release call actually succeeds, so a release that
+fails (network outage, endpoint unreachable) is retried rather than silently treated as done —
+including by the heartbeat's own exit-time release, which otherwise gets no real second attempt.
+
+While the lock is held, a background renewer extends its lease roughly every 300s
+(`POST .../lock/renew` with the owner and token). No single trap bounds its lifetime — a SIGKILL or
+an OOM kill skips every trap, and a renewer that outlives its lock would extend the lease forever,
+a permanent wedge worse than no lease at all — so three independent bounds apply, any one of which
+ends it: the parent heartbeat's PID disappearing, a hard wall-clock ceiling
+(`PRAUTO_DEV_LOCK_RENEW_MAX_SECS`, default `21600`), and the service itself answering `403` or `409`
+to a renew call, either of which means the acquisition no longer exists. A lock acquired without a
+renewal token is treated as a failed acquisition — released immediately and reported
+infrastructure-blocked — since a lock this worker cannot renew is not one it can rely on for the
+stage's duration. The dev-env lock service's lease (see
+[`TESTING.md` §Integration Testing](TESTING.md#integration-testing)) reclaims only a lock that has
+stopped renewing — a live holder, prauto's own included, is never preempted by it — independent of
+the token-based self-reclaim above, which applies specifically to this worker's own stale lock.
 
 Provisioning cost does not count against `PRAUTO_MAX_RETRIES_PER_JOB` — standing up a cluster is
 not an attempt at the issue, and charging it would abandon jobs for infrastructure latency that
@@ -624,6 +662,16 @@ details not suitable for a PR record.
 DataHub ingress+PAT step. The resume is `--from-component datahub`, not `dataspoke-infra`. Note
 that fragmented `--from-component` resumes skip the env-sync step and leave stale
 `DATASPOKE_DEV_*` credentials in the env file; those are rebuilt from cluster secrets.
+
+**Teardown verifies deletion before clearing its marker.** A heartbeat that provisions a cluster
+records a durable local marker so a later heartbeat can find and finish a teardown this one did not
+complete. A zero exit from `uninstall.sh` is not itself proof of deletion: the deletion evidence
+belongs to the **executor**, not the uninstaller, because a namespace can still be stuck
+terminating, a teardown can be partial, or the heartbeat can be killed before its exit trap ever
+runs — none of which the invoking script's own exit code can speak to after the fact. So the
+marker is cleared only once the executor has confirmed the dev namespaces are actually gone. If it
+cannot confirm that, the marker survives and a later heartbeat retries the teardown from it,
+exactly as it would after a heartbeat that never reached its exit trap at all.
 
 ### Branch image deploys
 
@@ -860,9 +908,18 @@ the initial failed stages and targeted retry stages that later passed, and ident
 environmental flake. This makes partial-retry or flake-qualified success visible without
 representing it as an unqualified clean full-regression result. A provisioning, health-check,
 lock, or local setup failure is infrastructure-blocked: the executor posts a distinct brief
-blocked comment, leaves the issue and PR in `prauto:wip`, and retries the blocked regression or
-targeted stage on a later heartbeat without promising a code fix or asking a worker to change
-code. A spot or api-wired stage whose integration session-start health gate (`require_server` in
+blocked comment, leaves the issue and PR in `prauto:wip`, refunds the retry the blocked attempt
+consumed ([Refunding a truncated or infrastructure-blocked attempt](#refunding-a-truncated-or-infrastructure-blocked-attempt)),
+and retries the blocked regression or targeted stage on a later heartbeat without promising a code
+fix or asking a worker to change code. A lock conflict is reclaimed rather than left blocked when
+the executor holds an accepted token for the reported lock ([Provisioning](#provisioning)); a
+conflict it holds no accepted token for — another worker's lock, live or stale — remains blocked as
+above. An issue that reaches `PRAUTO_MAX_RETRIES_PER_JOB` after accumulating one or more
+infrastructure-blocked attempts carries those reasons into its abandonment record and the GitHub
+abandonment comment
+([Job completion and abandonment](#job-completion-and-abandonment)), so an infrastructure-driven
+abandonment reads as distinct from a genuine code failure. A spot or api-wired stage whose
+integration session-start health gate (`require_server` in
 `tests/integration/conftest.py`) aborts before any test runs is likewise infrastructure-blocked —
 never branch-attributable or a flake — and dispatches no coding agent. Only initial
 full-regression success, completed targeted-retry success, or an otherwise-ready result qualified

@@ -32,11 +32,91 @@ CHART_DIR="$HELM_CHARTS_DIR/dataspoke"
 source "$SCRIPT_DIR/lib/helpers.sh"
 
 # _cleanup_run_with_timeout_state (lib/helpers.sh) is a no-op unless the
-# --components frontend path below is mid-`_build_chart_deps`; wired
+# --components frontend path below is mid-`_build_chart_deps`, or the
+# cluster-reachability preflight below is mid-`_run_with_timeout`; wired
 # unconditionally, same reasoning as install.sh's own EXIT/INT/TERM traps.
 trap _cleanup_run_with_timeout_state EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# ---------------------------------------------------------------------------
+# _require_cluster_reachable <cluster>
+#
+# One bounded, non-mutating live API round-trip against the context
+# `use_context` just selected — called immediately after every `use_context`
+# call in this script. This is a PREFLIGHT, not a completion guarantee: it
+# proves the cluster answers at this one instant, nothing about whether the
+# teardown that follows actually completes (HELM_CHART.md §Uninstallation).
+#
+# Why this is needed even though `use_context` already ran: `use_context`
+# only proves the named context exists in the (pinned, local) kubeconfig —
+# a local read that never dials the cluster. Every existence probe further
+# down this script is `if <cmd> >/dev/null 2>&1`, so on an unreachable
+# cluster (DNS outage, expired credential, network partition) EVERY one of
+# those reads as "resource does not exist — skipping", and the script would
+# otherwise exit 0 having deleted nothing — which is exactly the failure
+# mode that once left a full dev stack running for hours after a caller
+# trusted that exit code as proof of deletion.
+#
+# Bounded two ways, deliberately: `--request-timeout` bounds a single HTTP
+# request, not the wall-clock time of this whole probe, so alone it cannot
+# stop a connection that is accepted and then never answers (a blackholed
+# route behaves differently from a route that refuses outright, and which
+# one a given unreachable endpoint hits is not something this script
+# controls). `_run_with_timeout` (lib/helpers.sh, already used by this same
+# script's `_build_chart_deps` path, so its EXIT-trap cleanup above is
+# already wired) adds the wall-clock backstop on top, rather than a
+# bespoke sleep/kill loop.
+_require_cluster_reachable() {
+  local cluster="$1"
+  local out rc=0
+  local timeout_secs="${DATASPOKE_UNINSTALL_REACHABILITY_TIMEOUT_SECS:-20}"
+  # Validated like its siblings (PRAUTO_PROVISION_TIMEOUT_SECS et al): a typo
+  # would otherwise reach _run_with_timeout's own error() and abort the teardown
+  # with an internal message about <secs>.
+  if [[ ! "$timeout_secs" =~ ^[1-9][0-9]*$ ]]; then
+    warn "Invalid DATASPOKE_UNINSTALL_REACHABILITY_TIMEOUT_SECS='${timeout_secs}'; using the default of 20."
+    timeout_secs=20
+  fi
+
+  out="$(mktemp "${TMPDIR:-/tmp}/dataspoke-uninstall-reachability.XXXXXX")" \
+    || error "Could not create a temporary file for the cluster reachability preflight."
+
+  # `|| rc=$?` on the SAME logical line, not `rc=$?` on the line after: under
+  # this script's `set -e`, a non-zero status from a bare command (one not
+  # already part of an if/while/`||` condition) ends the script immediately,
+  # before a following `rc=$?` line would ever run — which would silently
+  # convert every unreachable-cluster case into an uncaught early exit
+  # carrying kubectl's or _run_with_timeout's own status, never this
+  # function's message.
+  _run_with_timeout "$timeout_secs" \
+    kubectl get --raw=/healthz --request-timeout=10s >"$out" 2>&1 || rc=$?
+
+  if [[ "$rc" -ne 0 ]]; then
+    local detail
+    # A LOCAL setup fault is not a verdict on the cluster. _run_with_timeout
+    # returns 1 when it cannot isolate a process group and 125 when group
+    # verification changes (lib/helpers.sh) — neither writes to $out, so
+    # reporting them as "unreachable" would be a lie that also strands every
+    # future teardown attempt: prauto keeps its durable marker on a failed
+    # teardown, so a host that always fails this way would bill a cluster
+    # forever. The repo draws this same line elsewhere (health-check.sh's exit 2
+    # vs a cluster verdict).
+    if [[ "$rc" -eq 1 || "$rc" -eq 125 ]] && [[ ! -s "$out" ]]; then
+      rm -f "$out"
+      error "Could not run the cluster reachability preflight on this host (bounded-run setup fault, status ${rc}). This is a local fault, not a verdict on cluster '${cluster}'."
+    fi
+    if [[ "$rc" -eq 124 ]]; then
+      detail="the probe did not return within ${timeout_secs}s"
+    else
+      detail="$(sanitize_remote_text "$(cat "$out" 2>/dev/null)" 300)"
+      [[ -z "$detail" ]] && detail="kubectl exited ${rc} with no output"
+    fi
+    rm -f "$out"
+    error "Cluster '${cluster}' is unreachable — the reachability preflight failed: ${detail}. This is a preflight check only: it proves reachability at this instant, not that the teardown below completed."
+  fi
+  rm -f "$out"
+}
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -101,6 +181,7 @@ if [[ -n "$COMPONENTS_CSV" ]]; then
   case "$COMPONENTS_CSV" in
     frontend)
       use_context "${DATASPOKE_KUBE_CLUSTER}"
+      _require_cluster_reachable "${DATASPOKE_KUBE_CLUSTER}"
       if ! helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
         error "Helm release 'dataspoke' not found in namespace '${NS}' — nothing to do."
       fi
@@ -153,6 +234,7 @@ fi
 
 echo ""
 use_context "${DATASPOKE_KUBE_CLUSTER}"
+_require_cluster_reachable "${DATASPOKE_KUBE_CLUSTER}"
 
 # ---------------------------------------------------------------------------
 # DEV PROFILE — reverse install order

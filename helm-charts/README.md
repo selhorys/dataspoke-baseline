@@ -1206,12 +1206,15 @@ curl -s -X POST ${LOCK_URL}/lock/acquire \
 
 | Endpoint | Method | Response |
 |----------|--------|----------|
-| `/lock` | GET | Current lock status |
-| `/lock/acquire` | POST | `200` acquired, `409` held by another, `400` missing owner |
-| `/lock/release` | POST | `200` released, `403` wrong owner |
-| `/lock` | DELETE | Force-release (admin) |
+| `/lock` | GET | Current lock status; an expired lease reports as unlocked, and the token is never included |
+| `/lock/acquire` | POST | `200` acquired — mints and returns a per-acquisition `token` to the acquirer only; `409` held by another (no token in the body), `400` missing owner or malformed body |
+| `/lock/renew` | POST | `{"owner","token"}` — `200` lease extended, `403` token mismatch, `409` nothing held |
+| `/lock/release` | POST | `{"owner","token"}` — `200` released, `403` token mismatch or wrong owner. Omitting `token` falls back to the owner check, which still requires a non-empty owner |
+| `/lock` | DELETE | `200` force-released — operator escape hatch, no owner or token required |
 
-Lock state is in-memory and resets on pod restart.
+The lock carries a lease (`LOCK_SERVICE_TTL_SECS`, default `1800`) measured from the last acquire
+or renew, so a holder that keeps renewing is never preempted and one that stops becomes
+reclaimable. Lock state is in-memory: a pod restart releases whatever was held.
 
 ---
 

@@ -16,6 +16,7 @@ GitHub, or network. Covers:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -27,6 +28,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
 SCHEDULER = ROOT / ".prauto/scheduler"
+
+
+def _decode_undelivered_records(log_text: str) -> list[str]:
+    """Decode monitor-undelivered.log's `<ISO timestamp>\\t<base64 body>` records.
+
+    One physical line per message (never one line per line-of-message): the
+    message body is base64'd onto that single line so a multi-line report
+    survives intact instead of fragmenting into one undelivered record per line,
+    and a line missing the tab-separated timestamp/body shape is skipped rather
+    than raising, since a corrupt or foreign line must not fail the read.
+    """
+    bodies: list[str] = []
+    for line in log_text.splitlines():
+        if "\t" not in line:
+            continue
+        _stamp, encoded = line.split("\t", 1)
+        try:
+            bodies.append(base64.b64decode(encoded).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            continue
+    return bodies
 
 # A PID outside macOS's valid range (max ~4.19M); `kill -0` returns ESRCH for it, so it is a
 # guaranteed-dead PID for exercising the stale-lock branch.
@@ -419,7 +441,16 @@ def test_monitor_clears_a_stale_marker_once_the_preflight_passes(tmp_path: Path)
 
 
 def test_monitor_records_undelivered_message_after_one_retry(tmp_path: Path) -> None:
-    """A send that fails twice leaves a local trace instead of vanishing."""
+    """A send that fails twice leaves a local trace instead of vanishing.
+
+    spec: spec/AI_PRAUTO.md §Reference binding: an agent-supervised Hermes cron
+    job reporting to Slack -- the monitor's undelivered log is the local proof a
+    failed report was not simply dropped (F6). source: .prauto/scheduler/
+    monitor.sh record_undelivered -- one physical line per message,
+    `<ISO timestamp>\\t<base64 of the message body>`, so a multi-line report
+    survives as ONE record rather than fragmenting across raw lines; the message
+    itself is therefore never a plaintext substring of the log file.
+    """
     repo = _scheduler_fixture(tmp_path, "monitor.sh")
     state = repo / ".prauto/state"
     state.mkdir(parents=True, exist_ok=True)
@@ -438,17 +469,40 @@ def test_monitor_records_undelivered_message_after_one_retry(tmp_path: Path) -> 
     result = _run_monitor(repo, _monitor_env(tmp_path, bin_dir))
 
     assert "monitor: slack send failed" in result.stderr, result.stderr
-    undelivered = (state / "monitor-undelivered.log").read_text()
-    assert "monitor attached but no live executor" in undelivered, undelivered
+    undelivered_text = (state / "monitor-undelivered.log").read_text()
+    # Exactly one record -- one physical line, mode 600 -- carrying the failed
+    # message as its base64 body, not as raw text in the log.
+    lines = undelivered_text.splitlines()
+    assert len(lines) == 1, undelivered_text
+    assert (state / "monitor-undelivered.log").stat().st_mode & 0o777 == 0o600
+    bodies = _decode_undelivered_records(undelivered_text)
+    assert any("monitor attached but no live executor" in body for body in bodies), bodies
 
 
 def test_monitor_caps_the_undelivered_log(tmp_path: Path) -> None:
-    """The undelivered log is size-bounded: past the cap only the newest entries are kept."""
+    """The undelivered log is size-bounded: past the cap only the newest entries are kept.
+
+    spec: spec/AI_PRAUTO.md §Reference binding: an agent-supervised Hermes cron
+    job reporting to Slack (F6). source: .prauto/scheduler/monitor.sh
+    record_undelivered -- past UNDELIVERED_MAX_BYTES the cap drops whole oldest
+    RECORDS (`tail -n keep`, keep = current line count / 2), never a byte-range
+    `tail -c` truncation that could split a record's base64 body mid-line and
+    leave an undecodable half-record behind.
+    """
     repo = _scheduler_fixture(tmp_path, "monitor.sh")
     state = repo / ".prauto/state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "heartbeat_cron.log").write_text("Heartbeat complete\n")
-    (state / "monitor-undelivered.log").write_text("old entry\n" * 40000)
+    # Pre-existing content is itself record-shaped (one synthetic record per
+    # line) so the cap's line-count-halving logic has real records to drop,
+    # not lines that merely happen to overflow the byte budget. Sized just past
+    # UNDELIVERED_MAX_BYTES (262144) so halving the line count lands comfortably
+    # back under the cap in one pass -- a byte-range `tail -c` truncation would
+    # not need this margin, which is exactly the behavior this test rules out.
+    undelivered_max_bytes = 262144
+    stale_line = "2020-01-01T00:00:00Z\t" + base64.b64encode(b"stale entry").decode("ascii") + "\n"
+    seed_lines = (undelivered_max_bytes // len(stale_line.encode("utf-8"))) + 200
+    (state / "monitor-undelivered.log").write_text(stale_line * seed_lines)
     (repo / ".prauto/config.local.env").write_text(
         'PRAUTO_SLACK_TARGET="slack:hermes-dev"\nPRAUTO_MONITOR_SEND_RETRY_SECS=0\n'
     )
@@ -459,8 +513,15 @@ def test_monitor_caps_the_undelivered_log(tmp_path: Path) -> None:
     _run_monitor(repo, _monitor_env(tmp_path, bin_dir))
 
     log = state / "monitor-undelivered.log"
+    log_text = log.read_text()
     assert log.stat().st_size <= 262144, log.stat().st_size
-    assert "monitor attached but no live executor" in log.read_text()
+    # Every surviving line must still be a whole, decodable record: a byte-range
+    # truncation would leave a corrupt trailing line where a decode fails.
+    lines = log_text.splitlines()
+    bodies = _decode_undelivered_records(log_text)
+    assert len(bodies) == len(lines), (lines, bodies)
+    # The newest record -- this run's own failed send -- survived the cap.
+    assert any("monitor attached but no live executor" in body for body in bodies), bodies
 
 
 def test_launch_reports_the_monitor_failure_reason(tmp_path: Path) -> None:
