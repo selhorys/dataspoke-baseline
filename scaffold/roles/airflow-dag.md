@@ -17,7 +17,7 @@ src/workflows/
 ├── airflow/                # AirflowClient REST wrapper, models, errors
 ├── dags/                   # Airflow DAG Python files (self-contained, no src/ imports)
 ├── registry.py             # Tier/DAG-ID tuple helpers (TIERS, *_DAG_IDS)
-└── {feature}.py             # Pydantic parameter models per feature (ingestion, metagen, ontogen, metrics)
+└── {feature}.py             # Pydantic parameter models per feature (ingestion, metagen, ontogen)
 ```
 
 ## Airflow conventions
