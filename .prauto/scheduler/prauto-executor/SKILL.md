@@ -33,6 +33,8 @@ model, deploy ordering, quota-pause/resume) lives in `spec/AI_PRAUTO.md`.
 - `PRAUTO_AGENT`: `claude` | `codex` | `auto`. Pinned in `config.local.env`; the executor's
   `select_agent` honors it. The supervisor does NOT pre-set it.
 - `PRAUTO_SLACK_TARGET`: Slack channel for reporting (default `slack:hermes-dev`).
+- Skill source: this repo's `.prauto/scheduler/prauto-executor/`, exposed to Hermes via
+  `skills.external_dirs` — no profile copy exists, so an edit here is live on the next load.
 
 ## The supervisor (agent cron) — per-tick procedure
 
@@ -76,7 +78,9 @@ must:
    verbatim, so it must be re-synced whenever that file changes (or when you find it stale) —
    otherwise the running supervisor follows an older procedure than the repo it came from:
    `hermes -p <profile> cron edit <job_id> --prompt "$(cat .prauto/scheduler/supervisor-prompt.md)"`.
-   The skill loads from the profile's installed copy, so sync that too (repo file is canonical).
+   This skill needs no such sync: it is exposed from the repo via `skills.external_dirs` (see the
+   repo `.prauto/README.md`), so the file you edit here is the file that loads — there is no
+   installed copy to keep current (and a local same-named skill would shadow it).
 
    `launch.sh` detaches the executor, waits ~5s to confirm it survived, then detaches the
    background monitor (`.prauto/scheduler/monitor.sh`) and verifies it too. The monitor posts a
@@ -103,6 +107,19 @@ must:
 | `quota-paused (claude). Waiting.` | Quota-paused; resumes next window |
 | `Codex model/effort override is invalid. No dispatch this wake.` | Bad `PRAUTO_CODEX_MODEL`/`PRAUTO_CODEX_EFFORT` pair; no dispatch, no retry burned |
 
+**Operator scripts** (shipped beside this skill under `scripts/`, for watching a live run without
+spamming Slack):
+
+- `scripts/prauto-watch.sh [secs]` — lock-driven progress sampler. Tails the current run's log
+  section, tracks the live worktree and the executor's busiest descendant, and stops when the
+  executor exits. Repo resolution: `PRAUTO_REPO`, else the checkout the script lives in; worktree: `PRAUTO_WT` → newest dir under `.prauto/worktrees`.
+- `scripts/prauto-conn-probe.py [HOST [PG_PORT [REDIS_PORT [LOCK_PORT [SECS]]]]]` — read-only
+  transport probe (SYN / idle-HOLD / psql QUERY) for attributing an integration failure to the
+  laptop↔dev-env path rather than the branch. Defaults to the `DATASPOKE_DEV_*` vars, so
+  `set -a && source helm-charts/.env.dev && set +a` first; launch it through
+  `.prauto/scheduler/daemonize.py LOGFILE -- …` so it survives the turn. See §Diagnosing a long
+  integration-fix loop.
+
 ## Diagnosing a long integration-fix loop (Stage 3, pre-PR)
 
 A tick that sits for hours in `Integration test fix loop: attempt N/10` while `git log` shows no
@@ -126,9 +143,9 @@ this order:
 - **The worker's own `PRAUTO_TARGETED_VERIFICATION_JSON` pass does not end Stage 3.** Only Stage 5
   consumes it (`validate_targeted_verification`, keyed on `POST_PR_FAILED_STAGES`), so a worker
   attesting "369 passed on this head" changes nothing in the pre-PR loop.
-- **Env-side triage**: an operator-side connection probe (SYN / idle-HOLD / psql QUERY), launched
-  through `.prauto/scheduler/daemonize.py` so it survives the turn, separates a laptop↔LB drop from
-  a healthy path; cluster node churn shows as
+- **Env-side triage**: an operator-side connection probe (SYN / idle-HOLD / psql QUERY) —
+  `scripts/prauto-conn-probe.py`, launched through `.prauto/scheduler/daemonize.py` so it survives
+  the turn — separates a laptop↔LB drop from a healthy path; cluster node churn shows as
   `kubectl get events -A --field-selector reason=ScaleDown`.
 
 ## Manual tick
@@ -292,3 +309,23 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   the next wake derive `implementation` and re-run that plan's stages for one retry slot. A full
   restart (remove all `prauto:` labels, then a fresh `prauto:ready`) moves the lifecycle anchor past
   the approval and forces a whole new analysis pass — use it only when the plan itself is wrong.
+- **A repeat `dev-env lock acquisition returned HTTP 409` means a live holder, not a wedge.** The
+  lock is a renewed lease (`LOCK_SERVICE_TTL_SECS`, default 1800s), so a holder that stops renewing
+  frees it on its own. This worker's own leaked lock is reclaimed automatically on the next wake by
+  presenting its stored acquisition token (`.prauto/state/dev-lock-token.json`); a `Reclaimed a stale
+  dev-env lock` warning in the log is that path working. Read the holder with
+  `curl -s "$DATASPOKE_DEV_LOCK_URL/lock"` and wait out the lease. **Never** force-release with
+  `curl -X DELETE "$DATASPOKE_DEV_LOCK_URL/lock"` on a name match: the owner string
+  `prauto-<worker>` is shared by every worker with the same `PRAUTO_WORKER_ID`, so it may be a
+  sibling's live run — the token scheme exists to prevent exactly that. Force-release only when the
+  lock outlives its lease and no tick, test run, or E2E run anywhere is live. A blocked regression refunds its retry slot, capped by
+  `PRAUTO_MAX_REFUNDS_PER_JOB`, so a persistent block still eventually abandons the issue.
+- **Teardown failures are loud; check the dev stack only when one is reported.** `uninstall.sh`
+  runs a bounded reachability preflight (`kubectl get --raw=/healthz`) and aborts non-zero when the
+  cluster is unreachable, and `teardown_provisioned_dev_env` keeps
+  `.prauto/state/dev-env-provisioned.json` (so `recover_orphaned_dev_env` retries on a later wake)
+  unless the dev namespaces are confirmed gone. On an `unreachable` or `not confirmed gone` warning,
+  spot-check with `kubectl get ns | grep -E 'dataspoke|datahub|langfuse|ingress-nginx'` and
+  `helm list -A`; clean up with
+  `bash helm-charts/bin/uninstall.sh --profile dev --env-file helm-charts/.env.dev --no-question --delete-all`
+  (minutes; deletes the dev namespaces and the ingress LB that fronts the lock endpoint).

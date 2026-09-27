@@ -129,7 +129,7 @@ Repo-level fields (what the job *is*) live in `config.env`; the instance-identit
 | `PRAUTO_SCHEDULER_HERMES_NAME` | config.env | Cron job name |
 | `PRAUTO_SCHEDULER_HERMES_SKILL` | config.env | Supervisor skill loaded by the cron job (`prauto-executor`) |
 | `PRAUTO_SCHEDULER_HERMES_PROMPT_FILE` | config.env | Canonical supervisor prompt (`.prauto/scheduler/supervisor-prompt.md`) — the job's `prompt` field |
-| `PRAUTO_SCHEDULER_HERMES_SKILL_FILE` | config.env | Supervisor skill source (`.prauto/scheduler/prauto-executor/SKILL.md`) — install into the Hermes profile |
+| `PRAUTO_SCHEDULER_HERMES_SKILL_FILE` | config.env | Supervisor skill source (`.prauto/scheduler/prauto-executor/SKILL.md`); expose the whole skill dir via `skills.external_dirs`, never a profile copy |
 | `PRAUTO_SLACK_TARGET` | config.env | Slack channel the supervisor and monitor report to (`slack:hermes-dev`) |
 | `PRAUTO_MONITOR_CHECK_SECS` | config.env | Monitor liveness poll cadence (default 60) |
 | `PRAUTO_MONITOR_INTERVAL_SECS` | config.env | Monitor Slack-report cadence while running (default 600) |
@@ -151,13 +151,33 @@ as `MONITOR_EXITED_IMMEDIATELY … reason=…`, never silence. A send that fails
 `.prauto/state/monitor-undelivered.log`. See `spec/AI_PRAUTO.md §Executor and Scheduler` for the
 create call that consumes these vars.
 
-Before creating the job, install the supervisor skill into the Hermes profile that runs it, or the
-job rejects the unknown `prauto-executor` skill:
+Before creating the job, make the supervisor skill visible to the Hermes profile that runs it, or
+the job rejects the unknown `prauto-executor` skill. The skill lives in this repo
+(`.prauto/scheduler/prauto-executor/`) and Hermes reads it **in place** — there is no copy to keep
+in sync:
 
 ```bash
-mkdir -p ~/.hermes/skills/prauto-executor
-cp .prauto/scheduler/prauto-executor/SKILL.md ~/.hermes/skills/prauto-executor/SKILL.md
+hermes -p <profile> config set skills.external_dirs \
+  '["<CHECKOUT>/.prauto/scheduler/prauto-executor"]'
 ```
+
+`<profile>` is the profile that owns the cron job (e.g. `developer`); `<CHECKOUT>` is the absolute
+path you cloned this repo to — the same path the job uses as `workdir`. `~` is expanded. `config set`
+**replaces the whole list**, so run `hermes -p <profile> config get skills.external_dirs` first and
+keep any existing entries in the array; run it again afterwards to verify.
+
+A repo edit is then live on the next skill load (index, `skill_view`, slash commands all see it). An
+interactive agent's skill edit lands in the repo, not a profile copy; the background curator treats
+`external_dirs` skills as read-only and never edits them. Three constraints:
+
+- **The working tree is what runs.** Hermes reads the checkout as it is on disk, so the next heartbeat
+  loads whatever branch is checked out there, uncommitted edits included. Edit the skill only on a
+  branch you are willing to have the supervisor run, or edit it in a separate worktree.
+- **Do not also keep a copy under the profile's `skills/` dir.** A local skill of the same name
+  shadows the external one (local precedence), reintroducing the drift this avoids.
+- **Do not symlink the skill into `skills/`.** It works, but the target resolves outside the trusted
+  skills root, so Hermes logs `skill file is outside the trusted skills directory` on every load, and
+  a moved checkout silently breaks the link. `external_dirs` is the supported path.
 
 ## Labels
 

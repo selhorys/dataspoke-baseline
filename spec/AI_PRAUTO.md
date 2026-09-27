@@ -1155,7 +1155,7 @@ fields live in `config.local.env` (gitignored — the repo is public).
 |---|---|---|---|
 | `schedule` | `PRAUTO_SCHEDULER_HERMES_SCHEDULE` | config.env | `15 * * * *` (hourly at :15 past; a tick with no actionable issue is a no-op) |
 | `name` | `PRAUTO_SCHEDULER_HERMES_NAME` | config.env | `DataSpoke PRauto heartbeat` |
-| `skills` | `PRAUTO_SCHEDULER_HERMES_SKILL` | config.env | `prauto-executor` (the supervisor skill; source at `PRAUTO_SCHEDULER_HERMES_SKILL_FILE`) |
+| `skills` | `PRAUTO_SCHEDULER_HERMES_SKILL` | config.env | `prauto-executor` (the supervisor skill; source dir `.prauto/scheduler/prauto-executor/`, exposed via `skills.external_dirs` — `PRAUTO_SCHEDULER_HERMES_SKILL_FILE` names its `SKILL.md`) |
 | `prompt` | `PRAUTO_SCHEDULER_HERMES_PROMPT_FILE` | config.env | `.prauto/scheduler/supervisor-prompt.md` — the canonical supervisor procedure |
 | `workdir` | `PRAUTO_SCHEDULER_HERMES_WORKDIR` | config.local.env | the local checkout |
 | `deliver` | `PRAUTO_SCHEDULER_HERMES_DELIVER` | config.local.env | `local` — the supervisor's final response is archived; Slack reporting is explicit via `hermes send` |
@@ -1176,16 +1176,23 @@ repo, not left to a hand-built profile:
   must be followed by re-syncing the job's field, or the running supervisor keeps an older
   procedure than the repo it came from (the `hermes cron edit --prompt` command is in the
   supervisor skill).
-- The supervisor skill is `.prauto/scheduler/prauto-executor/SKILL.md` — the `prauto-executor`
-  skill the job's `skills` field loads. Install it into the Hermes profile that runs the cron job
-  before creating the job, or the job rejects the unknown skill:
+- The supervisor skill is `.prauto/scheduler/prauto-executor/` — the `prauto-executor`
+  skill the job's `skills` field loads. Expose it to the Hermes profile that runs the cron job
+  **in place** via `skills.external_dirs` before creating the job, or the job rejects the unknown
+  skill:
 
   ```bash
-  mkdir -p ~/.hermes/skills/prauto-executor
-  cp .prauto/scheduler/prauto-executor/SKILL.md ~/.hermes/skills/prauto-executor/SKILL.md
+  hermes -p <profile> config set skills.external_dirs \
+    '["<CHECKOUT>/.prauto/scheduler/prauto-executor"]'
   ```
 
-  For a non-default profile, target `~/.hermes/profiles/<name>/skills/…` instead.
+  `<CHECKOUT>` is the absolute path of the checkout (the job's `workdir`); `~` is expanded.
+  `config set` replaces the whole list, so merge with any existing entries. Hermes reads the skill
+  from the working tree on each load, so a repo edit needs no re-install, an interactive agent's
+  skill edit lands in the repo (the background curator treats external skills as read-only), and
+  the supervisor runs whatever branch and uncommitted state the checkout holds. Do **not** also copy or symlink the skill into the
+  profile's `skills/` dir: a local same-named skill shadows the external one, and a symlink resolves
+  outside the trusted skills root (a per-load security warning, plus a moved checkout breaks it).
 
 The canonical monitor is `.prauto/scheduler/monitor.sh`; the supervisor detaches it through
 `.prauto/scheduler/launch.sh`, which owns the mechanical envelope — check the executor lock,
