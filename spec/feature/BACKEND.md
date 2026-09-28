@@ -2118,7 +2118,7 @@ This section captures the service-layer composition only.
 | `api_tokens.py` | Long-lived opaque API token CRUD. Mint generates `dsk_<token_urlsafe(32)>`, stores SHA-256 hash in `api_tokens.token_hash`, snapshots `users.role` into `role_snapshot`. Enforces 10-token-per-user cap (`409 TOKEN_LIMIT_EXCEEDED`). On lookup: computes `effective_role = min(role_snapshot, users.role)`; stamps `last_used_at` best-effort on a session of its own ([§Privilege Enforcement](#privilege-enforcement)). Revoke sets `revoked_at = now()`. Three list scopes: own, one user's, and the deployment-wide admin inventory. The two admin scopes join `users` for the owner email and express their filters (`user_id`, `include_revoked`), ordering, and paging in SQL; the self scope has neither filter, and sorts and slices its result in Python — defensible against the 10-active-token cap that bounds it ([AUTH §API Tokens](AUTH.md#api-tokens)). |
 | `oauth_google.py` | Google OAuth handler via `authlib.integrations.starlette_client`. State cookie (random opaque, HMAC-signed with `DATASPOKE_OAUTH_STATE_SECRET`) + ID-token `nonce` validation. On callback: resolve by Google `sub`; else by email, which binds only onto an **unbound** row (`google_sub IS NULL`) and drives the [credential reset](AUTH.md#credential-reset-on-link) plus its `AUTH.GOOGLE_LINK_CREDENTIAL_RESET` event in the bind transaction, refreshing `name` from the Google claim, logs in without writing when the row under the lock already carries this same `sub` (a raced or retried callback), and refuses a row carrying a different `sub` with `EMAIL_BOUND_TO_ANOTHER_GOOGLE_ACCOUNT`; else create. |
 | `reset.py` | Password-reset token issuance (256-bit `secrets.token_urlsafe`, SHA-256 hashed into `password_reset_tokens`) and confirm. Email transport via `aiosmtplib` driven by the SMTP peripheral (below). |
-| `privilege.py` | The `require_role(...)` FastAPI dependency family. Reads caller's role from `users.role` (or `min(role_snapshot, users.role)` for API tokens). Method × tier matrix enforcement per [AUTH §Privilege Model](AUTH.md#privilege-model). |
+| `privilege.py` | The `require_authenticated` / `require_writer` / `require_editor` / `require_admin` FastAPI dependency family, plus `revalidate_under_user_lock` for credential-creating writes. Reads caller's role from `users.role` (or `min(role_snapshot, users.role)` for API tokens). Method × tier matrix enforcement per [AUTH §Privilege Model](AUTH.md#privilege-model). |
 
 The errors these modules raise on the Google-OAuth path never reach a client as an
 error envelope: the two `/auth/google/*` routes are browser-navigation endpoints
@@ -2207,7 +2207,7 @@ token row.
 
 ### Privilege Enforcement
 
-The `require_role` dependency family in `src/backend/auth/privilege.py`
+The role-enforcement dependency family in `src/backend/auth/privilege.py`
 implements the [Privilege Model](AUTH.md#privilege-model) matrix:
 
 - `require_authenticated` — JWT decode or API-token lookup; populates
@@ -2215,12 +2215,17 @@ implements the [Privilege Model](AUTH.md#privilege-model) matrix:
 - `require_writer` — used on `/spoke/*` write methods (POST /
   PUT / PATCH / DELETE). Rejects with `403 READ_ONLY_ROLE` if
   `effective_role == "Reader"`.
+- `require_editor` — used on read routes that must stay Editor-or-above
+  regardless of HTTP method (currently `GET /spoke/ingestion/secrets`).
+  Rejects with `403 READ_ONLY_ROLE` if `effective_role == "Reader"` — the
+  [Editor+ read exception](AUTH.md#privilege-model) to the Reader-GET rule.
 - `require_admin` — used on `/admin/*`. Rejects with `403 FORBIDDEN` if
   `effective_role != "Admin"`.
 
 GET / HEAD / OPTIONS on `/spoke/*` use `require_authenticated`
-only. `/auth/*` writes use `require_authenticated` only (the method gate is
-exempt — self-scoped writes).
+only (except the `require_editor` route above). `/auth/*` writes use
+`require_authenticated` only (the method gate is exempt — self-scoped
+writes).
 
 The `effective_role` is computed once per request, from a user read that also
 carries the session epoch:
