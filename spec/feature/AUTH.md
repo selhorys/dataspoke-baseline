@@ -487,10 +487,11 @@ privilege check reads from DataSpoke `users.role` directly. The DataHub-side
 read is used only by the nightly `auth-role-sync-daily` DAG to detect drift,
 and reads the `RoleMembership` aspect directly (atomic single-role per
 DataHub `RoleService`) rather than the `IsMemberOfRole` GraphQL relationship
-index, which lags MCL→ES indexing. Group membership writes use `addGroupMembers` /
-`removeGroupMembers`. User deletion uses the SDK's `hard_delete_entity` on
-the corpuser URN (no aspect write; the entity and all its incoming /
-outgoing references are removed).
+index, which lags MCL→ES indexing. Group membership writes use `addGroupMembers`
+only; DataSpoke never retracts a single membership in isolation. User deletion
+uses the SDK's `hard_delete_entity` on the corpuser URN (no aspect write; the
+entity and all its incoming / outgoing references — including group
+memberships — are removed at once).
 
 ### Projection contract
 

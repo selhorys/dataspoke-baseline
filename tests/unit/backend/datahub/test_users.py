@@ -431,7 +431,7 @@ async def test_add_user_to_marker_group_issues_correct_mutation() -> None:
     """add_user_to_marker_group issues GraphQL addGroupMembers with the right variables.
 
     spec: spec/feature/AUTH.md §DataHub Projection Semantics — "Group membership writes
-    use addGroupMembers / removeGroupMembers."
+    use addGroupMembers only."
     """
     from src.backend.datahub.users import add_user_to_marker_group
 

@@ -154,6 +154,11 @@ write back (Ingestion Control `ACTIVE_CUSTOM_MANAGED` mode, Validation, Metadata
 additionally use `DatahubRestEmitter`. Redefined DataHub functions would use both clients
 to blend DataHub and DataSpoke data in a single API call.
 
+Both SDK clients are instantiated in exactly one place, `src/shared/datahub/client.py`'s
+`DataHubClient` wrapper; every call site obtains its clients through that wrapper
+(constructed only in `src/api/dependencies.py` and `src/workflows/_common.py`) rather than
+instantiating `DataHubGraph` or `DatahubRestEmitter` directly.
+
 ### Service Credential Model
 
 DataSpoke→DataHub calls use a single pre-configured admin-level Personal
@@ -506,8 +511,9 @@ precede any `addGroupMembers` call in the same pass.
 
 #### Group membership
 
-Add and remove via the GraphQL `addGroupMembers` / `removeGroupMembers`
-mutations:
+DataSpoke only ever *adds* marker-group membership; it does not retract a single
+membership in isolation. Membership is added via the GraphQL `addGroupMembers`
+mutation:
 
 ```python
 graph.execute_graphql(
@@ -519,7 +525,9 @@ graph.execute_graphql(
 Membership writes are idempotent. Current membership is *read* from the
 corpuser's `NativeGroupMembership` aspect (`graph.get_aspect(corpuser_urn,
 NativeGroupMembershipClass)`) — the authoritative per-user record, unaffected by
-the marker group's own `members` field being reset on each group assertion.
+the marker group's own `members` field being reset on each group assertion. The
+only path that retracts a membership is `hard_delete_corpuser`, which removes
+the entire corpuser (and therefore all its group memberships) at once.
 
 #### Role assignment
 
@@ -1131,5 +1139,3 @@ deployment.
 - [ ] If event-driven extensions are added on top of the baseline, what is the optimal Kafka
   consumer group topology — one group per feature, or a single shared group with internal
   routing?
-- [ ] Should write operations go through a centralized DataHub client wrapper in `src/shared/`,
-  or can features instantiate their own emitters?
