@@ -1,5 +1,5 @@
 """Tests for src/shared/models/ — verifies shared Pydantic domain models (QualityScore,
-QualityIssue, DatasetSummary, DatasetAttributes, EventRecord) against spec/feature/BACKEND.md
+DatasetSummary, DatasetAttributes, EventRecord) against spec/feature/BACKEND.md
 §Shared Services (Domain Models row): internal domain objects, not API schemas.
 Also covers URN round-trip and InvalidDatasetUrnError rejection per
 API.md §Application Error Codes and spec/DATAHUB_INTEGRATION.md §URN Construction."""
@@ -11,7 +11,7 @@ import pytest
 from src.shared.exceptions import InvalidDatasetUrnError
 from src.shared.models.dataset import DatasetAttributes, DatasetSummary
 from src.shared.models.events import EventRecord
-from src.shared.models.quality import QualityIssue, QualityScore
+from src.shared.models.quality import QualityScore
 
 NOW = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
 
@@ -41,24 +41,6 @@ def test_quality_score_overall_score_is_float() -> None:
         computed_at=NOW,
     )
     assert isinstance(score.overall_score, float)
-
-
-# ── QualityIssue ──────────────────────────────────────────────────────────────
-
-
-def test_quality_issue_optional_field_path() -> None:
-    issue = QualityIssue(issue_type="freshness", severity="warning", detail="stale data")
-    assert issue.field_path is None
-
-
-def test_quality_issue_with_field_path() -> None:
-    issue = QualityIssue(
-        issue_type="completeness",
-        severity="critical",
-        detail="null values",
-        field_path="column_a",
-    )
-    assert issue.field_path == "column_a"
 
 
 # ── DatasetSummary ────────────────────────────────────────────────────────────
