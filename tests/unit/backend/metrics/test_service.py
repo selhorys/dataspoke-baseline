@@ -9,6 +9,7 @@ Spec sources:
   spec/API.md §Metric (/spoke/governance/metric) — NOT_IMPLEMENTED lives at the route layer
 """
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -1208,6 +1209,15 @@ async def test_list_active_for_tier_filters_enabled_and_tier(service, db):
         f"emitted SQL={sql!r}. "
         "spec: spec/feature/BACKEND.md §Metrics Service — tier DAGs enumerate enabled "
         "metrics for a tier"
+    )
+    # Backstop: pin the polarity of the is_enabled predicate, not merely its presence.
+    # SQLAlchemy compiles `.is_(True)` as a literal (`IS true`), not a bound param, so
+    # flipping it to `.is_(False)` would leave "is_enabled" in the SQL text and "daily"
+    # in the bound params unchanged — only the literal polarity below would catch it.
+    assert re.search(r"is_enabled\s*(=|\bIS\b)\s*true", sql, re.IGNORECASE), (
+        "list_active_for_tier must filter on is_enabled=true (not false or IS NOT NULL); "
+        f"emitted SQL={sql!r}. spec: spec/feature/BACKEND.md §Metrics Service — tier DAGs "
+        "scan is_enabled=true rows of the matching schedule_tier"
     )
     assert "daily" in bound, (
         "list_active_for_tier('daily') must bind the requested tier into the WHERE; "
