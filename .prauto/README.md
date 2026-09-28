@@ -161,7 +161,8 @@ hermes -p <profile> config set skills.external_dirs \
   '["<CHECKOUT>/.prauto/scheduler/prauto-executor"]'
 ```
 
-`<profile>` is the profile that owns the cron job (e.g. `developer`); `<CHECKOUT>` is the absolute
+`<profile>` is the profile that owns the cron job (the one whose profile home owns
+`PRAUTO_SLACK_TARGET`); `<CHECKOUT>` is the absolute
 path you cloned this repo to — the same path the job uses as `workdir`. `~` is expanded. `config set`
 **replaces the whole list**, so run `hermes -p <profile> config get skills.external_dirs` first and
 keep any existing entries in the array; run it again afterwards to verify.

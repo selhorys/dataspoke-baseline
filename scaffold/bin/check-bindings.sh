@@ -153,7 +153,7 @@ PY
 for script in scaffold/bin/*.sh; do bash -n "$script"; done
 for script in scaffold/hooks/*.sh; do sh -n "$script"; done
 if rg -n '/Users/[^/]+/|\.Codex|\.Claude' .codex .agents scaffold .claude \
-  --glob '!settings.local.json' --glob '!check-bindings.sh' --glob '!**/workflows/**'; then
+  --glob '!settings.local.json' --glob '!check-bindings.sh'; then
   echo 'non-portable personal or case-incorrect path found' >&2
   exit 1
 fi

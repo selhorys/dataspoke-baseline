@@ -11,7 +11,9 @@ export const meta = {
   ],
 }
 
-const PLAN = '/Users/soonmok/.claude/plans/sunny-fluttering-map.md'
+// The approved plan for THIS run. Supply it per run (or set it here for a manual
+// run) — never commit a personal absolute path to this public repo.
+const PLAN = '~/.claude/plans/<plan-slug>.md'  // e.g. the plan written by the plan step
 
 // Every generator prompt carries these. The no-commit rule and the live-cluster
 // allowlist are both standing project requirements, not per-run preferences.
@@ -26,7 +28,7 @@ HARD RULES — these override anything you infer from the repo:
   Anything touching kubectl, helm, docker, install.sh, health-check.sh, or the
   integration/e2e suites is FORBIDDEN — the orchestrator verifies the cluster.
 - Read the approved plan at ${PLAN} first. It is authoritative. Do not widen scope.
-- Follow /Users/soonmok/Projects/selhorys/dataspoke-baseline/CLAUDE.md conventions.
+- Follow this repository's CLAUDE.md conventions.
 `
 
 const VERDICT_SCHEMA = {
