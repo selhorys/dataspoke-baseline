@@ -10,10 +10,3 @@ class QualityScore(BaseModel):
     dimension_details: dict[str, dict[str, Any]] | None = None
     dataset_urn: str | None = None
     computed_at: datetime | None = None
-
-
-class QualityIssue(BaseModel):
-    issue_type: str  # "freshness", "completeness", "schema_drift", etc.
-    severity: str  # "critical", "warning", "info"
-    detail: str
-    field_path: str | None = None

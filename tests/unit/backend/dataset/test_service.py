@@ -199,7 +199,13 @@ async def test_get_attributes_with_schema_and_quality(service, datahub, cache):
 
     datahub.get_aspect = AsyncMock(side_effect=fake_get_aspect)
 
-    quality_json = json.dumps({"overall_score": 0.95, "dimensions": {"completeness": 0.9}})
+    quality_json = json.dumps(
+        {
+            "overall_score": 0.95,
+            "dimensions": {"completeness": 0.9},
+            "dimension_details": {"completeness": {"nulls": 3}},
+        }
+    )
     cache.get = AsyncMock(return_value=quality_json)
 
     result = await service.get_attributes(_DATASET_URN)
@@ -208,6 +214,10 @@ async def test_get_attributes_with_schema_and_quality(service, datahub, cache):
     assert result.quality_score is not None
     assert result.quality_score.overall_score == 0.95
     assert result.quality_score.dimensions == {"completeness": 0.9}
+    # spec/feature/BACKEND.md §Dataset Service "quality_score (optional, cache-backed)":
+    # dimension_details is reserved plumbing — the cached JSON may carry it, but
+    # get_attributes only ever populates overall_score/dimensions, so it always reads null.
+    assert result.quality_score.dimension_details is None
 
 
 async def test_get_attributes_quality_cache_miss(service, datahub, cache, db):

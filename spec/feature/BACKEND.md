@@ -228,17 +228,20 @@ then paginated in-memory (per-dataset event volume is small) with a correct `tot
 `wrapper` flag is carried through unchanged; rows that are not ingestion events report
 `wrapper: false`.
 
-**DataHub aspects read**: `datasetProperties`, `editableDatasetProperties`, `ownership`,
-`globalTags`, `glossaryTerms`, `schemaMetadata`, `editableSchemaMetadata`.
+**DataHub aspects read**: `datasetProperties`, `ownership`, `globalTags`, `schemaMetadata`.
 
 **`quality_score` (optional, cache-backed)**: an optional composite quality score
-exposed via the `QualityScore` model (`overall_score`, `dimensions`). The dataset
-service reads it from the Redis cache key `quality:{dataset_urn}:score` (see
+exposed via the `QualityScore` model (`overall_score`, `dimensions`, `dimension_details`).
+The dataset service reads it from the Redis cache key `quality:{dataset_urn}:score` (see
 [Cache Key Conventions](#cache-key-conventions)) and returns `null` when the key is
 absent — it does **not** compute the score itself. The baseline ships no scoring
 engine, so the field reads `null` unless an out-of-band process populates the cache.
-Dashboard-facing quality measurement is owned by the governance `validation-score`
-metric (see §Metrics Service), computed from `validation_results`.
+`dimension_details` is reserved plumbing: the response schema and router carry it
+through unchanged, but `DatasetService.get_attributes` only ever populates
+`overall_score`/`dimensions` from the cached JSON, so it reads `null` until an
+out-of-band writer starts setting it. Dashboard-facing quality measurement is owned
+by the governance `validation-score` metric (see §Metrics Service), computed from
+`validation_results`.
 
 ### Ingestion Service (`src/backend/ingestion/`)
 
