@@ -5,7 +5,6 @@ import { apiFetch } from "@/lib/api/client";
 import { useAuthStore } from "@/lib/auth/store";
 import { getRuntimeConfig } from "@/lib/runtime-config";
 import type {
-  ApiTokenItem,
   ApiTokenListResponse,
   ApiTokenMintResponse,
   Me,
@@ -182,6 +181,3 @@ export function getGoogleLoginUrl(): string {
   const base = getRuntimeConfig().apiBaseUrl + "/api/v1";
   return `${base}/auth/google/login`;
 }
-
-// Convenience accessor for unused imports (type-level)
-export type { ApiTokenItem };

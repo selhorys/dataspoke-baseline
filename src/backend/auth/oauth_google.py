@@ -68,16 +68,6 @@ def build_oauth_client(settings: Any) -> OAuth:
     return _oauth_instance
 
 
-def invalidate_oauth_client() -> None:
-    """Reset the memoized OAuth client instance.
-
-    Used when OAuth credentials are rotated at runtime (mirrors the
-    invalidate_*_cache() pattern used by other peripheral clients).
-    """
-    global _oauth_instance
-    _oauth_instance = None
-
-
 # ── User resolver ─────────────────────────────────────────────────────────────
 
 
