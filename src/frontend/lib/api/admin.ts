@@ -6,7 +6,6 @@ import { invalidateTokenReads } from "@/lib/api/auth";
 import type {
   AdminApiTokenListResponse,
   AdminUser,
-  ApiTokenItem,
   DagGroup,
   DagGroupPatch,
   DagGroupStatus,
@@ -187,8 +186,6 @@ export function useDeleteAdminUserToken() {
     },
   });
 }
-
-export type { ApiTokenItem };
 
 // ── Runtime configuration ──────────────────────────────────────────────────────
 
