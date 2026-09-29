@@ -8,7 +8,6 @@ Public surface:
     get_datahub_token() -> str
     set_datahub_token(value: str) -> None
     datahub_token_is_set() -> bool
-    invalidate_datahub_token_cache() -> None
 
     get_datahub_kafka_sasl_password() -> str
     set_datahub_kafka_sasl_password(value: str) -> None
@@ -184,11 +183,6 @@ def _set_secret_value(key: str, value: str) -> None:
 
 
 # ── Per-credential wrappers ───────────────────────────────────────────────────
-
-
-def invalidate_datahub_token_cache() -> None:
-    """Evict the cached DataHub token, forcing a fresh read on the next call."""
-    _invalidate(_KEY_TOKEN)
 
 
 def get_datahub_token() -> str:
