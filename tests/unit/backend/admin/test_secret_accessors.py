@@ -87,7 +87,7 @@ SECRET_MODULES: list[SecretModule] = [
         get=_datahub_mod.get_datahub_token,
         set=_datahub_mod.set_datahub_token,
         is_set=_datahub_mod.datahub_token_is_set,
-        invalidate=_datahub_mod.invalidate_datahub_token_cache,
+        invalidate=lambda: _datahub_mod._invalidate(_datahub_mod._KEY_TOKEN),
         require_client_target="src.backend.admin.datahub_secret.require_k8s_client",
         secret_name="dataspoke-datahub-secret",
         secret_key="token",
@@ -784,7 +784,7 @@ def test_datahub_invalidating_one_key_leaves_the_other_cached() -> None:
         _datahub_mod.get_datahub_kafka_sasl_password()
         warm_reads = core.read_namespaced_secret.call_count  # 2
 
-        _datahub_mod.invalidate_datahub_token_cache()
+        _datahub_mod._invalidate(_datahub_mod._KEY_TOKEN)
 
         # The Kafka entry survives — no new read.
         assert _datahub_mod.get_datahub_kafka_sasl_password() == "kafka-B"
@@ -895,7 +895,7 @@ def test_datahub_kafka_password_is_set_reflects_the_kafka_key_only() -> None:
         assert _datahub_mod.datahub_kafka_sasl_password_is_set() is False
         assert _datahub_mod.datahub_token_is_set() is True
 
-    _datahub_mod.invalidate_datahub_token_cache()
+    _datahub_mod._invalidate(_datahub_mod._KEY_TOKEN)
     _datahub_mod.invalidate_datahub_kafka_sasl_password_cache()
 
     core_both = _make_core(read_return=_fake_datahub_secret(token="pat", kafka="pw"))

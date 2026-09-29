@@ -21,8 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.db.models import PeripheralConfig
 
-PERIPHERAL_NAMES: set[str] = {"datahub", "langfuse", "smtp"}
-
 # ── DTOs ──────────────────────────────────────────────────────────────────────
 
 
