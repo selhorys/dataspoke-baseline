@@ -158,6 +158,9 @@ Implement your stage's scope from the plan, following your agent instructions (r
   return `${base}
 
 FIX PASS — the reviewer returned these findings on the previous pass. Address each one: fix it, or dispute it with evidence in your completion report.
+If a finding names a file OUTSIDE your role's write scope (it is owned by a different generator role, per scaffold/roles/<name>.md), do NOT edit that file, and do NOT dispute the finding as wrong. Instead, for each such finding emit one marker line on its own:
+  WFAUTH_OUT_OF_SCOPE: <owning-role> <path>
+where <owning-role> is the role that owns the file (one of spec, backend, airflow-dag, test, frontend, k8s-helm) and <path> is the finding's file. The harness routes those findings to the owning generator's own fix pass. Fix or refute only the findings that genuinely lie in your scope.
 ${JSON.stringify(findings, null, 2)}`
 }
 
@@ -209,16 +212,95 @@ async function reviewPass(stage, report, pass) {
   if (results.length < reviewers.length) {
     return { verdict: 'ESCALATE', findings: [], summary: 'a reviewer failed to produce a verdict' }
   }
-  return {
-    verdict: results.reduce((worst, r) => (RANK[r.verdict] > RANK[worst] ? r.verdict : worst), 'APPROVE'),
-    findings: results.flatMap(r => r.findings),
-    summary: results.map(r => r.summary).join(' | '),
-  }
+  return mergeReviews(results)
 }
 
 // generate → review → [fix pass if REVISE, max MAX_FIX_PASSES iterations] → re-review.
 // REVISE persisting after MAX_FIX_PASSES fix passes becomes ESCALATE (user decision required).
 const MAX_FIX_PASSES = 3
+
+// Stages that have already finished in this run. An out-of-scope finding is routed only to one of
+// these: an owner that has not run yet would receive a fix pass before its own generate pass.
+const COMPLETED_STAGES = new Set()
+
+// How many times one stage may hand findings to another stage's generator. Bounds the routing so a
+// finding no stage can resolve still reaches ESCALATE.
+const MAX_CROSS_STAGE_REROUTES = 2
+
+// A generator that CANNOT act on a finding — because the finding's file lives in another stage's
+// role scope, not its own — emits one marker line per such finding instead of faking a fix or
+// disputing it as wrong:
+//   WFAUTH_OUT_OF_SCOPE: <owning-role> <path>
+// The harness then runs that owning role's generator for those findings. This exists because
+// wf-minimal executes each stage's generate→fix loop in isolation with no loop-back: without it, a
+// later stage burns its entire fix-pass budget against a generator that cannot touch the file and
+// escalates a nearly-complete run. The owning role's own scope is authoritative in
+// scaffold/roles/<name>.md — this marker only names it, the generator does not restate a scope map.
+// Anchored to line start so a marker quoted inside a diff line of the evidence block never routes.
+const OUT_OF_SCOPE_RE = /^[ \t>*-]*`?WFAUTH_OUT_OF_SCOPE:\s*([a-z0-9_-]+)\s+(\S+)/gim
+
+// Canonical form of a path from a marker or a finding: no markdown quoting, no leading `./`, no
+// trailing `:line` / `:line-line` suffix.
+function normPath(p) {
+  return String(p || '').trim().replace(/^[`'"]+|[`'",.;]+$/g, '').replace(/^\.\//, '').replace(/:\d+(-\d+)?$/, '')
+}
+
+function outOfScopeRouting(report) {
+  const byRole = new Map()
+  for (const m of (report || '').matchAll(OUT_OF_SCOPE_RE)) {
+    const role = m[1].toLowerCase()
+    const path = normPath(m[2])
+    if (!path) continue
+    if (!byRole.has(role)) byRole.set(role, [])
+    byRole.get(role).push(path)
+  }
+  return byRole
+}
+
+function mergeReviews(reviews) {
+  return {
+    verdict: reviews.reduce((worst, r) => (RANK[r.verdict] > RANK[worst] ? r.verdict : worst), 'APPROVE'),
+    findings: reviews.flatMap(r => r.findings),
+    summary: reviews.map(r => r.summary).join(' | '),
+  }
+}
+
+// Run the owning generator(s) for findings `stage` declared out of its scope, in this same
+// worktree. Each reroute is a fix pass on the owner with only the findings whose file matches its
+// marker; the owner commits its own fix. That commit is then reviewed by the OWNER's full reviewer
+// set (including security-reviewer when the owner is security-flagged) — the stage's own reviewers
+// would otherwise be the only ones to see it, skipping the owner's spec-compliance and security
+// gates. Returns the updated reroute count and the owner reviews, which the caller merges worst-of
+// into the stage's re-review. Markers naming `stage` itself or a role that has not completed in
+// this run are ignored — the caller's next review escalates if the finding is truly unresolvable.
+async function routeOutOfScope(stage, report, review, reroutes) {
+  const ownerReviews = []
+  for (const [owner, paths] of outOfScopeRouting(report)) {
+    if (owner === stage || !COMPLETED_STAGES.has(owner)) continue
+    if (reroutes >= MAX_CROSS_STAGE_REROUTES) {
+      log(`${stage}: out-of-scope findings for ${owner} not routed — reroute budget spent`)
+      break
+    }
+    const owned = review.findings.filter(f => {
+      const file = normPath(f.file)
+      return paths.some(p => file === p || (p.endsWith('/') && file.startsWith(p)))
+    })
+    if (owned.length === 0) continue
+    reroutes += 1
+    log(`${stage}: routing ${owned.length} out-of-scope finding(s) to ${owner} for a fix pass`)
+    const ownerReport = await agent(genPrompt(owner, owned), {
+      agentType: owner, phase: owner, label: `${stage}->${owner}:reroute-${reroutes}`,
+    })
+    if (ownerReport == null) {
+      ownerReviews.push({ verdict: 'ESCALATE', findings: [], summary: `${owner} reroute generator failed or was skipped` })
+      continue
+    }
+    if (reviewersFor(owner).length > 0) {
+      ownerReviews.push(await reviewPass(owner, ownerReport, `reroute-${reroutes}-review`))
+    }
+  }
+  return { reroutes, ownerReviews }
+}
 
 async function runStage(stage) {
   let report = await agent(genPrompt(stage, null), {
@@ -229,6 +311,7 @@ async function runStage(stage) {
 
   let review = await reviewPass(stage, report, 'review-1')
   let fixPasses = 0
+  let reroutes = 0
   while (review.verdict === 'REVISE' && fixPasses < MAX_FIX_PASSES) {
     fixPasses += 1
     log(`${stage}: REVISE — running fix pass ${fixPasses}/${MAX_FIX_PASSES} (${review.findings.length} findings)`)
@@ -236,7 +319,11 @@ async function runStage(stage) {
       agentType: stage, phase: stage, label: `${stage}:fix-pass-${fixPasses}`,
     })
     report = fixReport ?? report
-    review = await reviewPass(stage, report, `review-${fixPasses + 1}`)
+    // A finding the generator declared out of its role scope is routed to the owning generator so
+    // the fix can actually land, rather than being re-raised against this stage until it escalates.
+    const routed = await routeOutOfScope(stage, report, review, reroutes)
+    reroutes = routed.reroutes
+    review = mergeReviews([await reviewPass(stage, report, `review-${fixPasses + 1}`), ...routed.ownerReviews])
   }
   if (review.verdict === 'REVISE') {
     review = { ...review, verdict: 'ESCALATE', summary: `findings persist after ${MAX_FIX_PASSES} fix passes: ${review.summary}` }
@@ -261,6 +348,7 @@ outer: for (const group of ARGS.stages) {
     log(`stage: ${stage} (serialized)`)
     const result = await runStage(stage)
     results.push(result)
+    COMPLETED_STAGES.add(stage)
     if (result.outcome === 'ESCALATE') {
       haltedAt = stage
       break outer

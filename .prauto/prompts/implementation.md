@@ -16,7 +16,11 @@ are:
   which loop ran.
 - **Codex**: express the same loop inline (Codex has no `Workflow` tool): for each stage, dispatch a
   generator subagent, then its reviewer(s), merge verdicts worst-of, and run at most three fix passes
-  (four review rounds total) before escalating a persisting REVISE.
+  (four review rounds total) before escalating a persisting REVISE. When a fix-pass generator marks
+  a finding `WFAUTH_OUT_OF_SCOPE: <owning-role> <path>` and that role is an earlier stage of this
+  run, run the owner's fix pass on just those findings, review its commit with the owner's full
+  reviewer set, and merge that verdict worst-of into the current stage's re-review (at most two
+  such reroutes per stage).
 
 Either way, **each generator commits its own stage** before returning its report (see
 [Commit-per-stage](#commit-per-stage)). Reviewers stay read-only.

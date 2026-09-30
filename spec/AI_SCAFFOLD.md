@@ -147,29 +147,23 @@ orchestration: passing plans, routing reviewer findings, and deciding what to ru
 non-trivial implementation, delegate to the appropriate generator agent rather than writing code
 directly in the main conversation.
 
-### Evaluator (opus model)
+### Role index
 
-| Role | Scope | Tools |
-|------|-------|-------|
-| `reviewer` | Independently reviews code-generator output against spec + implementation plan. Produces structured pass/fail scoring across 5 criteria (spec compliance, architecture adherence, code quality, completeness, inter-component consistency). Invoked after `backend`, `airflow-dag`, and `frontend` generators | Read, Glob, Grep |
-| `test-reviewer` | Independently reviews test-generator output (pytest **and** Playwright E2E). Produces structured pass/fail scoring across 5 test-specific criteria: spec traceability, spec-derived (vs impl-calibrated) assertions, failure-mode coverage, plausibly-broken-impl sensitivity, and property-based testing opportunity (advisory). Invoked after the `test` generator | Read, Glob, Grep |
-| `spec-reviewer` | Independently reviews spec-generator output against the spec hierarchy + plan. Produces structured pass/fail scoring across 5 spec-specific criteria: hierarchy/priority compliance, internal consistency & naming, timeless & no-bloat, completeness vs plan, altitude. Invoked after the `spec` generator | Read, Glob, Grep |
-| `security-reviewer` | Parallel security review when a generator's diff touches sensitive application, deployment, dependency, automation, or agent-control paths, including `.codex/`, shared skills, contracts, and evaluator memory. Scores injection, authn/authz, secrets, input validation, supply chain, DataHub emission, and crypto. Authoritative glob list lives in the role file | Read, Glob, Grep |
+Generators: `spec`, `backend`, `airflow-dag`, `test`, `frontend`, `k8s-helm` (sonnet).
+Evaluators: `reviewer`, `test-reviewer`, `spec-reviewer`, `security-reviewer` (opus).
 
-All four reviewers are technically read-only — Claude restricts their tools and Codex declares
+Each role's scope, allowed tools, reading list, invocation modes, and (for evaluators) its scoring
+rubric and verdict format live in its canonical `scaffold/roles/<name>.md` file — the single source
+of truth for that role. Tool sets and model bindings are CLI mechanics and live in each CLI's
+binding (`.claude/agents/<name>.md`, `.codex/agents/<name>.toml`).
+
+Do not restate a role's file scope here. A scope listing duplicated in this spec drifts as soon as
+the role's real scope changes, and a reviewer that reads the stale copy will rightly block the
+change.
+
+All evaluators are technically read-only — Claude restricts their tools and Codex declares
 `sandbox_mode = "read-only"`. A trusted orchestrator captures status and diff evidence before
 invocation and injects it as data; evaluators do not execute shell commands or project scripts.
-
-### Generators (sonnet)
-
-| Role | Scope | Tools |
-|------|-------|-------|
-| `spec` | Specification documents under `spec/` (top-level + `feature/<FEATURE>.md`). Authors and harmonizes timeless reference specs via the `spec-write`/`spec-harmonize`/`spec-sync-with-impl` skills. Leads the run so code generators read the updated spec; runs only when the plan adds or changes specs. Supports fix pass mode | Read, Write, Edit, Glob, Grep |
-| `backend` | FastAPI routes, services, shared libs in `src/api/`, `src/backend/`, `src/shared/`. Reads feature specs and the approved plan. Self-verifies with `pytest`. Supports fix pass mode for reviewer findings | Read, Write, Edit, Glob, Grep, Bash |
-| `airflow-dag` | Airflow DAG Python files in `src/workflows/dags/` and their support modules (`src/workflows/airflow/`, `_common.py`, `registry.py`). Orchestrates `src/backend/` services via HttpOperator tasks. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
-| `test` | Tests across all layers in `tests/`: Python unit / spot / api-wired (pytest) **and** Playwright/TypeScript E2E in `tests/e2e/` (use-case + ground groups). Follows `spec/TESTING.md`. Supports reviewer-directed testing mode to verify specific findings | Read, Write, Edit, Glob, Grep, Bash |
-| `frontend` | Next.js/TypeScript code in `src/frontend/`. Reads `FRONTEND_*.md` specs. Self-verifies with `npm test` and `tsc`. Supports fix pass mode | Read, Write, Edit, Glob, Grep, Bash |
-| `k8s-helm` | Helm charts, Dockerfiles, Kubernetes manifests, dev environment scripts. No review loop (infrastructure changes are lower-risk) | Read, Write, Edit, Glob, Grep, Bash |
 
 ### Implementation workflow
 
