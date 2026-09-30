@@ -504,6 +504,14 @@ Review is therefore **per-stage and adversarial** — each generator is evaluate
 context before later stages build on its output, upholding the generator ≠ reviewer rule that
 exists to prevent the self-praise failure mode.
 
+A fix pass that meets a finding in a file owned by an earlier, already completed stage's role does
+not edit or dispute it; it marks the finding out of scope with a `WFAUTH_OUT_OF_SCOPE:
+<owning-role> <path>` line. The workflow then runs that owner's fix pass on just those findings and
+reviews the owner's commit with the owner's full reviewer set (including `security-reviewer` when
+the owner is security-flagged), merging that verdict worst-of into the current stage's re-review.
+Rerouting is bounded per stage; a finding owned by a role that is not an earlier stage of the run
+still escalates.
+
 Each generator commits its own stage to the branch as its final action — the workflow's
 commit-per-stage contract — and a REVISE fix pass produces a follow-up commit. Generator stages
 execute serially because they share one worktree and Git index; reviewer passes within a stage may

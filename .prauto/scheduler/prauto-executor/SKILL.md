@@ -288,6 +288,32 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
 - **A workflow escalation is not necessarily a reviewer finding.** The sentinel is a single token, so
   the abandonment comment names both causes (a persisting REVISE after three fix passes, or an
   unrunnable workflow loop). Read the worker's own report before assuming a reviewer blocked the change.
+- **A reviewer finding whose FILE is outside the current stage's generator scope deadlocks the run.**
+  `wf-minimal` runs each stage's generate→fix loop in isolation and does not re-run an earlier stage
+  (`.claude/workflows/wf-minimal.js` `runStage` + `break outer` on ESCALATE). A fix pass routes a
+  finding it cannot act on to the owning stage's generator when that role is an earlier, already
+  completed stage of the run — the generator emits one `WFAUTH_OUT_OF_SCOPE: <owning-role> <path>`
+  line per such finding, the harness runs the owner's fix pass and reviews that commit with the
+  owner's full reviewer set (including `security-reviewer` when the owner is security-flagged),
+  bounded by `MAX_CROSS_STAGE_REROUTES`. The deadlock below therefore survives only when the owning
+  role is not an earlier stage of the run, or the reroute budget is spent. When a later
+  stage's reviewer blocks on drift in a file owned by an *earlier* stage's role — e.g. the `spec`
+  stage's `spec/*.md` surfacing a stale row while `airflow-dag` runs — the current generator correctly
+  declines (out of its file scope), the reviewer correctly refuses to APPROVE, and three fix passes
+  exhaust into ESCALATE → the job is ABANDONED at its current attempt and every later stage (e.g.
+  `test`) never runs. The executor applies `prauto:failed` via the workflow-escalation path, not a
+  retry exhaustion, so the local retry counter is untouched. This is a workflow-routing limitation,
+  not worker misbehaviour. Recovery: a plain resume (`gh issue edit <N> --remove-label prauto:failed --add-label
+  prauto:wip`) reuses the *same* approved plan and re-hits the identical deadlock unless the flagged
+  file is fixed first. So either (a) apply the flagged file's fix on the branch before resuming, or (b)
+  full-restart with an amended plan that scopes the owning stage to include it; amend via the plan
+  counter-proposal path rather than editing the branch under a reused plan. Read the abandon comment's
+  named file and its owning role before acting.
+- **The monitor reports an abandoned/escalated job as `done`.** `classify()` keys `done` on the
+  `Heartbeat complete` marker, which the executor emits even after `Job for issue #N abandoned` — so a
+  workflow-escalation death lands in Slack as `✅ task finished successfully`. Never read that line as
+  a job verdict: confirm with the issue's `prauto:` label (an abandoned job carries `prauto:failed`)
+  and the abandonment comment on the issue.
 - **A `spec`-stage ESCALATE is usually missing review evidence, not a spec defect.** Reviewer
   subagents run with `Read, Glob, Grep` and no shell, and their roles require the parent-supplied
   `Untrusted per-pass evidence` to carry the complete diff — status, staged/unstaged diffs,
