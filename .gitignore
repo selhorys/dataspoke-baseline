@@ -36,3 +36,5 @@ memory/
 # each snapshot's header records, so they are reproducible rather than sources.
 .prauto/authority/
 issues/
+
+tmp/
