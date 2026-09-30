@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from src.api.schemas.common import PaginatedResponse, SingleResponse
 from src.shared.models.enums import EventStatus
@@ -46,15 +46,3 @@ class EventResponse(SingleResponse):
 
 class EventListResponse(PaginatedResponse):
     events: list[EventResponse] = Field(default=[], description="Page of event records")
-
-
-class EventFilterParams(BaseModel):
-    entity_type: str | None = Field(
-        default=None, description="Filter events by entity type, e.g. 'ingestion_config'"
-    )
-    event_type: str | None = Field(
-        default=None, description="Filter events by event type, e.g. 'run_completed'"
-    )
-    status: EventStatus | None = Field(
-        default=None, description="Filter events by outcome status"
-    )

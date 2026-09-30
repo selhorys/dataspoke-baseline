@@ -90,4 +90,3 @@ AUTH_GOOGLE_UNBOUND = "AUTH.GOOGLE_UNBOUND"
 # entity_id = users.id of the owner, not of the acting admin. The self-service
 # DELETE /auth/api-tokens/{id} emits nothing.
 AUTH_API_TOKEN_REVOKED = "AUTH.API_TOKEN_REVOKED"
-AUTH_PREFIX = "AUTH."
