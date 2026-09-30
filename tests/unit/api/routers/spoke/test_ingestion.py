@@ -628,6 +628,8 @@ async def test_get_secrets_returns_200_with_refs(client, monkeypatch) -> None:
 
     assert resp.status_code == 200
     body = resp.json()
+    assert body["offset"] == 0
+    assert body["limit"] == 20
     assert body["total_count"] == 1
     row = body["secrets"][0]
     assert row["ref"] == "pg__password"
@@ -666,3 +668,120 @@ async def test_get_secrets_reader_returns_403(client) -> None:
     resp = await _reader_request(client, "GET", f"{_BASE}/secrets")
     assert resp.status_code == 403
     assert resp.json()["error_code"] == "READ_ONLY_ROLE"
+
+
+def _make_ref(ref: str, secret_name: str, key: str) -> MagicMock:
+    row = MagicMock()
+    row.ref, row.secret_name, row.key = ref, secret_name, key
+    return row
+
+
+@pytest.mark.asyncio
+async def test_get_secrets_applies_offset_and_limit(client, monkeypatch) -> None:
+    """GET /ingestion/secrets slices the enumerated refs by offset/limit.
+
+    Spec: SECRET_RESOLUTION.md §Reference discovery — paginated (offset/limit, default
+    limit=20); the router slices the in-memory list returned by list_source_cred_refs()
+    since the data source is the Kubernetes API, not a DB query. API.md §Ingestion route
+    catalogue documents the same "paginated ... in-memory slice + count" contract.
+
+    The fixture is seeded out of ``ref`` order (c, a, b) so that ``limit=1&offset=1``
+    returning ``b__password`` pins sort-before-slice, not slice-only over the raw
+    (unordered) Kubernetes enumeration.
+    """
+    refs = [
+        _make_ref("c__password", "dataspoke-source-cred-c", "password"),
+        _make_ref("a__password", "dataspoke-source-cred-a", "password"),
+        _make_ref("b__password", "dataspoke-source-cred-b", "password"),
+    ]
+    monkeypatch.setattr(
+        "src.api.routers.spoke.ingestion.list_source_cred_refs", lambda: refs
+    )
+
+    resp = await client.get(
+        f"{_BASE}/secrets", params={"limit": 1, "offset": 1}, headers=auth_headers()
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["offset"] == 1
+    assert body["limit"] == 1
+    assert body["total_count"] == 3
+    assert len(body["secrets"]) == 1
+    assert body["secrets"][0]["ref"] == "b__password"
+
+
+def _decorrelated_unsorted_refs() -> list[MagicMock]:
+    """Three refs whose ``ref`` order, ``secret_name`` order, and list order all disagree.
+
+    - ``ref`` values are not in ascending order in the returned list, so a sort-blind
+      slice/reversal is distinguishable from an actual sort on ``ref``.
+    - ``secret_name`` ascending order differs from ``ref`` ascending order, so a sort
+      keyed on ``secret_name`` (or any field other than ``ref``) is distinguishable
+      from the correct ``ref``-keyed sort.
+    """
+    return [
+        _make_ref("b__password", "dataspoke-source-cred-c", "password"),
+        _make_ref("a__password", "dataspoke-source-cred-b", "password"),
+        _make_ref("c__password", "dataspoke-source-cred-a", "password"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_secrets_default_sort_is_ref_ascending(client, monkeypatch) -> None:
+    """GET /ingestion/secrets with no ``sort`` param orders rows by ``ref`` ascending.
+
+    Spec: SECRET_RESOLUTION.md §Reference discovery — sortable by ref (ref_asc default).
+    API.md §Ingestion route catalogue documents the same "default ref_asc" contract.
+
+    Input order and secret_name order are both decorrelated from ref order (see
+    ``_decorrelated_unsorted_refs``), so this fails against an impl that returns the
+    raw k8s enumeration order unsorted, or one that sorts on a field other than ``ref``.
+    """
+    monkeypatch.setattr(
+        "src.api.routers.spoke.ingestion.list_source_cred_refs",
+        lambda: _decorrelated_unsorted_refs(),
+    )
+
+    resp = await client.get(f"{_BASE}/secrets", headers=auth_headers())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [row["ref"] for row in body["secrets"]] == [
+        "a__password",
+        "b__password",
+        "c__password",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_secrets_sort_ref_desc_reverses_ref_ascending_order(
+    client, monkeypatch
+) -> None:
+    """GET /ingestion/secrets?sort=ref_desc orders rows by ``ref`` descending.
+
+    Spec: SECRET_RESOLUTION.md §Reference discovery — sortable by ref (ref_asc default,
+    ref_desc also accepted). API.md §Ingestion route catalogue documents the same
+    "sortable by ref (default ref_asc)" contract.
+
+    Input order, and a plain list-reversal, and a sort keyed on ``secret_name``, all
+    disagree with the correct ``ref``-descending result for this fixture (see
+    ``_decorrelated_unsorted_refs``), so each of those plausible-but-wrong
+    implementations is caught.
+    """
+    monkeypatch.setattr(
+        "src.api.routers.spoke.ingestion.list_source_cred_refs",
+        lambda: _decorrelated_unsorted_refs(),
+    )
+
+    resp = await client.get(
+        f"{_BASE}/secrets", params={"sort": "ref_desc"}, headers=auth_headers()
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [row["ref"] for row in body["secrets"]] == [
+        "c__password",
+        "b__password",
+        "a__password",
+    ]
