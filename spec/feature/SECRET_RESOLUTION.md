@@ -154,10 +154,14 @@ pointer for API consumers.
 `GET /spoke/ingestion/secrets` enumerates the references an author may use, **never the
 values**. DataSpoke lists Secrets in its own namespace whose name starts with
 `dataspoke-source-cred-`, expands each Secret's data keys, and returns one row per
-`(secret, key)` pair:
+`(secret, key)` pair. The endpoint is paginated (`offset`/`limit`, default `limit=20`) and
+sortable by `ref` (`ref_asc` default, `ref_desc` also accepted); since the data source is the
+Kubernetes API rather than a DB query, the router slices and sorts the full in-memory list
+rather than pushing pagination down to a query:
 
 ```jsonc
 {
+  "offset": 0, "limit": 20, "total_count": 2,
   "secrets": [
     { "ref": "team-pg__password", "secret_name": "dataspoke-source-cred-team-pg", "key": "password" },
     { "ref": "team-pg__ssl_key",  "secret_name": "dataspoke-source-cred-team-pg", "key": "ssl_key" }
@@ -315,7 +319,9 @@ def resolve_recipe_secrets(recipe: dict) -> dict: ...
 # Verify a reference exists without returning its value (save path)
 def verify_secret_ref(ref: str) -> None: ...
 
-# List available references under the dataspoke-source-cred- prefix (discovery; no values)
+# List available references under the dataspoke-source-cred- prefix (discovery; no values).
+# Always returns the full list — this function takes no offset/limit; the
+# GET /spoke/ingestion/secrets router applies pagination and sorting over its result.
 def list_source_cred_refs() -> list[SecretRefInfo]: ...
 
 class SecretRefMalformed(ValueError): ...
@@ -362,8 +368,10 @@ to the name segment; a token with no `__` or an empty segment is `SecretRefMalfo
 3. On any resolver exception: return IngestionResult(errors=[…]) → status="error"
 ```
 
-**Discovery** (`GET /spoke/ingestion/secrets`): calls `list_source_cred_refs()` and returns the
-`{secrets: [...]}` envelope above.
+**Discovery** (`GET /spoke/ingestion/secrets`): calls `list_source_cred_refs()`, then the router
+sorts and slices the returned list per the `offset`/`limit`/`sort` query params before wrapping
+the page in the paginated envelope above. `list_source_cred_refs()` itself is not paginated — it
+always returns the full list; pagination is router-only.
 
 ### API schema (`src/api/schemas/ingestion.py`)
 
@@ -376,9 +384,13 @@ class SecretRefInfo(BaseModel):
     secret_name: str  # "dataspoke-source-cred-<name>"
     key: str
 
-class SecretRefListResponse(BaseModel):
+class SecretRefListResponse(PaginatedResponse):
     secrets: list[SecretRefInfo]
 ```
+
+`SecretRefListResponse` extends the shared `PaginatedResponse` envelope
+(`src/api/schemas/common.py`) like every other `/spoke/*` list route, adding `offset`, `limit`,
+`total_count`, and `resp_time` alongside `secrets`.
 
 There is no `auth` field and no vault request shape — both are removed in the per-source model.
 
