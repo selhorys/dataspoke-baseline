@@ -1625,6 +1625,7 @@ delete event would be self-defeating. Domain-specific actions:
 | `AUTH` (`user`, `entity_id=user_id`) | `GOOGLE_UNBOUND` | `DELETE /admin/users/{id}/google` releases a binding ([AUTH §Admin unbind](AUTH.md#admin-unbind)). The route ends every session and removes an authentication method, so the event is the record that it happened; the request log carries no authenticated principal. Detail keys: `session_epoch` (the new value). Same no-secrets shape as the bind event — no `sub`, no hash. An idempotent call on an already-unbound row writes nothing and emits nothing. |
 | `AUTH` (`user`, `entity_id=user_id`) | `GOOGLE_LINK_CREDENTIAL_RESET` | A Google identity binds onto an existing row matched by email, invalidating that row's credentials in the same transaction ([AUTH §Credential reset on link](AUTH.md#credential-reset-on-link)). Exactly one event per bind: the branch reaches only unbound rows, which `ck_users_auth_method` guarantees carry a password, so every bind clears at least that. Detail keys: `api_tokens_revoked` (int), `reset_tokens_deleted` (int), `session_epoch` (the new value). |
 | `AUTH` (`user`, `entity_id=user_id` of the token's owner) | `API_TOKEN_REVOKED` | An admin revokes a token they do not own via `DELETE /admin/users/{id}/api-tokens/{token_id}` ([AUTH §Admin revoke audit](AUTH.md#admin-revoke-audit)). Setting `revoked_at` is the whole of what ends a token's life, so the write is the security event. Booked on the owner rather than the acting admin, so every credential a user loses lands on one timeline. The self-service `DELETE /auth/api-tokens/{id}` emits nothing. Detail keys: `token_id`, `owner_user_id`. No token name, hash, or prefix — same no-secrets shape as the other `AUTH` events. |
+| `AUTH` (`user`, `entity_id=user_id`) | `ROLE_SYNC_FIXED` | The nightly `auth-role-sync-daily` DAG's reconciliation pass repairs a divergence between DataSpoke's `users.role` and the corpuser's DataHub-side role and/or marker-group membership ([AUTH §Role Drift Reconciliation](AUTH.md#role-drift-reconciliation)). One event per user with at least one facet repaired. Detail keys: `repaired_facets` (list, `"role"` and/or `"group"`), `dataspoke_role_authoritative` / `datahub_role_observed` (role facet only), `marker_group_urn` (group facet only). |
 
 #### `INGESTION.COMPLETE` / `INGESTION.FAIL` producers
 
@@ -1867,15 +1868,25 @@ daily, weekly). Each DAG fetches the source list for its tier at execution time
 
 If enabled, DataSpoke runs a single consumer group (`dataspoke-consumers`) that routes
 events by aspect name. Reference implementation: `src/shared/datahub/events.py`
-(EventRouter) and `src/shared/datahub/consumer.py`. The reference handler set is
-documented in
-[DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-not-used-by-baseline)
-— extensions can register their own handlers without modifying baseline code.
+(EventRouter) and `src/shared/datahub/consumer.py`. The two-handler wiring registered by
+`build_router()` (`sync_vector_index`, `detect_new_clusters`) is an implementation-detail
+reference, not baseline contract — no handler set is prescribed by
+[DATAHUB_INTEGRATION §Event Subscription](../DATAHUB_INTEGRATION.md#event-subscription-not-used-by-baseline);
+extensions can register their own handlers without modifying baseline code. The reference
+handlers themselves trigger DAGs named `embedding-sync` and `ontology-rebuild`, but neither
+id appears in the baseline [DAG registry](#dag-catalogue) or `src/workflows/dags/`; an
+organisation enabling `event-consumer.enabled` against these reference handlers must supply
+matching DAGs of its own (or replace the handlers), just as it must supply its own
+Avro/schema-registry-aware deserializer below.
 
 The consumer runs as `python -m src.shared.datahub.consumer` in a separate Deployment
 (`dataspoke-event-consumer`) when enabled. Uses `confluent-kafka` with manual offset
 commit; deserialization failures are logged and skipped, handler failures leave the offset
-uncommitted for redelivery.
+uncommitted for redelivery. The reference deserializer (`deserialize_mcl`) expects a
+JSON-encoded payload; a real DataHub `MetadataChangeLog_*` Kafka topic carries Avro
+(schema-registry-framed) messages, so an organisation enabling this extension point
+against a live topic must supply its own Avro/schema-registry-aware deserializer in place
+of the reference one.
 
 **Execution model.** The consumer ships no image of its own — the Deployment runs the
 **API image** with a `command:` override naming the module. The API image already carries
