@@ -85,12 +85,6 @@ async def test_dag_run_response_failed_is_terminal():
     assert resp.is_terminal
 
 
-async def test_dag_run_response_status_alias():
-    """status property is an alias for state."""
-    resp = DagRunResponse(dag_run_id="run-1", dag_id="ingestion", state=DagRunState.success)
-    assert resp.status == DagRunState.success
-
-
 async def test_dag_run_response_default_conf():
     resp = DagRunResponse(dag_run_id="run-1", dag_id="ingestion", state=DagRunState.running)
     assert resp.conf == {}
@@ -475,24 +469,3 @@ async def test_list_dags_without_prefix_no_pattern_param(client: AirflowClient):
     await client.list_dags()
     call_args = client._client.get.call_args
     assert "dag_id_pattern" not in call_args[1]["params"]
-
-
-# ── delete_dag_run ───────────────────────────────────────────────────────────
-
-
-async def test_delete_dag_run_success(client: AirflowClient):
-    client._client.delete = AsyncMock(return_value=_mock_response({}))
-
-    await client.delete_dag_run("ingestion", "run-1")
-    client._client.delete.assert_called_once()
-    call_args = client._client.delete.call_args
-    assert "run-1" in call_args[0][0]
-
-
-async def test_delete_dag_run_not_found_no_raise(client: AirflowClient):
-    resp = _mock_response({}, status_code=404)
-    resp.status_code = 404
-    resp.raise_for_status.return_value = None
-    client._client.delete = AsyncMock(return_value=resp)
-
-    await client.delete_dag_run("ingestion", "nonexistent")

@@ -34,9 +34,25 @@ All workflow IDs follow the pattern ``{type}-{identifier}``:
   Test          ``test-{type}-{short-label}``  ``test-ingestion-title-master``
   ============  =============================  ==============================
 
-- ``type`` is a lowercase kebab-case workflow name matching the module
-  (``ingestion``, ``validation``, ``metagen``, ``metrics``, ``ontogen``,
-  ``datahub-sync``).
+- ``type`` is a lowercase kebab-case workflow name (``ingestion``, ``metagen``,
+  ``metrics``, ``ontogen``, ``embedding-sync``, ``ontology-rebuild``)
+  illustrating the intended one-name-per-feature convention. The last two are
+  extension-only: their sole caller is the optional Kafka event-consumer
+  reference handler in `src/shared/datahub/events.py`, disabled by default in
+  the baseline via the `event-consumer.enabled` Helm toggle; neither
+  ``embedding-sync`` nor ``ontology-rebuild`` appears in the baseline DAG
+  registry or `src/workflows/dags/` — see spec/feature/BACKEND.md
+  §Kafka Consumers. That handler builds ``embedding-sync-{md5(urn)[:12]}`` via
+  ``urn_to_workflow_id()``; ``ontology-rebuild`` is a literal singleton id, not
+  hash-derived. ``metrics-{metric_id}`` is a separate, unhashed key-scoped
+  ``workflow_id`` built inline at `src/api/routers/spoke/governance.py`. Dedup
+  for ``ingestion``, ``metagen``, ``ontogen``, and ``metrics`` alike instead
+  uses per-service Redis SETNX lock keys of shape ``{feature}:running:{key}``
+  (e.g. ``ingestion:running:{source_id}``, ``metagen:running:{conf_id}``,
+  ``ontogen:running:singleton``, ``metrics:running:{metric_id}``) — a separate
+  mechanism from the workflow-ID table above. The table documents the naming
+  convention new workflow IDs should follow, not a literal grep of current
+  call sites.
 - Test IDs always start with ``test-`` so they can be identified and
   cleaned up in the Airflow UI.  Use short, readable labels — never
   embed full URNs.
@@ -54,8 +70,6 @@ from src.shared.vector.client import PgVectorManager
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-    from src.backend.admin.config_service import RuntimeConfigDTO
 
 
 def urn_to_workflow_id(urn: str) -> str:
@@ -230,29 +244,6 @@ def make_notification_service(*, stub: bool = False) -> object:
         from src.workflows._stubs import StubNotificationService
 
         return StubNotificationService()
-    from src.shared.db.session import SessionLocal
     from src.shared.notifications.service import NotificationService
 
     return NotificationService(db_session_factory=SessionLocal)
-
-
-async def make_ontogen(db: "AsyncSession", *, rc: "RuntimeConfigDTO | None" = None) -> tuple:  # type: ignore[type-arg]
-    """Construct OntogenService dependencies (without LLM — caller loads RC from DB first).
-
-    Spec: spec/feature/BACKEND.md §Feature Services — OntogenService requires
-    datahub, db, cache, llm, vector.
-
-    LLM is excluded from this tuple; callers must load RuntimeConfigDTO via
-    ``get_runtime_config(db)`` and then call ``make_llm_client(stub=...,
-    provider=..., model=..., langfuse_host=..., langfuse_public_key=...)``.
-    """
-    from src.backend.admin.config_service import get_runtime_config
-    from src.backend.ontogen.service import OntogenService
-
-    if rc is None:
-        rc = await get_runtime_config(db)
-    datahub = await make_datahub(db)
-    cache = make_redis_client(stub=rc.stub_redis_client)
-    vector = make_pgvector_manager(stub=rc.stub_pgvector_manager)
-    # db session and llm are provided by callers via async context manager
-    return OntogenService, datahub, cache, vector

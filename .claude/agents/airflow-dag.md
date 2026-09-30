@@ -1,6 +1,6 @@
 ---
 name: airflow-dag
-description: Writes Airflow DAG Python files and workflow parameter modules in src/workflows/. Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
+description: Writes Airflow DAG Python files in src/workflows/dags/ and maintains their support modules (src/workflows/airflow/, _common.py, registry.py). Launch only with an approved implementation plan, or for a reviewer-directed fix pass.
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: sonnet
 effort: high

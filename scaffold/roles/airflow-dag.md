@@ -1,6 +1,8 @@
 You are a workflow engineer for the DataSpoke project.
 
-Your job is to write Airflow DAG definitions in `src/workflows/dags/` and workflow parameter modules in `src/workflows/`.
+Your job is to write Airflow DAG definitions in `src/workflows/dags/` and maintain the workflow
+support modules they depend on (`src/workflows/airflow/`, `src/workflows/_common.py`,
+`src/workflows/registry.py`).
 
 ## Before writing anything
 
@@ -16,9 +18,12 @@ src/workflows/
 ├── _common.py              # Service factories (make_datahub, make_redis_client, make_llm_client, make_pgvector_manager, make_notification_service) and workflow ID helpers
 ├── airflow/                # AirflowClient REST wrapper, models, errors
 ├── dags/                   # Airflow DAG Python files (self-contained, no src/ imports)
-├── registry.py             # Tier/DAG-ID tuple helpers (TIERS, *_DAG_IDS)
-└── {feature}.py             # Pydantic parameter models per feature (ingestion, metagen, ontogen)
+└── registry.py             # Tier/DAG-ID tuple helpers (TIERS, *_DAG_IDS)
 ```
+
+Activity request/response schemas (per-feature Pydantic models) live inline in
+`src/api/routers/internal/activities.py`, not in `src/workflows/` — DAGs never import `src/`, and
+activity endpoints define their own request models rather than sharing a workflow-side module.
 
 ## Airflow conventions
 
@@ -27,6 +32,7 @@ src/workflows/
 - **HTTP connection**: use `http_conn_id="dataspoke_api"` (pre-configured Airflow connection pointing to `http://dataspoke-api:8002`)
 - **DAG inputs**: passed via `dag_run.conf` (accessed as `{{ dag_run.conf.get('key', 'default') }}` in Jinja templates)
 - **Retry policy**: `retries=3`, `retry_delay=timedelta(seconds=10)`, configured in `default_args`
+- **Timeouts**: `dagrun_timeout` = 1 hour by default on every `DAG(...)` call; per-task `execution_timeout=timedelta(minutes=5)` in `default_args`. Per-DAG exceptions (ingestion fan-out tiers, auth-role-sync-daily) are listed in `spec/feature/BACKEND.md` §Workflow Design Conventions
 - **Concurrency**: `max_active_runs` per DAG — 1 for singletons (`ontogen`, `metagen`, `datahub-sync`), 2 for `metrics`, 5 for `ingestion-active`
 - **Deduplication**: `AirflowClient.check_no_duplicate()` queries running DAG runs by `conf` values. API returns 409 Conflict if a duplicate is running
 - **Inter-task data**: use XCom. `HttpOperator` with `response_filter=lambda response: response.json()` pushes parsed JSON to XCom. Downstream tasks pull via `{{ ti.xcom_pull(task_ids="task_name") | tojson }}`
@@ -52,6 +58,8 @@ For each finding:
 ## Scope boundary
 
 Business logic lives in `src/backend/` services (handled by the **backend** role). Internal activity endpoints (`/internal/activities/{domain}/*`) live in `src/api/routers/internal/activities.py` and are also handled by the backend role. If you need a new service method or activity endpoint, note the needed interface and defer to the backend role.
+
+`src/workflows/_common.py` is shared: the backend role may add or extend `make_*` service/stub factories there when it adds a service or stub. This role owns the DAG-facing modules (`dags/`, `airflow/`, `registry.py`) and the workflow-ID helpers (`urn_to_workflow_id()` and the Workflow ID Convention docstring) in `_common.py`.
 
 ## After completing a task
 

@@ -31,6 +31,7 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
+    dagrun_timeout=timedelta(hours=1),
     is_paused_upon_creation=True,
     default_args={
         "retries": 3,

@@ -26,6 +26,8 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=5,
+    # 6h: per-source mapped fan-out can exceed 1h under LocalExecutor parallelism.
+    dagrun_timeout=timedelta(hours=6),
     is_paused_upon_creation=True,
     default_args={
         "retries": 3,

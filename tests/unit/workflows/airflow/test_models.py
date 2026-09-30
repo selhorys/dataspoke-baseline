@@ -4,11 +4,10 @@ Tests:
 - DagRunState enum values match Airflow Stable REST API states.
 - DagRunResponse round-trip serialization: required fields enforced, optional fields default.
 - DagRunResponse.is_terminal is True for success/failed, False for queued/running.
-- DagRunResponse.status is an alias for state.
 
 impl interface contract — Airflow REST API contract for state values (queued | running |
-success | failed); DagRunResponse field layout, is_terminal, and .status alias are impl
-conventions. No dedicated spec section exists in the baseline contract.
+success | failed); DagRunResponse field layout and is_terminal are impl conventions. No
+dedicated spec section exists in the baseline contract.
 """
 
 import pytest
@@ -126,21 +125,6 @@ def test_is_terminal_false_for_running() -> None:
         dag_run_id="run-1", dag_id="ingestion-active-hourly", state=DagRunState.running
     )
     assert resp.is_terminal is False
-
-
-# ── DagRunResponse.status alias ───────────────────────────────────────────────
-
-
-def test_status_alias_equals_state() -> None:
-    """DagRunResponse.status must equal DagRunResponse.state.
-
-    impl interface contract (Airflow REST API + impl conventions) — .status is a backward-compat
-    alias for .state.
-    """
-    resp = DagRunResponse(
-        dag_run_id="run-1", dag_id="datahub-sync-hourly", state=DagRunState.success
-    )
-    assert resp.status == resp.state
 
 
 # ── Round-trip serialization ──────────────────────────────────────────────────

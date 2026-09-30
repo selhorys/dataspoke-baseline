@@ -31,6 +31,9 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
+    # 2h: must cover the full retry budget (4 attempts x 15-min execution_timeout
+    # plus retry delays ~= 60.5 min).
+    dagrun_timeout=timedelta(hours=2),
     is_paused_upon_creation=True,
     default_args={
         "retries": 3,
