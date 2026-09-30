@@ -4,16 +4,25 @@ Tests (parametrized over 14 DAG files):
 (a) The file exists and can be read without error.
 (b) The DAG file declares a _DAG_ID constant (string literal).
 (c) The declared dag_id appears in ALL_DAG_IDS from the registry.
+(d) The file declares exactly one dagrun_timeout=timedelta(hours=N), where N matches the
+    expected bound: 1 hour by default, with per-DAG exceptions for the ingestion-active
+    tier DAGs and auth-role-sync-daily.
+
+Plus one non-parametrized invariant test: auth-role-sync-daily's retry budget
+(execution_timeout x (retries + 1) + retry delays) fits inside its dagrun_timeout.
 
 Airflow is not installed in the unit-test environment; tests use Path.read_text()
 to inspect the source, following the pattern of test_datahub_sync_daily.py.
 
 spec: feature/BACKEND.md §DAG Catalogue — each DAG file must declare its dag_id
       and that ID must be registered in ALL_DAG_IDS.
+spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts — DAG-level dagrun_timeout
+      default and per-DAG exceptions.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -75,6 +84,185 @@ def test_dag_id_is_registered_in_all_dag_ids(dag_file: Path) -> None:
         f"{dag_file.name} declares dag_id='{dag_id}' which is NOT in ALL_DAG_IDS. "
         f"Add it to src/workflows/registry.py or rename the DAG. "
         f"ALL_DAG_IDS: {sorted(ALL_DAG_IDS)}"
+    )
+
+
+# ── Every DAG enforces a bounded run timeout (1h default, per-DAG exceptions) ─
+
+# spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts: "Per-DAG exceptions to the
+# 1-hour `dagrun_timeout`: `ingestion-active-hourly` = 3 hours, `ingestion-active-daily`/
+# `ingestion-active-weekly` = 6 hours, ... `auth-role-sync-daily` = 2 hours, to fit its
+# 15-minute per-task exception below across a full 4-attempt retry budget."
+_DAGRUN_TIMEOUT_HOURS_BY_STEM: dict[str, int] = {
+    "ingestion_active_hourly": 3,
+    "ingestion_active_daily": 6,
+    "ingestion_active_weekly": 6,
+    "auth_role_sync_daily": 2,
+}
+_DEFAULT_DAGRUN_TIMEOUT_HOURS = 1
+
+_DAGRUN_TIMEOUT_RE = re.compile(r"dagrun_timeout\s*=\s*timedelta\(hours\s*=\s*(\d+)\)")
+
+
+def test_dagrun_timeout_exception_map_keys_are_real_dag_files() -> None:
+    """Every key in the expected-dagrun_timeout exception map names a real DAG file.
+
+    Without this check, a DAG rename (or a typo in the map) would make the exception
+    silently fall out of the map: the file stem would stop matching, the parametrized
+    test below would fall back to the 1-hour default, and the rename could quietly widen
+    or shrink the enforced bound with no test failure to flag it.
+
+    spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts: "Per-DAG exceptions
+          to the 1-hour `dagrun_timeout`" list.
+    """
+    dag_stems = {f.stem for f in _DAG_FILES}
+    for stem in _DAGRUN_TIMEOUT_HOURS_BY_STEM:
+        assert stem in dag_stems, (
+            f"'{stem}' is listed in the dagrun_timeout exception map but no such DAG file "
+            f"exists under {_DAGS_DIR}. Known DAG files: {sorted(dag_stems)}"
+        )
+
+
+@pytest.mark.parametrize("dag_file", _DAG_FILES, ids=[f.stem for f in _DAG_FILES])
+def test_dag_declares_expected_dagrun_timeout(dag_file: Path) -> None:
+    """Each DAG declares exactly one dagrun_timeout=timedelta(hours=N) matching its expected bound.
+
+    A DAG with no run timeout hangs unbounded if a task wedges; the bound makes a stuck run
+    fail loudly instead. Four DAGs override the 1-hour default (see
+    ``_DAGRUN_TIMEOUT_HOURS_BY_STEM``); every other DAG must keep the default. Source-text
+    check: Airflow is not installed in the unit environment, so the DAG object cannot be
+    constructed — the assertion is that the bound is declared in the file, not that it was
+    applied by the scheduler.
+
+    spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts: "DAG-level = 1 hour by
+          default, enforced via `dagrun_timeout` on every DAG's `DAG(...)` constructor call."
+          plus the per-DAG exceptions list.
+    """
+    source = dag_file.read_text(encoding="utf-8")
+    matches = _DAGRUN_TIMEOUT_RE.findall(source)
+    assert len(matches) == 1, (
+        f"{dag_file.name} must declare exactly one dagrun_timeout=timedelta(hours=N) on its "
+        f"DAG(...) call, found {len(matches)}: {matches}. "
+        "spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts."
+    )
+    actual_hours = int(matches[0])
+    expected_hours = _DAGRUN_TIMEOUT_HOURS_BY_STEM.get(
+        dag_file.stem, _DEFAULT_DAGRUN_TIMEOUT_HOURS
+    )
+    assert actual_hours == expected_hours, (
+        f"{dag_file.name} declares dagrun_timeout=timedelta(hours={actual_hours}), but the "
+        f"spec expects hours={expected_hours}. "
+        "spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts."
+    )
+
+
+# ── auth-role-sync-daily: retry budget must fit inside its dagrun_timeout ────
+
+
+def _dag_constructor_call(source: str) -> ast.Call:
+    """Return the ast.Call node for the ``with DAG(...) as dag:`` constructor invocation."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With):
+            for item in node.items:
+                call = item.context_expr
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "DAG"
+                ):
+                    return call
+    raise AssertionError("no 'with DAG(...) as dag:' constructor call found in source")
+
+
+def _call_keyword(call: ast.Call, name: str) -> ast.expr:
+    for kw in call.keywords:
+        if kw.arg == name:
+            return kw.value
+    raise AssertionError(f"DAG(...) call has no '{name}' keyword argument")
+
+
+def _dict_key(node: ast.expr, name: str) -> ast.expr:
+    assert isinstance(node, ast.Dict), f"expected a dict literal, got {ast.dump(node)}"
+    for key, value in zip(node.keys, node.values):
+        if isinstance(key, ast.Constant) and key.value == name:
+            return value
+    raise AssertionError(f"dict literal has no '{name}' key")
+
+
+def _timedelta_kwarg(node: ast.expr, unit: str) -> int | float:
+    """Extract the numeric value of ``unit=`` from a ``timedelta(unit=N)`` call node."""
+    assert isinstance(node, ast.Call), f"expected a timedelta(...) call, got {ast.dump(node)}"
+    assert isinstance(node.func, ast.Name) and node.func.id == "timedelta", (
+        f"expected timedelta(...), got {ast.dump(node.func)}"
+    )
+    for kw in node.keywords:
+        if kw.arg == unit:
+            assert isinstance(kw.value, ast.Constant), (
+                f"timedelta({unit}=...) must be a literal, got {ast.dump(kw.value)}"
+            )
+            return kw.value.value
+    raise AssertionError(f"timedelta(...) call has no '{unit}' keyword argument")
+
+
+def test_auth_role_sync_daily_retry_budget_fits_inside_dagrun_timeout() -> None:
+    """(retries + 1) x execution_timeout + retries x retry_delay must not exceed dagrun_timeout.
+
+    ``auth-role-sync-daily``'s 2-hour dagrun_timeout is sized to cover a full 4-attempt retry
+    budget (1 initial attempt + 3 retries) at its 15-minute per-task execution_timeout, plus
+    the retry delays between attempts. If any of these four values drift apart — e.g.
+    execution_timeout raised without dagrun_timeout following — a wedged task could exhaust its
+    retry budget only for the DAG-level timeout to fire first and kill the run mid-retry.
+    AST-parsed rather than regexed because the four values live at different nesting depths
+    (two directly on the ``DAG(...)`` call, two inside its nested ``default_args`` dict), which
+    makes a flat regex fragile to reformatting.
+
+    spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts: "`auth-role-sync-daily` =
+          2 hours, to fit its 15-minute per-task exception below across a full 4-attempt retry
+          budget (execution_timeout × (retries + 1) + retry delays)."
+    """
+    dag_file = _DAGS_DIR / "auth_role_sync_daily.py"
+    source = dag_file.read_text(encoding="utf-8")
+    dag_call = _dag_constructor_call(source)
+
+    dagrun_timeout_hours = _timedelta_kwarg(_call_keyword(dag_call, "dagrun_timeout"), "hours")
+
+    default_args = _call_keyword(dag_call, "default_args")
+    retries_node = _dict_key(default_args, "retries")
+    assert isinstance(retries_node, ast.Constant), (
+        f"default_args['retries'] must be a literal, got {ast.dump(retries_node)}"
+    )
+    retries = retries_node.value
+    retry_delay_seconds = _timedelta_kwarg(_dict_key(default_args, "retry_delay"), "seconds")
+    execution_timeout_minutes = _timedelta_kwarg(
+        _dict_key(default_args, "execution_timeout"), "minutes"
+    )
+
+    # Pin the two inputs the spec names explicitly, so a drift in either (e.g. dropping the
+    # 15-minute override, or cutting retries) fails here even though it would not, by itself,
+    # violate the relative budget-vs-timeout inequality below.
+    assert execution_timeout_minutes == 15, (
+        f"auth_role_sync_daily.py: default_args['execution_timeout'] = "
+        f"timedelta(minutes={execution_timeout_minutes}), expected minutes=15. "
+        "spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts: "
+        '"`auth-role-sync-daily` also overrides its per-task `execution_timeout` to 15 minutes".'
+    )
+    assert retries == 3, (
+        f"auth_role_sync_daily.py: default_args['retries'] = {retries}, expected 3 "
+        "(1 initial attempt + 3 retries = a full 4-attempt retry budget). "
+        "spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts: "
+        '"a full 4-attempt retry budget (execution_timeout × (retries + 1) + retry delays)".'
+    )
+
+    budget_minutes = (retries + 1) * execution_timeout_minutes + retries * (
+        retry_delay_seconds / 60
+    )
+    dagrun_timeout_minutes = dagrun_timeout_hours * 60
+
+    assert budget_minutes <= dagrun_timeout_minutes, (
+        f"auth_role_sync_daily.py: (retries+1)*execution_timeout + retries*retry_delay = "
+        f"{budget_minutes} minutes exceeds dagrun_timeout = {dagrun_timeout_minutes} minutes. "
+        "spec: feature/BACKEND.md §Workflow Design Conventions — Timeouts."
     )
 
 

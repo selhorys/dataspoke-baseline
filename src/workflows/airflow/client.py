@@ -253,15 +253,6 @@ class AirflowClient:
             return
         resp.raise_for_status()
 
-    async def delete_dag_run(self, dag_id: str, dag_run_id: str) -> None:
-        """Delete a DAG run. No-op if not found."""
-        resp = await self._authed_call(
-            lambda: self._get_client().delete(f"/api/v2/dags/{dag_id}/dagRuns/{dag_run_id}")
-        )
-        if resp.status_code == 404:
-            return
-        resp.raise_for_status()
-
     async def fetch_task_xcom(
         self,
         dag_id: str,

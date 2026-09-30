@@ -1800,7 +1800,18 @@ smoke check by the test fixture `tests/integration/conftest.py::airflow_client`.
 1. **DAGs are Python-defined orchestration** -- each task is a HttpOperator call to an
    internal activity endpoint
 2. **Activity endpoints are idempotent** -- safe to retry on transient failures
-3. **Timeouts**: Per-task = 5 minutes (default); DAG-level = 1 hour
+3. **Timeouts**: Per-task = 5 minutes (default); DAG-level = 1 hour by default, enforced via
+   `dagrun_timeout` on every DAG's `DAG(...)` constructor call. Per-DAG exceptions to the 1-hour
+   `dagrun_timeout`:
+   - `ingestion-active-hourly` = 3 hours, `ingestion-active-daily`/`ingestion-active-weekly` = 6
+     hours, because a large per-source fan-out under LocalExecutor parallelism can exceed 1 hour;
+     the overlap this permits is already bounded by `max_active_runs=5` and the per-source Redis
+     lock `ingestion:running:{source_id}`.
+   - `auth-role-sync-daily` = 2 hours, to fit its 15-minute per-task exception below across a
+     full 4-attempt retry budget (execution_timeout × (retries + 1) + retry delays).
+
+   `auth-role-sync-daily` also overrides its per-task `execution_timeout` to 15 minutes, because
+   its single task scans every DataSpoke user and issues up to five DataHub round trips per user.
 4. **Retry policy**: Max 3 attempts, 10s initial interval
 5. **Concurrency**: `max_active_runs` per DAG prevents overlapping runs
 

@@ -4,7 +4,7 @@ On-demand metric measurement run for a single metric definition.
 Triggered via POST /api/v1/spoke/governance/metric/{metric_id}/method/run.
 
 Concurrency guard: the triggering API route calls
-AirflowClient.check_no_duplicate("metrics", "conf_key", "metrics-{metric_id}")
+AirflowClient.check_no_duplicate("metrics", "workflow_id", "metrics-{metric_id}")
 before triggering; duplicate runs for the same metric return 409.
 
 Spec: spec/feature/BACKEND.md §DAG Catalogue, §Concurrency Guards
@@ -26,6 +26,7 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=2,
+    dagrun_timeout=timedelta(hours=1),
     is_paused_upon_creation=False,
     default_args={
         "retries": 3,
@@ -41,7 +42,9 @@ Triggered by the DataSpoke API for a specific metric ID.
 **Inputs** (via `dag_run.conf`):
 - `metric_id`: metric identifier string (required)
 - `dry_run`: "true" / "false" string (optional; defaults to false)
-- `conf_key`: dedup key of the form `metrics-{metric_id}` (for duplicate detection)
+- `workflow_id`: dedup key of the form `metrics-{metric_id}` (for duplicate detection)
+- `callback_base_url`: carried in conf by the triggering API route but not
+  consumed by any task in this DAG
 
 **Tasks**:
 1. `run_metric` — POST `/internal/activities/metrics/run`

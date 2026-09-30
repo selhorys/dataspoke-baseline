@@ -102,6 +102,20 @@ def test_datahub_sync_hourly_calls_ingestion_sync_endpoint():
     )
 
 
+def test_datahub_sync_hourly_declares_one_hour_dagrun_timeout():
+    """The DAG must set dagrun_timeout=timedelta(hours=1) on its DAG(...) call.
+
+    spec: BACKEND.md §Workflow Design Conventions — Timeouts ("DAG-level = 1 hour, enforced
+    via `dagrun_timeout` on every DAG's `DAG(...)` constructor call").
+    """
+    dag_file = _DAGS_DIR / "datahub_sync_hourly.py"
+    source = dag_file.read_text()
+    assert "dagrun_timeout=timedelta(hours=1)" in source, (
+        "datahub_sync_hourly.py must declare dagrun_timeout=timedelta(hours=1). "
+        "spec: BACKEND.md §Workflow Design Conventions — Timeouts."
+    )
+
+
 def test_datahub_sync_hourly_is_in_ingestion_sync_dag_ids():
     """datahub-sync-hourly must be registered in INGESTION_SYNC_DAG_IDS and ALL_DAG_IDS."""
     from src.workflows.registry import ALL_DAG_IDS, INGESTION_SYNC_DAG_IDS

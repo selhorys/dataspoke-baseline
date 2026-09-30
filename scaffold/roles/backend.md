@@ -38,7 +38,7 @@ src/
 
 Internal activity endpoints (`/internal/activities/{domain}/*`) live in `src/api/routers/internal/activities.py` and are **in scope** for this role — they use `make_*` factory functions from `src/workflows/_common.py` (not FastAPI `Depends()`) and delegate to `src/backend/` services.
 
-Airflow DAG files and workflow parameter modules live in `src/workflows/` and are handled by the **airflow-dag** role. If your task requires a new or modified DAG definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation.
+Airflow DAG files and their DAG-facing support modules (`src/workflows/dags/`, `src/workflows/airflow/`, `src/workflows/registry.py`, and the workflow-ID helpers in `src/workflows/_common.py`) live in `src/workflows/` and are handled by the **airflow-dag** role. If your task requires a new or modified DAG definition, note the needed workflow interface (input/output types, activity signatures) and defer the workflow implementation. When your task adds or extends a `make_*` service/stub factory that an activity endpoint needs, add it directly to `src/workflows/_common.py` (per the "Adding a new stub" convention in `_stubs.py`) — that one-function edit stays in the backend role's scope even though the file also hosts DAG-facing helpers.
 
 ## Invocation modes
 

@@ -27,11 +27,6 @@ class DagRunResponse(BaseModel):
     def is_terminal(self) -> bool:
         return self.state in (DagRunState.success, DagRunState.failed)
 
-    @property
-    def status(self) -> DagRunState:
-        """Alias for state — backward compatibility with code that used .status."""
-        return self.state
-
 
 class XcomEntry(BaseModel):
     """Envelope returned by Airflow GET /xcomEntries/{key}.
