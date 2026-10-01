@@ -1,11 +1,11 @@
 /**
  * Peripheral-config Zod schemas and pure helpers — extracted for testability.
  *
- * Mirrors src/api/schemas/admin.py field constraints for the DataHub and Langfuse
- * peripheral configurations. Each card owns its own schema, `toFormDefaults`, and
+ * Mirrors src/api/schemas/admin.py field constraints for the DataHub, Langfuse, and
+ * SMTP peripheral configurations. Each card owns its own schema, `toFormDefaults`, and
  * `buildPatch` so the page can PATCH each peripheral independently.
  *
- * Secrets (DataHub `token` and `kafka_sasl_password`, Langfuse `secret_key`) are
+ * Secrets (DataHub `token` and `kafka_sasl_password`, Langfuse `secret_key`, SMTP `password`) are
  * never echoed back: the masked indicator ("********") from the GET response is
  * dropped in `toFormDefaults` (the form starts blank), and `buildPatch` only
  * includes the secret when the user typed a non-empty value.
@@ -28,6 +28,8 @@ import type {
   KafkaSecurityProtocol,
   LangfusePeripheral,
   LangfusePeripheralPatch,
+  SmtpPeripheral,
+  SmtpPeripheralPatch,
 } from "@/lib/api/types";
 
 // ── DataHub ─────────────────────────────────────────────────────────────────────
@@ -412,6 +414,81 @@ export function langfuseBuildPatch(
   }
   if (values.environment_tag !== loaded.environment_tag) {
     patch.environment_tag = values.environment_tag;
+  }
+
+  return patch;
+}
+
+// ── SMTP ────────────────────────────────────────────────────────────────────────
+
+/** Mirrors `SmtpPeripheralPatchRequest` max lengths in src/api/schemas/admin.py. */
+const SMTP_TEXT_MAX_LENGTH = 512;
+const SMTP_PASSWORD_MAX_LENGTH = 8192;
+
+function smtpTextField() {
+  return z.string().max(SMTP_TEXT_MAX_LENGTH, `Must be at most ${SMTP_TEXT_MAX_LENGTH} characters.`);
+}
+
+/**
+ * `port` is held as the raw input string (an `<input>` yields text) and converted
+ * to an integer in `smtpBuildPatch`; the API accepts 1–65535.
+ */
+export const smtpSchema = z.object({
+  host: smtpTextField(),
+  port: z
+    .string()
+    .refine((v) => /^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= 65535, {
+      message: "Must be a whole number between 1 and 65535.",
+    }),
+  username: smtpTextField(),
+  from_address: smtpTextField(),
+  use_tls: z.boolean(),
+  password: z
+    .string()
+    .max(SMTP_PASSWORD_MAX_LENGTH, `Must be at most ${SMTP_PASSWORD_MAX_LENGTH} characters.`),
+});
+
+export type SmtpFormValues = z.infer<typeof smtpSchema>;
+
+/** Convert an SMTP peripheral response into form default values (password blanked). */
+export function smtpToFormDefaults(p: SmtpPeripheral): SmtpFormValues {
+  return {
+    host: p.host,
+    port: String(p.port),
+    username: p.username,
+    from_address: p.from_address,
+    use_tls: p.use_tls,
+    // Never echo the masked indicator back as an editable value.
+    password: "",
+  };
+}
+
+/** Diff form values against the loaded peripheral, returning only changed keys. */
+export function smtpBuildPatch(
+  values: SmtpFormValues,
+  loaded: SmtpPeripheral,
+): SmtpPeripheralPatch {
+  const patch: SmtpPeripheralPatch = {};
+
+  if (values.host !== loaded.host) {
+    patch.host = values.host;
+  }
+  const port = Number(values.port);
+  if (port !== loaded.port) {
+    patch.port = port;
+  }
+  if (values.username !== loaded.username) {
+    patch.username = values.username;
+  }
+  if (values.from_address !== loaded.from_address) {
+    patch.from_address = values.from_address;
+  }
+  if (values.use_tls !== loaded.use_tls) {
+    patch.use_tls = values.use_tls;
+  }
+  // Only include the password when the user typed something (blank → keep current).
+  if (values.password !== "") {
+    patch.password = values.password;
   }
 
   return patch;

@@ -14,6 +14,8 @@ import type {
   DatahubPeripheralPatch,
   LangfusePeripheral,
   LangfusePeripheralPatch,
+  SmtpPeripheral,
+  SmtpPeripheralPatch,
   RuntimeConf,
   RuntimeConfPatch,
   UsersListResponse,
@@ -283,6 +285,31 @@ export function useUpdateLangfusePeripheral() {
     meta: { handledInline: true },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin", "peripherals", "langfuse"] });
+    },
+  });
+}
+
+// ── SMTP peripheral ────────────────────────────────────────────────────────────
+
+export function useSmtpPeripheral() {
+  return useQuery<SmtpPeripheral>({
+    queryKey: ["admin", "peripherals", "smtp"],
+    queryFn: () => apiFetch<SmtpPeripheral>("/admin/peripherals/smtp"),
+    meta: { handledInline: true },
+  });
+}
+
+export function useUpdateSmtpPeripheral() {
+  const qc = useQueryClient();
+  return useMutation<SmtpPeripheral, Error, SmtpPeripheralPatch>({
+    mutationFn: (body) =>
+      apiFetch<SmtpPeripheral>("/admin/peripherals/smtp", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    meta: { handledInline: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "peripherals", "smtp"] });
     },
   });
 }

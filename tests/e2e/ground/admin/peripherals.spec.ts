@@ -7,14 +7,19 @@
  * round-trip on ONE benign non-secret field (DataHub `default_env`). The field is
  * edited → Save DataHub → persisted value confirmed via adminApi GET → reverted.
  *
+ * Also covered: the SMTP card (read-only) — populated from GET /admin/peripherals/smtp
+ * with the password input blank and a header badge that mirrors `is_configured`
+ * (no health badge; the SMTP contract carries no health object).
+ *
  * Also covered: the DataHub Kafka security sub-form's progressive disclosure and
  * option scoping, and the two read-only health badges — the event-stream plane
  * (`health`) and the metadata-API plane (`api_health`), each mirroring its own
  * field of the GET response.
  *
- * CRITICAL: do NOT touch the secret inputs (token, secret_key, kafka_sasl_password) —
- * they route to the K8s Secret and clearing them would break the dev cluster's
- * DataHub/Langfuse connectivity. The non-secret field edited here is reverted before the
+ * CRITICAL: do NOT touch the secret inputs (token, secret_key, kafka_sasl_password,
+ * SMTP password) — they route to the K8s Secret and clearing them would break the dev
+ * cluster's DataHub/Langfuse connectivity. The SMTP test is SAVE-FREE: the SMTP card is
+ * never PATCHed here, so the live SMTP configuration is never written. The non-secret field edited here is reverted before the
  * test ends. The Kafka tests below are deliberately SAVE-FREE: every gesture is
  * form-local (a Select change re-renders the sub-form without issuing a PATCH), so the
  * live consumer configuration is never written and there is nothing to revert. A page
@@ -63,6 +68,17 @@ interface LangfusePeripheral {
   secret_key: string;
   project_id: string;
   environment_tag: string;
+  is_configured: boolean;
+  updated_at: string | null;
+}
+
+interface SmtpPeripheral {
+  host: string;
+  port: number;
+  username: string;
+  from_address: string;
+  use_tls: boolean;
+  password: string;
   is_configured: boolean;
   updated_at: string | null;
 }
@@ -456,4 +472,73 @@ test("/admin/peripherals — event-stream and metadata-API badges each match the
   // spec: API.md §DataHub Kafka security — "is_configured only states that values are
   //   present"; the Kafka credential "never affects the flag".
   expect(typeof dh.is_configured).toBe("boolean");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 7 — SMTP card renders from GET; password blank; badge mirrors is_configured
+// spec: FRONTEND_BASIC.md §Peripherals — third card; non-secret fields prefilled from
+//   GET, masked `password` never echoed; the header badge is `is_configured` only
+//   (the SMTP contract carries no health object, so there is no health badge).
+// spec: API.md §/admin/peripherals/smtp — GET returns host/port/username/from_address/
+//   use_tls plain, `password` masked, and `is_configured`.
+// SAVE-FREE (read-only): the SMTP card is never PATCHed, so the live configuration
+// (and its K8s Secret) is untouched and nothing needs reverting.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("/admin/peripherals — SMTP card renders from GET; password blank; badge mirrors is_configured", async ({
+  page,
+  adminApi,
+}) => {
+  // Backend probe first: expected values come from the live API, not hard-coded.
+  const resp = await adminApi.get("/api/v1/admin/peripherals/smtp");
+  expect(resp.status()).toBe(200);
+  const smtp = (await resp.json()) as SmtpPeripheral;
+  expect(typeof smtp.is_configured).toBe("boolean");
+
+  await page.goto("/admin/peripherals");
+  await expect(page).not.toHaveURL(/\/login/);
+  await expect(
+    page.getByRole("heading", { name: "Admin — Peripherals", exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  // -- UI assertion: SMTP card title + its own Save button --
+  // spec: admin/peripherals/page.tsx — CardTitle "SMTP", Button "Save SMTP"
+  await expect(page.getByText("SMTP", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "Save SMTP" })).toBeVisible();
+
+  // -- UI assertion: non-secret fields prefilled from GET --
+  // spec: admin/peripherals/page.tsx — Input ids smtp_host / smtp_port / smtp_username /
+  //   smtp_from_address; the port input is text, so compare against its string form.
+  await expect(page.locator("#smtp_host")).toHaveValue(smtp.host, { timeout: 10_000 });
+  await expect(page.locator("#smtp_port")).toHaveValue(String(smtp.port), { timeout: 10_000 });
+  await expect(page.locator("#smtp_username")).toHaveValue(smtp.username, { timeout: 10_000 });
+  await expect(page.locator("#smtp_from_address")).toHaveValue(smtp.from_address, {
+    timeout: 10_000,
+  });
+
+  // -- UI assertion: Use TLS checkbox mirrors use_tls --
+  // spec: admin/peripherals/page.tsx — Radix Checkbox id="smtp_use_tls" (aria-checked)
+  await expect(page.locator("#smtp_use_tls")).toHaveAttribute(
+    "aria-checked",
+    smtp.use_tls ? "true" : "false",
+  );
+
+  // -- UI assertion: secret input renders BLANK --
+  // API.md masked-secret contract: GET never returns plaintext -- "********" when a password is
+  // set, "" otherwise. A plaintext echo fails here loudly instead of silently skipping the UI
+  // check below.
+  expect(["", "********"]).toContain(smtp.password);
+  await expect(
+    page.locator("#smtp_password"),
+    "the secret input must render blank regardless of the masked GET value",
+  ).toHaveValue("");
+
+  // -- UI assertion: header badge mirrors is_configured (presence, not reachability) --
+  const badge = page.locator("#smtp_status");
+  await expect(badge).toBeVisible({ timeout: 10_000 });
+  await expect(badge).toHaveAttribute(
+    "data-status",
+    smtp.is_configured ? "configured" : "not_configured",
+  );
+  await expect(badge).toHaveText(smtp.is_configured ? "Configured" : "Not configured");
 });
