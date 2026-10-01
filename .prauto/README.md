@@ -262,9 +262,32 @@ isolated from the repo owner's own commits/pushes in the primary checkout.
 	email = <bot-account-id>+<bot-account>@users.noreply.github.com
 ```
 
-Verify with `git -C <repo>/.git/worktrees/<any-existing-worktree> ls-remote origin` (or `ssh -F
-/dev/null -i ~/.ssh/id_ed25519_<bot-account> -o IdentitiesOnly=yes -T git@github.com`) — it
-should greet the bot account, not the owner.
+The `includeIf` pattern is a literal gitdir, so it is **bound to the checkout's current location**.
+Move the clone (e.g. `~/Projects/...` → `~/Essos/projects/...`) and the include silently stops
+matching: `~/.gitconfig-<bot-account>` is never loaded, the committer falls back to the global
+`[user]` identity, and the bot's `core.sshCommand` is lost, so `git push` reverts to the default
+SSH key. The author set by step 5 stays correct, so GitHub renders each commit with **two avatars**
+— the bot as author, the owner as committer. Scope the pattern to survive a move, or update the
+literal path whenever the checkout moves:
+
+```gitconfig
+# ~/.gitconfig — location-independent, matches any worktree under the parent dir
+[includeIf "gitdir:~/Essos/projects/**/.git/worktrees/"]
+	path = ~/.gitconfig-<bot-account>
+```
+
+Verify both halves inside an existing worktree — the identity *and* the push key:
+
+```bash
+git -C <repo>/.git/worktrees/<any-existing-worktree> config user.email      # → <bot-account-id>+<bot-account>@users.noreply.github.com
+git -C <repo>/.git/worktrees/<any-existing-worktree> config --get core.sshCommand   # → the bot key, not empty
+```
+
+`user.email` is the check that matters for the two-avatar symptom; an empty `core.sshCommand` means
+the include is not matching and pushes are authenticating as the owner. Confirm the transport too
+with `git -C <repo>/.git/worktrees/<any-existing-worktree> ls-remote origin` (or `ssh -F /dev/null
+-i ~/.ssh/id_ed25519_<bot-account> -o IdentitiesOnly=yes -T git@github.com`) — it should greet the
+bot account, not the owner.
 
 ### 5. Match `PRAUTO_GIT_AUTHOR_NAME` / `PRAUTO_GIT_AUTHOR_EMAIL` to the same identity
 
@@ -274,6 +297,12 @@ from step 4 (that config supplies the *committer* identity `git commit` requires
 key). Set `PRAUTO_GIT_AUTHOR_EMAIL` to the same `<id>+<login>@users.noreply.github.com` address —
 an unverified or mismatched email leaves commits shown with no linked GitHub account, or linked
 to the wrong one.
+
+If step 4's `includeIf` is not matching, the author is still correct but the *committer* is the
+owner's global identity — the commit then shows the owner as a second avatar beside the bot, which
+reads like co-authorship. It is not a `Co-authored-by` trailer (none is written) and not a mixed
+credential; it is the author/committer split from a stale gitdir path. Check `git -C <worktree>
+config user.email` before blaming the token or key.
 
 With all five steps done, GitHub API calls, git push, and commit authorship all consistently
 resolve to the bot account.
