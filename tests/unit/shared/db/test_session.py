@@ -1,6 +1,7 @@
 """Tests for src/shared/db/session.py — the async session factory contracts from
 spec/feature/BACKEND.md §Shared Services (PostgreSQL row): pool size 10, max overflow 5,
-asyncpg driver, and the connection URL built from the ``DATASPOKE_POSTGRES_*`` env vars.
+pool timeout 10s, asyncpg driver, and the connection URL built from the
+``DATASPOKE_POSTGRES_*`` env vars.
 
 The credential assertions do not stop at the ``URL`` the module builds: they push one
 layer further and read back what the asyncpg dialect would hand the driver
@@ -203,6 +204,19 @@ def test_engine_max_overflow() -> None:
     """Max overflow must be 5 per spec/feature/BACKEND.md §Shared Services:
     'Pool size 10, max overflow 5'."""
     assert engine.pool._max_overflow == 5
+
+
+def test_engine_pool_timeout_set() -> None:
+    """Pool checkout timeout must be the explicit 10s per spec/feature/BACKEND.md §Shared
+    Services: 'Pool size 10, max overflow 5, pool timeout 10s'.
+
+    The value must also sit below SQLAlchemy's 30s default, which is what an unset
+    ``pool_timeout`` would silently give: a saturated pool then stalls every caller for
+    half a minute, past the 10s the spec fixes and outside the ingress proxy read timeout.
+    SQLAlchemy records this on the pool as ``_timeout``.
+    """
+    assert engine.pool._timeout == 10
+    assert engine.pool._timeout < 30, "must be tighter than SQLAlchemy's 30s default"
 
 
 def test_engine_pool_pre_ping_enabled() -> None:

@@ -48,10 +48,20 @@ def _build_url(host: str, port: str, user: str, password: str, db: str) -> URL:
 
 DATABASE_URL = _build_url(_host, _port, _user, _password, _db)
 
+# Seconds a checkout waits for a free pooled connection before raising
+# ``sqlalchemy.exc.TimeoutError``. SQLAlchemy's default is 30s, which turns pool
+# exhaustion into a request that hangs for half a minute before failing. 10s is
+# far above a normal checkout (sub-millisecond, or one pre-ping round trip on a
+# reconnect) and long enough to ride out a burst of slow queries releasing their
+# connections, yet it stays under the 60s nginx-ingress proxy read timeout so the
+# API reports the failure instead of the client seeing a gateway timeout.
+POOL_TIMEOUT_SECONDS = 10
+
 engine = create_async_engine(
     DATABASE_URL,
     pool_size=10,
     max_overflow=5,
+    pool_timeout=POOL_TIMEOUT_SECONDS,
     # Survive a Postgres pod reschedule: pre_ping validates (and transparently
     # replaces) a connection invalidated by the move before checkout, and
     # recycle drops connections older than 30 minutes.
