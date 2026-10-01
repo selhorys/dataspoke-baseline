@@ -20,8 +20,10 @@ spec: spec/API.md §Authentication Mechanisms
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -1239,6 +1241,152 @@ async def test_a_failed_last_used_stamp_never_fails_the_authentication(
         f"logging.lastResort, so an id passed via extra reaches no operator; got "
         f"{[r.getMessage() for r in carrying]!r}. spec: spec/feature/AUTH.md §Audit and "
         "last_used_at — 'the ERROR log record is the only trace of that case'."
+    )
+
+
+class _StalledStampSession:
+    """Stamping session that never completes at the requested point.
+
+    ``at`` is ``"open"`` (``__aenter__`` — a checkout waiting on an exhausted pool),
+    ``"execute"`` (the UPDATE never returns) or ``"commit"``. ``stalled`` is set once the
+    stall is reached, and ``exited`` once ``__aexit__`` ran, so a test can prove the stall
+    was really entered and that the ``async with`` was unwound after the cancellation.
+    """
+
+    def __init__(self, at: str) -> None:
+        self._at = at
+        self.stalled = asyncio.Event()
+        self.exited = False
+
+    async def _stall(self) -> None:
+        self.stalled.set()
+        await asyncio.Event().wait()
+
+    async def __aenter__(self) -> _StalledStampSession:
+        if self._at == "open":
+            await self._stall()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        self.exited = True
+        return False
+
+    async def execute(self, statement: object, *args: object, **kwargs: object) -> object:
+        if self._at == "execute":
+            await self._stall()
+        return MagicMock()
+
+    async def commit(self) -> None:
+        if self._at == "commit":
+            await self._stall()
+
+
+def test_the_stamp_budget_is_two_seconds_and_tighter_than_the_pool_timeout() -> None:
+    """The stamp's budget is the spec'd 2s and sits below the engine's pool timeout.
+
+    A budget at or above ``pool_timeout`` would never fire before the checkout's own
+    timeout does, leaving the stamp no tighter than any primary checkout.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "The stamp is bounded at 2
+        seconds end to end".
+    spec: spec/feature/BACKEND.md §Best-Effort Operations (table) — "The whole stamp ...
+        runs under a 2s budget, tighter than the pool timeout".
+    """
+    from src.backend.auth.api_tokens import _LAST_USED_STAMP_TIMEOUT_SECONDS
+    from src.shared.db.session import POOL_TIMEOUT_SECONDS
+
+    assert _LAST_USED_STAMP_TIMEOUT_SECONDS == 2.0
+    assert _LAST_USED_STAMP_TIMEOUT_SECONDS < POOL_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "at"),
+    [
+        ("the checkout waits on an exhausted pool", "open"),
+        ("the UPDATE never returns", "execute"),
+        ("the commit never returns", "commit"),
+    ],
+)
+async def test_a_stamp_that_exceeds_its_budget_is_abandoned_and_the_caller_is_served(
+    label: str, at: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stalled stamp is cut off at its budget, logged at ERROR, and the caller is served.
+
+    Without the bound a stalled checkout holds the authenticated request for the engine's
+    whole ``pool_timeout`` for an audit side effect nobody reads in band. The budget is
+    patched to 50ms so the test is fast; the assertions are that the call returns the
+    earned identity, well inside the stall's (unbounded) duration, and that the breach
+    takes the logged-and-swallowed path with the token id in the formatted message.
+
+    Backstops: ``stalled`` proves the stall point was reached (the test is not passing
+    because the stamp never ran), and ``exited`` proves the stamping ``async with`` was
+    unwound by the cancellation so no session is leaked.
+
+    spec: spec/feature/AUTH.md §Audit and ``last_used_at`` — "The stamp is bounded at 2
+        seconds end to end ... exceeding the bound is such a failure" (logged at ``ERROR``
+        and swallowed; the request continues with the identity it earned).
+    spec: spec/feature/BACKEND.md §Best-Effort Operations (table) — "a breach takes this
+        same logged-and-swallowed path".
+    """
+    from src.backend.auth.api_tokens import lookup_and_validate
+
+    token, user = _valid_token_and_user()
+    mock_db = _db_returning(token, user)
+    stamp_session = _StalledStampSession(at)
+
+    caplog.set_level(logging.DEBUG)
+    started = time.monotonic()
+    with (
+        patch("src.backend.auth.api_tokens._LAST_USED_STAMP_TIMEOUT_SECONDS", 0.05),
+        patch(
+            "src.backend.auth.api_tokens.independent_sessionmaker",
+            MagicMock(return_value=lambda: stamp_session),
+        ),
+    ):
+        # An outer ceiling so a missing bound fails this test instead of hanging the suite.
+        async with asyncio.timeout(5):
+            returned_user, effective_role, token_id = await lookup_and_validate(
+                mock_db, "dsk_stamp_exceeds_budget"
+            )
+    elapsed = time.monotonic() - started
+
+    assert stamp_session.stalled.is_set(), (
+        f"{label}: the stall point was never reached, so the bound was not exercised"
+    )
+    assert elapsed < 2.0, (
+        f"{label}: the stalled stamp must be cut off at its budget; the call took {elapsed:.2f}s"
+    )
+    # ``__aexit__`` runs only for a session whose ``__aenter__`` completed; a checkout
+    # still waiting never produced a session to release.
+    assert stamp_session.exited is (at != "open"), (
+        f"{label}: the stamping session's async-with must unwind on timeout so the "
+        "connection is released (and a checkout that never completed has nothing to exit)"
+    )
+    assert (returned_user, effective_role, token_id) == (user, "Editor", token.id), (
+        f"{label}: authentication must return the identity it earned; got "
+        f"{(returned_user, effective_role, token_id)!r}. spec: spec/feature/AUTH.md "
+        "§Audit and last_used_at."
+    )
+
+    carrying = [
+        r
+        for r in caplog.records
+        if r.name == "src.backend.auth.api_tokens"
+        and r.levelname == "ERROR"
+        and "api_token_last_used_stamp_failed" in r.getMessage()
+        and r.exc_info is not None
+        and isinstance(r.exc_info[1], TimeoutError)
+    ]
+    assert len(carrying) == 1, (
+        f"{label}: a breached budget must emit exactly one ERROR api_token_last_used_stamp_failed "
+        f"record carrying the TimeoutError; captured "
+        f"{[(r.name, r.levelname, r.getMessage()) for r in caplog.records]!r}. "
+        "spec: spec/feature/BACKEND.md §Best-Effort Operations."
+    )
+    assert str(token.id) in carrying[0].getMessage(), (
+        f"{label}: the token id must appear in the formatted message; got "
+        f"{carrying[0].getMessage()!r}. spec: spec/feature/AUTH.md §Audit and last_used_at."
     )
 
 

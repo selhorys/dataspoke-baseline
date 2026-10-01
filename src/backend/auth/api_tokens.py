@@ -6,6 +6,7 @@ Storage: only ``sha256(raw).hexdigest()`` in ``api_tokens.token_hash``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -28,6 +29,13 @@ logger = logging.getLogger(__name__)
 _TOKEN_PREFIX = "dsk_"
 _MAX_ACTIVE_PER_USER = 10
 _LAST_USED_THROTTLE_SECONDS = 60
+# Budget for the whole best-effort ``last_used_at`` stamp (checkout, UPDATE, commit).
+# Deliberately much shorter than the engine's ``pool_timeout`` (10s): the stamp checks
+# out a second connection while the request's own session still holds one, and it is
+# an audit side effect of an authentication that already succeeded, so under pool
+# pressure it must give up quickly instead of adding the full pool wait to the
+# request. 2s covers one pre-ping reconnect plus a single-row UPDATE with margin.
+_LAST_USED_STAMP_TIMEOUT_SECONDS = 2.0
 
 # Role rank — lower rank = fewer privileges.
 _role_rank: dict[str, int] = {"Reader": 0, "Editor": 1, "Admin": 2}
@@ -355,34 +363,42 @@ async def lookup_and_validate(db: AsyncSession, raw_token: str) -> tuple[User, s
     # this column in band, so the log record is the only trace a stamp was lost, and
     # a stale value is indistinguishable from a genuinely unused token.
     #
+    # The whole block runs under ``_LAST_USED_STAMP_TIMEOUT_SECONDS``. A breach raises
+    # ``TimeoutError`` (an ``Exception``), so it takes the same logged-and-swallowed
+    # path below; a cancellation of the request itself (``CancelledError``, a
+    # ``BaseException``) is not caught and still propagates. If the timeout fires
+    # mid-UPDATE or mid-commit, the ``async with`` exit closes the session and the
+    # cancelled connection is invalidated rather than returned to the pool.
+    #
     # ``token_id`` is read before the guard opens. An attribute read on a detached
     # instance can itself raise (``MissingGreenlet``); done inside the ``except``
     # handler it would raise out of the very guard that exists to keep this
     # request off the 500 path.
     token_id = token.id
     try:
-        factory = independent_sessionmaker(db)
-        async with factory() as throttle_session:
-            await throttle_session.execute(
-                update(ApiToken)
-                .where(
-                    ApiToken.id == token_id,
-                    (ApiToken.last_used_at.is_(None))
-                    | (
-                        ApiToken.last_used_at
-                        < func.now()
-                        # ``make_interval(years, months, weeks, days, hours, mins,
-                        # secs)`` — SQLAlchemy renders each argument as a bound
-                        # parameter, keeping the module-level constant above the
-                        # single source of the throttle window. No value is ever
-                        # interpolated into ``text()`` in this module, whatever its
-                        # provenance.
-                        - func.make_interval(0, 0, 0, 0, 0, 0, _LAST_USED_THROTTLE_SECONDS)
-                    ),
+        async with asyncio.timeout(_LAST_USED_STAMP_TIMEOUT_SECONDS):
+            factory = independent_sessionmaker(db)
+            async with factory() as throttle_session:
+                await throttle_session.execute(
+                    update(ApiToken)
+                    .where(
+                        ApiToken.id == token_id,
+                        (ApiToken.last_used_at.is_(None))
+                        | (
+                            ApiToken.last_used_at
+                            < func.now()
+                            # ``make_interval(years, months, weeks, days, hours, mins,
+                            # secs)`` — SQLAlchemy renders each argument as a bound
+                            # parameter, keeping the module-level constant above the
+                            # single source of the throttle window. No value is ever
+                            # interpolated into ``text()`` in this module, whatever its
+                            # provenance.
+                            - func.make_interval(0, 0, 0, 0, 0, 0, _LAST_USED_THROTTLE_SECONDS)
+                        ),
+                    )
+                    .values(last_used_at=func.now())
                 )
-                .values(last_used_at=func.now())
-            )
-            await throttle_session.commit()
+                await throttle_session.commit()
     except Exception:
         # Interpolated into the message rather than passed via ``extra``: the
         # deployed API installs no root log handler, so records fall through to

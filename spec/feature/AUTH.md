@@ -708,7 +708,9 @@ The stamp is a side effect of authentication, not a step of it. It runs
 after the token has already passed every validation check, and any failure
 writing it — a lost connection, a pool timeout, a session that cannot be
 opened — is logged at `ERROR` and swallowed rather than surfaced: the column
-keeps its prior value and the request continues with the identity it earned. See
+keeps its prior value and the request continues with the identity it earned.
+The stamp is bounded at 2 seconds end to end, so a saturated pool or a slow
+stamp adds at most that to a request; exceeding the bound is such a failure. See
 [BACKEND §Best-Effort Operations](BACKEND.md#best-effort-operations) for the
 logging convention this follows and why this stamp is the one operation in that
 list that logs at `ERROR` rather than WARNING. A consequence for anyone
