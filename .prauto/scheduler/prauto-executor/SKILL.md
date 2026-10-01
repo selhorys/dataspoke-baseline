@@ -1,7 +1,7 @@
 ---
 name: prauto-executor
 description: "Use when running or debugging the DataSpoke PRauto worker."
-version: 4.3.0
+version: 4.4.0
 author: DataSpoke (dataspoke-baseline)
 license: MIT
 platforms: [macos, linux]
@@ -33,6 +33,10 @@ model, deploy ordering, quota-pause/resume) lives in `spec/AI_PRAUTO.md`.
 - `PRAUTO_AGENT`: `claude` | `codex` | `auto`. Pinned in `config.local.env`; the executor's
   `select_agent` honors it. The supervisor does NOT pre-set it.
 - `PRAUTO_SLACK_TARGET`: Slack channel for reporting (default `slack:hermes-dev`).
+- `PRAUTO_DEV_ENV_REAP_IDLE_SECS` (default `7200`; `0` disables): at the end of every wake the
+  executor reaps an ownerless dev cluster on `PRAUTO_DEV_ENV_FILE` that it did not provision, once
+  idle past this threshold. Hold the dev-env lock or pin `dataspoke.io/keep-until=<ISO-8601 UTC>`
+  on the DataSpoke namespace to keep a cluster (see §Pitfalls).
 - Skill source: this repo's `.prauto/scheduler/prauto-executor/`, exposed to Hermes via
   `skills.external_dirs` — no profile copy exists, so an edit here is live on the next load.
 
@@ -106,6 +110,10 @@ must:
 | `waiting for plan approval` | Waiting on a human, not quota |
 | `quota-paused (claude). Waiting.` | Quota-paused; resumes next window |
 | `Codex model/effort override is invalid. No dispatch this wake.` | Bad `PRAUTO_CODEX_MODEL`/`PRAUTO_CODEX_EFFORT` pair; no dispatch, no retry burned |
+| `Reaping ownerless idle dev cluster (newest Helm update …, threshold …)` | `[WARN]`: the end-of-wake idle reaper is deleting a cluster prauto did not provision |
+| `Skipping idle reap: <reason>` | `[INFO]`: a reap gate declined — reaping fails closed, and the reason names the failed probe |
+| `Found a partial dev cluster without its DataSpoke namespace; not reaping — remove manually.` | `[WARN]`: a dev cluster missing its DataSpoke namespace is never reaped |
+| `Retrying an interrupted idle reap …` | A `reap`-kind marker from an earlier heartbeat is being re-gated before any uninstall |
 
 **Operator scripts** (shipped beside this skill under `scripts/`, for watching a live run without
 spamming Slack):
@@ -357,3 +365,27 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   `helm list -A`; clean up with
   `bash helm-charts/bin/uninstall.sh --profile dev --env-file helm-charts/.env.dev --no-question --delete-all`
   (minutes; deletes the dev namespaces and the ingress LB that fronts the lock endpoint).
+- **An ownerless idle dev cluster is reaped at the end of every wake — pin it to keep it.** A cluster
+  prauto did not provision (typically a human session's, on the shared default `PRAUTO_DEV_ENV_FILE`)
+  is torn down fully — namespaces and PVCs — once its newest Helm release update is older than
+  `PRAUTO_DEV_ENV_REAP_IDLE_SECS` (default 7200s). Every gate fails closed: a provably dev-profile
+  env file (explicit `DATASPOKE_DEV_LOCK_URL`, all four dev namespaces, never a `*env.prod*` file),
+  the wake did not touch the cluster, no durable marker, the dev-env lock acquired and token-proved
+  through the target cluster's API-server proxy, and no `dataspoke.io/keep-until` pin in effect. The
+  reaper runs only when the wake holds its heartbeat lock and was not signal-killed (SIGINT/SIGTERM
+  exit fast). To keep an idle cluster, hold the dev-env lock or pin it:
+  `kubectl annotate ns <dataspoke ns> dataspoke.io/keep-until=2026-10-02T09:00:00Z --overwrite`.
+  A reap interrupted mid-uninstall leaves a `kind: reap` marker; the next wake re-runs the gates
+  (never retried blindly) and drops the marker on any conclusive change. The durable marker now
+  carries `kind: provision|reap`, and a marker with no kind reads as `provision`. Uninstall output
+  goes to a private mode-600 log, not the scheduler log.
+- **A moved checkout silently reverts the bot identity to the owner (two avatars per commit).** The
+  prauto `includeIf "gitdir:<literal path>"` binding in `~/.gitconfig` is a literal gitdir, so moving
+  the clone (e.g. `~/Projects/…` → `~/Essos/projects/…`) stops the include matching:
+  `~/.gitconfig-<bot>` is never loaded, `user.email` falls back to the owner, and the bot's
+  `core.sshCommand` is lost, so pushes use the default key. The author set by the worker stays the
+  bot, so GitHub renders the bot as author and the owner as committer — not co-authorship, and not a
+  `Co-authored-by` trailer. Verify inside an existing worktree with
+  `git -C <repo>/.git/worktrees/<wt> config user.email` and `config --get core.sshCommand` before
+  blaming the token or key; scope the pattern to survive a move, e.g.
+  `[includeIf "gitdir:~/Essos/projects/**/.git/worktrees/"]`.
