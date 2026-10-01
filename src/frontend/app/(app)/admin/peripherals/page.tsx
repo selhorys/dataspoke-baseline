@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { AlertTriangle, Info } from "lucide-react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMe } from "@/lib/auth/use-me";
@@ -10,12 +10,15 @@ import {
   useUpdateDatahubPeripheral,
   useLangfusePeripheral,
   useUpdateLangfusePeripheral,
+  useSmtpPeripheral,
+  useUpdateSmtpPeripheral,
 } from "@/lib/api/admin";
 import { ApiError } from "@/lib/api/client";
 import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FormGrid } from "@/components/ui/form-grid";
 import {
@@ -36,6 +39,7 @@ import type {
   KafkaSecurityProtocol,
   LangfusePeripheral,
   PeripheralHealth,
+  SmtpPeripheral,
 } from "@/lib/api/types";
 import {
   datahubSchema,
@@ -48,11 +52,19 @@ import {
   langfuseSchema,
   langfuseToFormDefaults,
   langfuseBuildPatch,
+  smtpSchema,
+  smtpToFormDefaults,
+  smtpBuildPatch,
 } from "./peripherals-form.schema";
-import type { DatahubFormValues, LangfuseFormValues } from "./peripherals-form.schema";
+import type {
+  DatahubFormValues,
+  LangfuseFormValues,
+  SmtpFormValues,
+} from "./peripherals-form.schema";
 
 const DATAHUB_FORM_ID = "admin-peripheral-datahub-form";
 const LANGFUSE_FORM_ID = "admin-peripheral-langfuse-form";
+const SMTP_FORM_ID = "admin-peripheral-smtp-form";
 
 function describeError(err: unknown): string {
   if (err instanceof ApiError) return err.message;
@@ -548,12 +560,158 @@ function LangfuseCard({ peripheral }: { peripheral: LangfusePeripheral }) {
   );
 }
 
+// ── SMTP card ───────────────────────────────────────────────────────────────────
+
+/**
+ * The SMTP contract carries no health object, so the header badge reports
+ * `is_configured` (presence, not reachability) only — a deliberate asymmetry with
+ * the DataHub card, not an omission.
+ */
+function SmtpCard({ peripheral }: { peripheral: SmtpPeripheral }) {
+  const { mutateAsync: updateSmtp, isPending } = useUpdateSmtpPeripheral();
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const tz = useDisplayTz();
+
+  const {
+    register,
+    control,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<SmtpFormValues>({
+    resolver: zodResolver(smtpSchema),
+    defaultValues: smtpToFormDefaults(peripheral),
+  });
+
+  useEffect(() => {
+    reset(smtpToFormDefaults(peripheral));
+  }, [peripheral, reset]);
+
+  async function onSubmit(values: SmtpFormValues) {
+    const patch = smtpBuildPatch(values, peripheral);
+    if (Object.keys(patch).length === 0) {
+      toast({ title: "No changes to save." });
+      return;
+    }
+    try {
+      const updated = await updateSmtp(patch);
+      reset(smtpToFormDefaults(updated));
+      setSavedAt(updated.updated_at);
+      toast({ title: "SMTP configuration saved." });
+    } catch (err) {
+      toast({ variant: "destructive", title: "Save failed", description: describeError(err) });
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+        <CardTitle className="text-base">SMTP</CardTitle>
+        <div className="flex flex-col items-end gap-2">
+          <Badge
+            id="smtp_status"
+            data-status={peripheral.is_configured ? "configured" : "not_configured"}
+            variant={peripheral.is_configured ? "success" : "outline"}
+          >
+            {peripheral.is_configured ? "Configured" : "Not configured"}
+          </Badge>
+          {savedAt && (
+            <p className="text-xs text-muted-foreground">
+              Saved · updated {formatDateTime(savedAt, tz)}
+            </p>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <form id={SMTP_FORM_ID} onSubmit={handleSubmit(onSubmit)}>
+          <FormGrid>
+            <Field
+              label="Host"
+              htmlFor="smtp_host"
+              description="SMTP server hostname used to send password-reset mail. Until SMTP is configured only the password-reset request fails; every other flow is unaffected."
+              error={errors.host?.message}
+            >
+              <Input id="smtp_host" placeholder="smtp.example.com" {...register("host")} />
+            </Field>
+            <Field
+              label="Port"
+              htmlFor="smtp_port"
+              description="SMTP server port (1–65535)."
+              error={errors.port?.message}
+            >
+              <Input
+                id="smtp_port"
+                inputMode="numeric"
+                aria-invalid={errors.port ? true : undefined}
+                {...register("port")}
+              />
+            </Field>
+            <Field
+              label="Username"
+              htmlFor="smtp_username"
+              description="Account the server authenticates DataSpoke as."
+              error={errors.username?.message}
+            >
+              <Input id="smtp_username" autoComplete="off" {...register("username")} />
+            </Field>
+            <Field
+              label="From address"
+              htmlFor="smtp_from_address"
+              description="Sender address of password-reset mail."
+              error={errors.from_address?.message}
+            >
+              <Input
+                id="smtp_from_address"
+                placeholder="noreply@example.com"
+                {...register("from_address")}
+              />
+            </Field>
+            <Field
+              label="Password"
+              htmlFor="smtp_password"
+              description="Written to separated secure storage (currently a K8s Secret), never stored in the database. Leave blank to keep current."
+              error={errors.password?.message}
+            >
+              <PasswordInput id="smtp_password" autoComplete="off" {...register("password")} />
+            </Field>
+            <div className="space-y-1.5">
+              <Controller
+                control={control}
+                name="use_tls"
+                render={({ field }) => (
+                  <label className="flex cursor-pointer items-center gap-3 sm:pt-6">
+                    <Checkbox
+                      id="smtp_use_tls"
+                      checked={field.value}
+                      onCheckedChange={(v) => field.onChange(v === true)}
+                    />
+                    <span className="text-sm">Use TLS</span>
+                  </label>
+                )}
+              />
+              <p className="text-xs text-muted-foreground">
+                Encrypt the connection to the SMTP server.
+              </p>
+            </div>
+          </FormGrid>
+          <div className="mt-4 flex justify-end">
+            <Button type="submit" form={SMTP_FORM_ID} disabled={isPending}>
+              {isPending ? "Saving..." : "Save SMTP"}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminPeripheralsPage() {
   const { isAdmin, isLoading: meLoading } = useMe();
   const { data: datahub, isLoading: datahubLoading } = useDatahubPeripheral();
   const { data: langfuse, isLoading: langfuseLoading } = useLangfusePeripheral();
+  const { data: smtp, isLoading: smtpLoading } = useSmtpPeripheral();
 
   if (meLoading) {
     return <Skeleton className="h-40 w-full" />;
@@ -575,7 +733,7 @@ export default function AdminPeripheralsPage() {
       <div className="mb-6">
         <h1 className="mb-1 text-2xl font-semibold tracking-tight">Admin — Peripherals</h1>
         <p className="text-sm text-muted-foreground">
-          DataHub and Langfuse connection settings. Each card saves independently.
+          DataHub, Langfuse, and SMTP connection settings. Each card saves independently.
         </p>
       </div>
 
@@ -589,6 +747,11 @@ export default function AdminPeripheralsPage() {
           <Skeleton className="h-64 w-full" />
         ) : (
           <LangfuseCard peripheral={langfuse} />
+        )}
+        {smtpLoading || !smtp ? (
+          <Skeleton className="h-64 w-full" />
+        ) : (
+          <SmtpCard peripheral={smtp} />
         )}
       </div>
     </div>

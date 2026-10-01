@@ -25,10 +25,10 @@ import { cn } from "@/lib/utils";
 /**
  * Builds the DataHub dataset URL, or null when no DataHub URL is configured.
  *
- * Pure: callers pass the already-resolved, already-safety-checked base URL
- * (from `useDisplayLinks()`), so this helper stays usable outside React.
+ * Callers pass the already-resolved, already-safety-checked base URL
+ * (from `useDisplayLinks()`).
  */
-export function datahubDatasetUrl(datahubUrl: string, urn: string): string | null {
+function datahubDatasetUrl(datahubUrl: string, urn: string): string | null {
   if (!datahubUrl) return null;
   return `${datahubUrl}/dataset/${encodeURIComponent(urn)}`;
 }

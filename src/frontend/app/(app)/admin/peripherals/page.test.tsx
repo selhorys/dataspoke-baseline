@@ -3,22 +3,25 @@
  *
  * Spec traces:
  *   - spec/feature/FRONTEND_BASIC.md §Admin Peripherals:
- *       two cards (DataHub, Langfuse), each its own form + Save button (per-card
- *       partial PATCH); non-secret fields (service_corpuser_urn, default_env,
+ *       three cards (DataHub, Langfuse, SMTP), each its own form + Save button
+ *       (per-card partial PATCH); non-secret fields (service_corpuser_urn, default_env,
  *       project_id, environment_tag) prefilled from GET and sent plain; secrets
  *       (token, secret_key) start blank, are blank-omitted from PATCH, never echo
  *       "********" back as a value; only changed fields are PATCHed; admin-gated;
  *       two labelled health badges (`health` = event stream, `api_health` =
- *       metadata API) sharing one rendering, with `unknown` neutral on both.
- *   - spec/API.md §/admin/peripherals/datahub + /langfuse: the response/patch shapes.
+ *       metadata API) sharing one rendering, with `unknown` neutral on both;
+ *       the SMTP card's header badge is `is_configured` only (no health object),
+ *       its `password` is a masked write-only secret, its `port` is sent as an
+ *       integer, `use_tls` as a boolean.
+ *   - spec/API.md §/admin/peripherals/datahub + /langfuse + /smtp: the response/patch shapes.
  *
- * Mocked: useMe, the four admin hooks, toast, timezone — Vitest unit tier (no API).
+ * Mocked: useMe, the six admin hooks, toast, timezone — Vitest unit tier (no API).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
-import type { DatahubPeripheral, LangfusePeripheral } from "@/lib/api/types";
+import type { DatahubPeripheral, LangfusePeripheral, SmtpPeripheral } from "@/lib/api/types";
 
 // ---------------------------------------------------------------------------
 // Shared mock factories
@@ -77,6 +80,21 @@ function makeLangfuse(overrides: Partial<LangfusePeripheral> = {}): LangfusePeri
   };
 }
 
+function makeSmtp(overrides: Partial<SmtpPeripheral> = {}): SmtpPeripheral {
+  return {
+    resp_time: "2026-06-26T00:00:00Z",
+    host: "smtp.example.com",
+    port: 587,
+    username: "dataspoke",
+    from_address: "noreply@example.com",
+    use_tls: true,
+    password: "********",
+    is_configured: true,
+    updated_at: "2026-06-26T10:00:00Z",
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Browser API stubs — jsdom lacks ResizeObserver (used by Radix UI)
 // ---------------------------------------------------------------------------
@@ -111,11 +129,15 @@ const mockUseDatahub = vi.fn();
 const mockUseLangfuse = vi.fn();
 const mockUpdateDatahub = vi.fn();
 const mockUpdateLangfuse = vi.fn();
+const mockUseSmtp = vi.fn();
+const mockUpdateSmtp = vi.fn();
 vi.mock("@/lib/api/admin", () => ({
   useDatahubPeripheral: () => mockUseDatahub(),
   useLangfusePeripheral: () => mockUseLangfuse(),
   useUpdateDatahubPeripheral: () => ({ mutateAsync: mockUpdateDatahub, isPending: false }),
   useUpdateLangfusePeripheral: () => ({ mutateAsync: mockUpdateLangfuse, isPending: false }),
+  useSmtpPeripheral: () => mockUseSmtp(),
+  useUpdateSmtpPeripheral: () => ({ mutateAsync: mockUpdateSmtp, isPending: false }),
 }));
 
 const mockToast = vi.fn();
@@ -161,6 +183,9 @@ import {
   langfuseSchema,
   langfuseToFormDefaults,
   langfuseBuildPatch,
+  smtpSchema,
+  smtpToFormDefaults,
+  smtpBuildPatch,
 } from "./peripherals-form.schema";
 
 // ---------------------------------------------------------------------------
@@ -191,8 +216,10 @@ beforeEach(() => {
   mockUseMeFn.mockReturnValue(adminMe());
   mockUseDatahub.mockReturnValue({ data: makeDatahub(), isLoading: false });
   mockUseLangfuse.mockReturnValue({ data: makeLangfuse(), isLoading: false });
+  mockUseSmtp.mockReturnValue({ data: makeSmtp(), isLoading: false });
   mockUpdateDatahub.mockResolvedValue(makeDatahub({ updated_at: "2026-06-26T12:00:00Z" }));
   mockUpdateLangfuse.mockResolvedValue(makeLangfuse({ updated_at: "2026-06-26T12:00:00Z" }));
+  mockUpdateSmtp.mockResolvedValue(makeSmtp({ updated_at: "2026-06-26T12:00:00Z" }));
 });
 
 // ---------------------------------------------------------------------------
@@ -1171,6 +1198,330 @@ describe("AdminPeripheralsPage — Langfuse partial PATCH save (FRONTEND_BASIC.m
       const titles = mockToast.mock.calls.map((c) => (c[0] as { title?: string })?.title);
       expect(titles.some((t) => /saved/i.test(t ?? ""))).toBe(true);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. SMTP card — populate, schema/diff helpers, partial PATCH save
+// ---------------------------------------------------------------------------
+describe("AdminPeripheralsPage — SMTP card populate from GET (FRONTEND_BASIC.md §Peripherals)", () => {
+  it("renders the SMTP card with its own Save SMTP button beside the other two", async () => {
+    render(<AdminPeripheralsPage />);
+    expect(await screen.findByText("SMTP")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /save smtp/i })).toBeTruthy();
+    // Independent forms: one Save button per card, no shared submit.
+    expect(screen.getByRole("button", { name: /save datahub/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /save langfuse/i })).toBeTruthy();
+  });
+
+  it("prefills host, port, username, from_address, use_tls from GET", async () => {
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      const host = document.getElementById("smtp_host") as HTMLInputElement;
+      expect(host.value).toBe("smtp.example.com");
+    });
+    expect((document.getElementById("smtp_port") as HTMLInputElement).value).toBe("587");
+    expect((document.getElementById("smtp_username") as HTMLInputElement).value).toBe("dataspoke");
+    expect((document.getElementById("smtp_from_address") as HTMLInputElement).value).toBe(
+      "noreply@example.com",
+    );
+    expect(document.getElementById("smtp_use_tls")?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("reflects use_tls=false as an unchecked box", async () => {
+    mockUseSmtp.mockReturnValue({ data: makeSmtp({ use_tls: false }), isLoading: false });
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("smtp_use_tls")).toBeTruthy();
+    });
+    expect(document.getElementById("smtp_use_tls")?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("the SMTP password renders blank — never echoes the masked indicator", async () => {
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("smtp_password")).toBeTruthy();
+    });
+    expect((document.getElementById("smtp_password") as HTMLInputElement).value).toBe("");
+  });
+
+  it("header badge mirrors is_configured: 'Configured' when set", async () => {
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("smtp_status")).toBeTruthy();
+    });
+    const badge = document.getElementById("smtp_status")!;
+    expect(badge.getAttribute("data-status")).toBe("configured");
+    expect(badge.textContent).toBe("Configured");
+  });
+
+  it("header badge mirrors is_configured: 'Not configured' when unset", async () => {
+    mockUseSmtp.mockReturnValue({
+      data: makeSmtp({ is_configured: false, host: "", username: "", from_address: "", password: "" }),
+      isLoading: false,
+    });
+    render(<AdminPeripheralsPage />);
+    await waitFor(() => {
+      expect(document.getElementById("smtp_status")).toBeTruthy();
+    });
+    const badge = document.getElementById("smtp_status")!;
+    expect(badge.getAttribute("data-status")).toBe("not_configured");
+    expect(badge.textContent).toBe("Not configured");
+  });
+
+  it("the SMTP card has no health badge — only the DataHub card carries the two planes", async () => {
+    render(<AdminPeripheralsPage />);
+    // Backstop: the SMTP card rendered, and so did the DataHub health planes.
+    const title = await screen.findByText("SMTP");
+    expect(document.getElementById("smtp_status")).toBeTruthy();
+    expect(screen.getAllByText(/event stream/i).length).toBeGreaterThan(0);
+    // CardTitle -> CardHeader -> Card: scope the assertion to the SMTP card only.
+    const card = title.closest("div.rounded-lg") ?? title.parentElement!.parentElement!;
+    expect(card.contains(document.getElementById("smtp_host"))).toBe(true);
+    expect(card.textContent).not.toMatch(/event stream|metadata api/i);
+  });
+});
+
+describe("peripherals-form.schema — SMTP helpers (FRONTEND_BASIC.md §Peripherals; API.md §/admin/peripherals/smtp)", () => {
+  it("smtpToFormDefaults drops the masked password, holds port as a string", () => {
+    const defaults = smtpToFormDefaults(makeSmtp());
+    expect(defaults.password).toBe("");
+    expect(defaults.port).toBe("587");
+    expect(defaults.host).toBe("smtp.example.com");
+    expect(defaults.username).toBe("dataspoke");
+    expect(defaults.from_address).toBe("noreply@example.com");
+    expect(defaults.use_tls).toBe(true);
+    expect(defaults).not.toHaveProperty("is_configured");
+  });
+
+  it("smtpBuildPatch returns {} when nothing changed (no-op save)", () => {
+    const loaded = makeSmtp();
+    expect(smtpBuildPatch(smtpToFormDefaults(loaded), loaded)).toEqual({});
+  });
+
+  it("smtpBuildPatch sends ONLY changed fields; omits blank password", () => {
+    const loaded = makeSmtp();
+    const values = { ...smtpToFormDefaults(loaded), host: "mail.example.org" };
+    const patch = smtpBuildPatch(values, loaded);
+    expect(patch).toEqual({ host: "mail.example.org" });
+    expect(patch).not.toHaveProperty("password");
+  });
+
+  it("smtpBuildPatch sends username verbatim when ONLY username changes", () => {
+    const loaded = makeSmtp();
+    const values = { ...smtpToFormDefaults(loaded), username: "mailer-bot" };
+    const patch = smtpBuildPatch(values, loaded);
+    expect(patch).toEqual({ username: "mailer-bot" });
+    // Guards against the value being written into a sibling key.
+    expect(patch).not.toHaveProperty("from_address");
+  });
+
+  it("smtpBuildPatch sends port as an integer, not the input string", () => {
+    const loaded = makeSmtp();
+    const values = { ...smtpToFormDefaults(loaded), port: "2525" };
+    const patch = smtpBuildPatch(values, loaded);
+    expect(patch).toEqual({ port: 2525 });
+    expect(typeof patch.port).toBe("number");
+  });
+
+  it("smtpBuildPatch sends use_tls as a boolean when toggled", () => {
+    const loaded = makeSmtp({ use_tls: true });
+    const values = { ...smtpToFormDefaults(loaded), use_tls: false };
+    expect(smtpBuildPatch(values, loaded)).toEqual({ use_tls: false });
+  });
+
+  it("smtpBuildPatch includes the password ONLY when the user typed a value", () => {
+    const loaded = makeSmtp();
+    const values = { ...smtpToFormDefaults(loaded), password: "s3cret" };
+    expect(smtpBuildPatch(values, loaded)).toEqual({ password: "s3cret" });
+  });
+
+  it("smtpSchema accepts the form-default shape", () => {
+    const res = smtpSchema.safeParse(smtpToFormDefaults(makeSmtp()));
+    expect(res.success, res.success ? "" : JSON.stringify(res.error.issues)).toBe(true);
+  });
+
+  it.each(["1", "587", "65535"])("smtpSchema accepts port %s (API range 1–65535)", (port) => {
+    const values = { ...smtpToFormDefaults(makeSmtp()), port };
+    expect(smtpSchema.safeParse(values).success).toBe(true);
+  });
+
+  it.each(["0", "65536", "-1", "abc", "25.5", ""])(
+    "smtpSchema rejects port %j (outside 1–65535 or not a whole number)",
+    (port) => {
+      const values = { ...smtpToFormDefaults(makeSmtp()), port };
+      const res = smtpSchema.safeParse(values);
+      expect(res.success).toBe(false);
+      // The backstop: the failure is reported on the port field specifically.
+      expect(!res.success && res.error.issues.some((i) => i.path[0] === "port")).toBe(true);
+    },
+  );
+
+  it("smtpSchema enforces the API max lengths (512 text, 8192 password)", () => {
+    const base = smtpToFormDefaults(makeSmtp());
+    expect(smtpSchema.safeParse({ ...base, host: "h".repeat(512) }).success).toBe(true);
+    expect(smtpSchema.safeParse({ ...base, host: "h".repeat(513) }).success).toBe(false);
+    expect(smtpSchema.safeParse({ ...base, from_address: "a".repeat(513) }).success).toBe(false);
+    expect(smtpSchema.safeParse({ ...base, username: "u".repeat(513) }).success).toBe(false);
+    expect(smtpSchema.safeParse({ ...base, password: "p".repeat(8192) }).success).toBe(true);
+    expect(smtpSchema.safeParse({ ...base, password: "p".repeat(8193) }).success).toBe(false);
+  });
+});
+
+describe("AdminPeripheralsPage — SMTP partial PATCH save (FRONTEND_BASIC.md §Peripherals)", () => {
+  it("editing port → Save SMTP → PATCHes ONLY port as an integer; success toast; other cards untouched", async () => {
+    const user = userEvent.setup();
+    render(<AdminPeripheralsPage />);
+
+    const portInput = (await waitFor(() => {
+      const el = document.getElementById("smtp_port") as HTMLInputElement | null;
+      expect(el?.value).toBe("587");
+      return el!;
+    })) as HTMLInputElement;
+
+    await user.clear(portInput);
+    await user.type(portInput, "2525");
+    await user.click(screen.getByRole("button", { name: /save smtp/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSmtp).toHaveBeenCalled();
+    });
+    const patchBody = mockUpdateSmtp.mock.calls[0][0] as Record<string, unknown>;
+    expect(patchBody).toEqual({ port: 2525 });
+    expect(patchBody).not.toHaveProperty("password");
+    expect(mockUpdateDatahub).not.toHaveBeenCalled();
+    expect(mockUpdateLangfuse).not.toHaveBeenCalled();
+
+    // Success feedback is asserted by behaviour (a non-destructive toast), not by its wording.
+    await waitFor(() => {
+      expect(mockToast).toHaveBeenCalled();
+    });
+    const toasts = mockToast.mock.calls.map((c) => c[0] as { variant?: string });
+    expect(toasts.every((t) => t.variant !== "destructive")).toBe(true);
+    // "Saved · updated" indicator appears in the card header after a save.
+    expect(await screen.findByText(/Saved · updated/)).toBeTruthy();
+  });
+
+  it("editing username → Save SMTP → PATCHes ONLY username, verbatim", async () => {
+    const user = userEvent.setup();
+    render(<AdminPeripheralsPage />);
+
+    const usernameInput = (await waitFor(() => {
+      const el = document.getElementById("smtp_username") as HTMLInputElement | null;
+      expect(el?.value).toBe("dataspoke");
+      return el!;
+    })) as HTMLInputElement;
+    await user.clear(usernameInput);
+    await user.type(usernameInput, "mailer-bot");
+    await user.click(screen.getByRole("button", { name: /save smtp/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSmtp).toHaveBeenCalled();
+    });
+    expect(mockUpdateSmtp.mock.calls[0][0]).toEqual({ username: "mailer-bot" });
+  });
+
+  it("typed password IS included in the SMTP PATCH alongside a changed field", async () => {
+    const user = userEvent.setup();
+    render(<AdminPeripheralsPage />);
+
+    await waitFor(() => {
+      expect(document.getElementById("smtp_password")).toBeTruthy();
+    });
+    await user.type(document.getElementById("smtp_password") as HTMLInputElement, "new-pass");
+    const from = document.getElementById("smtp_from_address") as HTMLInputElement;
+    await user.clear(from);
+    await user.type(from, "ops@example.com");
+    await user.click(screen.getByRole("button", { name: /save smtp/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSmtp).toHaveBeenCalled();
+    });
+    expect(mockUpdateSmtp.mock.calls[0][0]).toEqual({
+      from_address: "ops@example.com",
+      password: "new-pass",
+    });
+  });
+
+  it("toggling Use TLS off sends use_tls=false only", async () => {
+    const user = userEvent.setup();
+    render(<AdminPeripheralsPage />);
+
+    const box = await waitFor(() => {
+      const el = document.getElementById("smtp_use_tls");
+      expect(el?.getAttribute("aria-checked")).toBe("true");
+      return el!;
+    });
+    await user.click(box);
+    await user.click(screen.getByRole("button", { name: /save smtp/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSmtp).toHaveBeenCalled();
+    });
+    expect(mockUpdateSmtp.mock.calls[0][0]).toEqual({ use_tls: false });
+  });
+
+  it("Save with no changes does NOT call the mutation; gives non-error feedback, no Saved indicator", async () => {
+    const user = userEvent.setup();
+    render(<AdminPeripheralsPage />);
+
+    await waitFor(() => {
+      expect(document.getElementById("smtp_host")).toBeTruthy();
+    });
+    await user.click(screen.getByRole("button", { name: /save smtp/i }));
+
+    // Feedback is asserted by behaviour (a non-destructive toast), not by its wording.
+    await waitFor(() => {
+      expect(mockToast).toHaveBeenCalled();
+    });
+    const toasts = mockToast.mock.calls.map((c) => c[0] as { variant?: string });
+    expect(toasts.every((t) => t.variant !== "destructive")).toBe(true);
+    expect(mockUpdateSmtp).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Saved · updated/)).toBeNull();
+  });
+
+  it("an out-of-range port blocks the PATCH and shows a field error", async () => {
+    const user = userEvent.setup();
+    render(<AdminPeripheralsPage />);
+
+    const portInput = (await waitFor(() => {
+      const el = document.getElementById("smtp_port") as HTMLInputElement | null;
+      expect(el?.value).toBe("587");
+      return el!;
+    })) as HTMLInputElement;
+    await user.clear(portInput);
+    await user.type(portInput, "70000");
+    await user.click(screen.getByRole("button", { name: /save smtp/i }));
+
+    // The port input is flagged invalid (aria-invalid); the error wording is not asserted.
+    await waitFor(() => {
+      expect(portInput.getAttribute("aria-invalid")).toBe("true");
+    });
+    expect(mockUpdateSmtp).not.toHaveBeenCalled();
+  });
+
+  it("a failed save surfaces a destructive toast and no success indicator", async () => {
+    mockUpdateSmtp.mockRejectedValueOnce(new Error("boom"));
+    const user = userEvent.setup();
+    render(<AdminPeripheralsPage />);
+
+    const hostInput = (await waitFor(() => {
+      const el = document.getElementById("smtp_host") as HTMLInputElement | null;
+      expect(el?.value).toBe("smtp.example.com");
+      return el!;
+    })) as HTMLInputElement;
+    await user.clear(hostInput);
+    await user.type(hostInput, "mail.example.org");
+    await user.click(screen.getByRole("button", { name: /save smtp/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSmtp).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      const calls = mockToast.mock.calls.map((c) => c[0] as { title?: string; variant?: string });
+      expect(calls.some((c) => c.variant === "destructive")).toBe(true);
+    });
+    expect(screen.queryByText(/Saved · updated/)).toBeNull();
   });
 });
 

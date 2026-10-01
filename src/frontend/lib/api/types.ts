@@ -241,6 +241,29 @@ export interface LangfusePeripheralPatch {
   environment_tag?: string;
 }
 
+export interface SmtpPeripheral {
+  resp_time: string;
+  host: string;
+  port: number;
+  username: string;
+  from_address: string;
+  use_tls: boolean;
+  /** Masked indicator only: "" when unset, "********" when set. */
+  password: string;
+  is_configured: boolean;
+  updated_at: string | null;
+}
+
+export interface SmtpPeripheralPatch {
+  host?: string;
+  port?: number;
+  username?: string;
+  from_address?: string;
+  use_tls?: boolean;
+  /** Plaintext password; omit to keep current, "" to clear. */
+  password?: string;
+}
+
 // ── Workflow schedules (DAG groups) ───────────────────────────────────────────
 
 /** The five controllable DAG groups (operational schedule control via Airflow). */

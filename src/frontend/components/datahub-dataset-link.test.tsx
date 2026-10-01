@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { DatahubDatasetLink, datahubDatasetUrl } from "./datahub-dataset-link";
+import { DatahubDatasetLink } from "./datahub-dataset-link";
 
 // The component resolves its base URL through useDisplayLinks, which reads the
 // peripheral-links endpoint; control the resolved value per test.
@@ -27,20 +27,6 @@ const URN =
 
 beforeEach(() => {
   mockUseDisplayLinks.mockReset();
-});
-
-// ── datahubDatasetUrl helper ────────────────────────────────────────────────────
-
-describe("datahubDatasetUrl", () => {
-  it("builds ${datahubUrl}/dataset/${encodeURIComponent(urn)} when configured", () => {
-    expect(datahubDatasetUrl("http://datahub.example.com", URN)).toBe(
-      `http://datahub.example.com/dataset/${encodeURIComponent(URN)}`,
-    );
-  });
-
-  it("returns null when no datahubUrl is configured", () => {
-    expect(datahubDatasetUrl("", URN)).toBeNull();
-  });
 });
 
 // ── DatahubDatasetLink rendering ────────────────────────────────────────────────

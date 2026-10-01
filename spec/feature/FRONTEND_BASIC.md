@@ -200,7 +200,7 @@ ingestion recipe YAML editor) remain one full-width field.
 | `/profile/tokens` | Long-lived API token management — list, mint (copy-once display), revoke. An Admin-only scope control switches between **My tokens** (default) and **All tokens**, the deployment-wide inventory with Owner and Status columns and a "Show revoked" toggle | `GET /auth/api-tokens`, `POST /auth/api-tokens`, `DELETE /auth/api-tokens/{id}`, `GET /admin/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
 | `/admin/users` | Admin user management — list, change name, change role, hard delete, revoke any token | `GET /admin/users`, `PATCH /admin/users/{id}`, `PATCH /admin/users/{id}/role`, `DELETE /admin/users/{id}`, `GET /admin/users/{id}/api-tokens`, `DELETE /admin/users/{id}/api-tokens/{token_id}` |
 | `/admin/conf` | Admin runtime configuration — view and edit the singleton behavioral tunables, dependency-stub toggles, and LLM provider/model/key, plus a self-contained **Workflow schedules** section to pause/unpause the six DAG groups | `GET /admin/conf`, `PATCH /admin/conf`, `GET /admin/dags`, `PATCH /admin/dags/{group}` |
-| `/admin/peripherals` | Admin peripheral connections — view and edit DataHub and Langfuse connection settings (two cards, per-card partial PATCH) | `GET /admin/peripherals/datahub`, `PATCH /admin/peripherals/datahub`, `GET /admin/peripherals/langfuse`, `PATCH /admin/peripherals/langfuse` |
+| `/admin/peripherals` | Admin peripheral connections — view and edit DataHub, Langfuse, and SMTP connection settings (three cards, per-card partial PATCH) | `GET /admin/peripherals/datahub`, `PATCH /admin/peripherals/datahub`, `GET /admin/peripherals/langfuse`, `PATCH /admin/peripherals/langfuse`, `GET /admin/peripherals/smtp`, `PATCH /admin/peripherals/smtp` |
 | `/governance/dashboard` | [Governance dashboard — home](FRONTEND_GOVERNANCE.md) | `GET /spoke/governance/metric`, `GET /spoke/governance/metric/{id}/attr/result` |
 | `/governance/datasets` | [Dataset catalog](FRONTEND_GOVERNANCE.md) — cross-feature dataset list (UI under Governance, API in common/data) | `GET /spoke/common/data` |
 | `/governance/metrics` | [Metric configuration](FRONTEND_GOVERNANCE.md) | `/spoke/governance/metric/...` |
@@ -439,9 +439,9 @@ its own immediate `PATCH /admin/dags/{group}` and the section invalidates the
 
 ### Peripherals (`/admin/peripherals`)
 
-One page with two independent `Card`s — DataHub and Langfuse — each its own
+One page with three independent `Card`s — DataHub, Langfuse, and SMTP — each its own
 `<form>` with its own Save button. Each card reads its peripheral with the
-matching `GET /admin/peripherals/{datahub,langfuse}` and saves a partial
+matching `GET /admin/peripherals/{datahub,langfuse,smtp}` and saves a partial
 `PATCH` of only the changed fields. The field sets are exactly the peripheral
 contracts in [API.md](../API.md) §`/admin/peripherals` — the page invents no
 fields.
@@ -450,7 +450,8 @@ fields.
 ┌──────────────────────────────────────────────────────────────┐
 │  Admin — Peripherals                                         │
 ├──────────────────────────────────────────────────────────────┤
-│  DataHub        ● Event stream OK 14:30  ● Metadata API OK   │
+│  DataHub   ● Event stream OK 14:30  ● Metadata API OK        │
+│            Saved · updated 14:32                             │
 │    GMS URL        [ http://datahub-gms…              ]       │
 │    Frontend URL   [ https://datahub.example.com      ]       │
 │    Kafka brokers  [ broker:9092                      ]       │
@@ -461,15 +462,24 @@ fields.
 │    Token          [ •••••• leave blank to keep current ]    │
 │    Service corpuser URN [ urn:li:corpuser:dataspoke  ]       │
 │    Default env    [ DEV                              ]       │
-│                       Saved · updated 14:32   [ Save ]       │
+│                                               [ Save ]       │
 ├──────────────────────────────────────────────────────────────┤
-│  Langfuse                                                    │
+│  Langfuse  Saved · updated 14:31                             │
 │    Host           [ http://langfuse…                 ]       │
 │    Public key     [ pk-lf-…                           ]       │
 │    Secret key     [ •••••• leave blank to keep current ]    │
 │    Project ID     [ default                          ]       │
 │    Environment tag[ production                       ]       │
-│                       Saved · updated 14:31   [ Save ]       │
+│                                               [ Save ]       │
+├──────────────────────────────────────────────────────────────┤
+│  SMTP      ● Configured   Saved · updated 14:33              │
+│    Host           [ smtp.example.com                 ]       │
+│    Port           [ 587                              ]       │
+│    Username       [ dataspoke                        ]       │
+│    From address   [ noreply@example.com              ]       │
+│    Use TLS        [x]                                        │
+│    Password       [ •••••• leave blank to keep current ]    │
+│                                               [ Save ]       │
 └──────────────────────────────────────────────────────────────┘
        Peripheral connections (`/admin/peripherals`)
 ```
@@ -494,6 +504,13 @@ fields.
 | Langfuse | Secret key | `secret_key` | Masked write-only secret (see below) |
 | Langfuse | Project ID | `project_id` | Non-secret, returned plain |
 | Langfuse | Environment tag | `environment_tag` | Non-secret, returned plain |
+| SMTP | Host | `host` | Plain text |
+| SMTP | Port | `port` | Numeric input, sent as an integer |
+| SMTP | Username | `username` | Plain text |
+| SMTP | From address | `from_address` | Plain text; the sender of password-reset mail |
+| SMTP | Use TLS | `use_tls` | Checkbox (the shared `components/ui/checkbox.tsx`), sent as a boolean |
+| SMTP | Password | `password` | Masked write-only secret (see below) |
+| SMTP | Configured | `is_configured` | Read-only badge in the card header (see below) |
 
 - **The Kafka security fields are progressively disclosed.** The mechanism select
   appears only once the protocol is `SASL_*`, and the credential inputs only once
@@ -521,19 +538,28 @@ fields.
   both reporters are opt-in: no event consumer is deployed by default, and the
   sync sweep's DAG ships paused. Saving does not refresh either badge; each moves
   when its own reporter next writes.
-- **Masked secrets** (`token`, `kafka_sasl_password`, `secret_key`) use `PasswordInput` and behave like
+- **The SMTP card's badge is `is_configured` only.** The SMTP contract carries no
+  health object, so the card has no health badge — a real asymmetry with the DataHub
+  card, not an omission. The badge reports presence, not reachability: "Configured"
+  or "Not configured" as returned by `GET /admin/peripherals/smtp`. While SMTP is
+  unconfigured only `POST /auth/password/reset/request` fails, with
+  `503 PERIPHERAL_NOT_CONFIGURED` and `detail.peripheral = "smtp"`; every other
+  read and auth flow is unaffected, so this card is optional for onboarding, unlike
+  the DataHub card below.
+- **Masked secrets** (`token`, `kafka_sasl_password`, `secret_key`, SMTP `password`) use `PasswordInput` and behave like
   `llm_api_key` on `/admin/conf`: `GET` returns `""` (unset) or `"********"`
   (set); the field shows "leave blank to keep current"; an empty submission omits
   the field (unchanged), and the `"********"` sentinel is never echoed back as a
   written value. Secrets are routed to Kubernetes Secrets, not the DB.
 - **Non-secret fields** (`service_corpuser_urn`, `default_env`, the visible
-  `kafka_*` settings, `project_id`, `environment_tag`) are plain inputs or selects
+  `kafka_*` settings, `project_id`, `environment_tag`, and the SMTP `host` / `port` /
+  `username` / `from_address` / `use_tls`) are plain inputs or selects
   prefilled from the `GET` response and sent verbatim on `PATCH`.
   `kafka_sasl_password_version` is bookkeeping the API maintains — the page neither
   renders nor sends it.
-- Each card's Save submits only the fields that changed within that card; the two
+- Each card's Save submits only the fields that changed within that card; the
   cards never share a submit. A "Saved · updated <timestamp>" indicator appears in
-  the saved card's footer (in-session only).
+  the saved card's header (in-session only).
 - The page is gated by the `useMe` admin check, like the other `/admin/*` pages.
 
 **This page is the entry point of a fresh deployment.** Every read that resolves
@@ -936,6 +962,17 @@ These component IDs are referenced from per-function specs.
   - For every other error it renders the ordinary destructive error state with the
     message from the API's error envelope.
 - **ConfirmDialog** — destructive-action gate (revoke token, delete config).
+- **DatasetUrnSearch** — the server-backed dataset URN filter (text input plus
+  Search, and Clear once a value is applied). Typing stays local; the parent's
+  `onSubmit` fires only on Search, Enter, or Clear, so a paged read is never
+  filtered client-side while a query is being composed. Reused by the Ingestion
+  (source-detail and unmanaged Datasets tables), Governance (dataset catalog),
+  MetaGen (uncovered and conf-detail tables), and Validation list views.
+- **TokenStatusBadge** — the Status cell of the admin token views: a one-word
+  `active` / `expired` / `revoked` badge using the derivation in
+  [API tokens](#api-tokens-profiletokens), with the revoked/expired stamp carried
+  in its `title` and a screen-reader-only span. Reused by `/admin/users` (token
+  drawer) and `/profile/tokens` (All-tokens scope).
 - **Pagination** — the single pagination control for every paged table across all
   features. It exposes a **page-size selector** (20 / 50 / 100, default **20**), **Prev /
   Next** buttons, **numbered pages** (with ellipsis for long ranges), and an **"M–N of T"**
