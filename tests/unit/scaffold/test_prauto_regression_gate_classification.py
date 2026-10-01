@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.scaffold.prauto_isolation import ISOLATE_REAL_STATE_SHELL
+
 ROOT = Path(__file__).parents[3]
 PHASES = ROOT / ".prauto/lib/phases.sh"
 REGRESSION = ROOT / ".prauto/lib/regression.sh"
@@ -65,6 +67,7 @@ def _source_phases() -> str:
             f"PRAUTO_DIR={shlex.quote(str(ROOT / '.prauto'))}",
             f"source {shlex.quote(str(HELPERS))}",
             f"source {shlex.quote(str(PHASES))}",
+            ISOLATE_REAL_STATE_SHELL,
         ]
     )
 
@@ -78,6 +81,7 @@ def _source_all() -> str:
             f"source {shlex.quote(str(HELPERS))}",
             f"source {shlex.quote(str(PR))}",
             f"source {shlex.quote(str(PHASES))}",
+            ISOLATE_REAL_STATE_SHELL,
         ]
     )
 

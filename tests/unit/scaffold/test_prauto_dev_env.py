@@ -7,6 +7,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from tests.unit.scaffold.prauto_isolation import ISOLATE_REAL_STATE_SHELL
+
 ROOT = Path(__file__).parents[3]
 PRAUTO = ROOT / ".prauto"
 
@@ -29,6 +31,10 @@ def _source_phases() -> str:
             f"PRAUTO_DIR={shlex.quote(str(PRAUTO))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/helpers.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/phases.sh'))}",
+            # The libraries live in the real .prauto but their state paths must not:
+            # phases.sh fixes DEV_ENV_STATE_FILE and provision_dev_env writes/prunes
+            # provision-* logs under STATE_DIR, both of which a live heartbeat reads.
+            ISOLATE_REAL_STATE_SHELL,
         ]
     )
 

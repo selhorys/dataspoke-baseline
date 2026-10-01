@@ -13,6 +13,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from tests.unit.scaffold.prauto_isolation import ISOLATE_REAL_STATE_SHELL
+
 ROOT = Path(__file__).parents[3]
 PRAUTO = ROOT / ".prauto"
 
@@ -39,6 +41,7 @@ def _source_pr(*, with_phases: bool = False, with_issues: bool = False) -> str:
         lines.append(f"source {shlex.quote(str(PRAUTO / 'lib/issues.sh'))}")
     if with_phases:
         lines.append(f"source {shlex.quote(str(PRAUTO / 'lib/phases.sh'))}")
+        lines.append(ISOLATE_REAL_STATE_SHELL)
     return "\n".join(lines)
 
 

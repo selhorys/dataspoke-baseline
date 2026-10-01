@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.scaffold.prauto_isolation import ISOLATE_REAL_STATE_SHELL
+
 ROOT = Path(__file__).parents[3]
 PHASES = ROOT / ".prauto/lib/phases.sh"
 HELPERS = ROOT / ".prauto/lib/helpers.sh"
@@ -37,6 +39,7 @@ def _source_phases() -> str:
             f"PRAUTO_DIR={shlex.quote(str(ROOT / '.prauto'))}",
             f"source {shlex.quote(str(HELPERS))}",
             f"source {shlex.quote(str(PHASES))}",
+            ISOLATE_REAL_STATE_SHELL,
         ]
     )
 

@@ -597,11 +597,13 @@ reviewer. All cluster mutation runs from the executor against `$PRAUTO_DEV_ENV_F
 
 ### Per-worker dedicated cluster
 
-Each prauto instance binds to **its own dev-profile cluster**, selected by `PRAUTO_DEV_ENV_FILE`
-(default `helm-charts/.env.dev`). This binding is what makes provisioning and deploying safe to
-automate at all: prauto never contends with a human engineer's cluster for the dev-env lock, and
-the blast radius of anything it does — a bad chart, a wedged namespace, a destructive reset —
-stops at a cluster only prauto uses.
+Each prauto instance binds to **its own dev-profile cluster**, selected by `PRAUTO_DEV_ENV_FILE`.
+This binding is what makes provisioning and deploying safe to automate at all: when it points at a
+prauto-only env file, prauto never contends with a human engineer's cluster for the dev-env lock,
+and the blast radius of anything it does — a bad chart, a wedged namespace, a destructive reset —
+stops at a cluster only prauto uses. The default, `helm-charts/.env.dev`, is the shared human
+cluster; that case has no such isolation, and
+[idle reaping](#provisioning) is what bounds its cost.
 
 The env file resolves under `$REPO_DIR`, **never the worktree**. This is a security property, not
 a path convention: the worktree holds branch-authored content, so resolving cluster credentials
@@ -680,6 +682,76 @@ runs — none of which the invoking script's own exit code can speak to after th
 marker is cleared only once the executor has confirmed the dev namespaces are actually gone. If it
 cannot confirm that, the marker survives and a later heartbeat retries the teardown from it,
 exactly as it would after a heartbeat that never reached its exit trap at all.
+
+**Ownerless idle clusters are reaped.** A cluster started by anyone else — typically a human session
+on the shared default env file — is reused when healthy but would otherwise bill indefinitely. At the
+end of every heartbeat, after its own provisioned-cluster teardown, prauto therefore reaps a
+dev-profile cluster on its bound `PRAUTO_DEV_ENV_FILE` that it did not provision, but only when
+**all** of these hold:
+
+1. `PRAUTO_DEV_ENV_REAP_IDLE_SECS` is greater than 0 (default `7200`; `0` disables reaping).
+2. No prauto marker exists (a marked cluster belongs to marker recovery) and this wake did not
+   touch the cluster at all: no health check, lock acquisition, deploy, or cluster test stage.
+3. The cluster named by the env file's `DATASPOKE_KUBE_CLUSTER` context answers and the dev
+   namespaces are present.
+4. The dev-env lock service answers and the reaper acquires the lock with its normal token-based
+   acquire, holding it from the final checks through the uninstall so a human cannot take the
+   cluster in between. An unreachable lock service is not evidence that no holder exists; any
+   acquire conflict or failure means do nothing.
+5. The cluster is idle: the newest Helm release `updated` timestamp across the dev namespaces is
+   older than the threshold. Idleness is pure Helm-update recency: prauto's own branch deploys and
+   any human install refresh it, but cluster use without a deploy is not visible as activity to
+   *later* wakes.
+6. No keep pin applies: a `dataspoke.io/keep-until=<ISO-8601 UTC>` annotation on the DataSpoke
+   namespace whose time is in the future blocks reaping. This is the human escape hatch; an
+   unparseable value also blocks.
+
+Reaping is cost hygiene, never worth destroying a cluster in use, so it fails closed: any probe that
+fails, times out, or is ambiguous means do nothing. Before the uninstall it writes the same durable
+marker as provisioning, tagged as a reap, so a reap interrupted mid-uninstall is re-evaluated by a
+later heartbeat's marker recovery (below); the uninstall and the namespace-absence confirmation are
+identical to a provisioned cluster's (a full delete, PVCs and namespaces included). Uninstall output
+goes to a private local teardown log, never the scheduler log; only a fixed line is logged. The lock
+service itself lives in the dev cluster and is removed by the uninstall, so after confirmed deletion
+the reaper discards its local lock token state rather than releasing — a release against a deleted
+service is not an error to retry. With the default shared env file this reaps a human's idle cluster (see
+[Per-worker dedicated cluster](#per-worker-dedicated-cluster)) — the intended cost trade-off. A
+human who tests without reinstalling holds the cluster by holding the dev-env lock or setting the
+keep pin.
+
+**Reap markers are re-gated, never retried blindly.** The durable marker records its origin,
+`provision` or `reap`; a marker with no kind reads as `provision`, and an unknown kind is handled as
+`reap`, the strict case. A `provision` marker records a cluster prauto built, so its teardown is
+retried unconditionally. A `reap` marker records only an idleness verdict that was true when it was
+written, so recovery runs the reap gates again before any uninstall; dropping a marker loses a retry
+but destroys nothing, and that asymmetry decides every case:
+
+- **Gates.** The env-file gate (below), a lock-free advisory pass, the token-bound lock held through
+  the uninstall, and a re-check under the lock. Idleness is measured against the time the reap began:
+  no Helm release updated since the marker time, and "no releases left" counts as idle.
+- **Conclusive change: drop the marker, delete nothing.** A newer Helm update; a future keep pin; the
+  env file no longer passing the gate; an unreadable marker timestamp.
+- **Undetermined: keep the marker for a later wake.** A probe error or timeout, a lock conflict, an
+  unreachable lock service, or a rejected token proof.
+- **Already gone.** If the namespaces are confirmed absent, the marker is cleared.
+- **Lockless retry.** `uninstall.sh` removes the dev-lock service first and the DataSpoke namespace
+  near the end, so an interrupted run can leave a cluster whose lock can no longer be taken. Only in
+  recovery, a clean API-server answer that the dev-lock Service or the DataSpoke namespace is absent
+  makes the retry run without the lock, after the lock-free checks pass twice, the second time
+  immediately before the uninstall: no Helm update since the marker, no keep pin on a DataSpoke
+  namespace that still exists, and, as the extra conclusive signal used only here, no dev namespace
+  created after the marker (a creation drops the marker, like any conclusive change). A short window
+  between the last check and the uninstall is the accepted residual.
+
+**Reapability gates.** Reaping requires a provably dev-profile env file: `DATASPOKE_DEV_*` keys
+present and no `DATASPOKE_PROD_*`, a non-prod basename, an explicitly set `DATASPOKE_DEV_LOCK_URL`,
+all four dev namespace keys, and values that read the same when the file is sourced the way
+`uninstall.sh` sources it. The DataSpoke namespace anchors reapability: it carries the keep pin and
+hosts the lock service, so a partial cluster without it is warned about and skipped on a fresh reap.
+The lock is proved to belong to the target cluster by renewing the acquired token through that
+cluster's API-server service proxy, not by owner name. The end-of-heartbeat reap runs only when this
+heartbeat actually holds its heartbeat lock and its cleanup was not signal-driven (SIGINT and SIGTERM
+exit fast).
 
 ### Branch image deploys
 
@@ -936,9 +1008,10 @@ non-code PRs may bypass this initial full regression but still retain any select
 verification required by their changed paths.
 
 The cluster provisioned by a heartbeat remains available through PR creation, the initial post-PR
-regression, and any targeted retries. The heartbeat tears down only the cluster it provisioned,
-once at its exit; it never tears down and recreates that cluster between the pre-PR and post-PR
-phases.
+regression, and any targeted retries. The heartbeat tears down the cluster it provisioned once at
+its exit (a cluster it did not provision is touched only by the idle-reaping rule in
+[Provisioning](#provisioning)); it never tears down and recreates that cluster between the pre-PR
+and post-PR phases.
 
 ### What a green run proves
 

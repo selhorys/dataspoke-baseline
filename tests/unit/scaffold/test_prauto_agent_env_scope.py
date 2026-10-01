@@ -13,6 +13,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from tests.unit.scaffold.prauto_isolation import ISOLATE_REAL_STATE_SHELL
+
 ROOT = Path(__file__).parents[3]
 PRAUTO = ROOT / ".prauto"
 
@@ -46,6 +48,7 @@ def _invoke(tmp_path: Path, invocation: str) -> str:
             f"source {shlex.quote(str(PRAUTO / 'lib/state.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/quota.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/agent.sh'))}",
+            ISOLATE_REAL_STATE_SHELL,
             "ACTIVE_AGENT=claude",
             f"CUR_SESSION_DIR={shlex.quote(str(session_dir))}",
             # Keep the real system-prompt assembly out of this unit.
@@ -167,6 +170,7 @@ def _record_argv(tmp_path: Path, script_lines: list[str]) -> str:
             f"source {shlex.quote(str(PRAUTO / 'lib/state.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/quota.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/agent.sh'))}",
+            ISOLATE_REAL_STATE_SHELL,
             "ACTIVE_AGENT=claude",
             f"CUR_SESSION_DIR={shlex.quote(str(session_dir))}",
             *script_lines,
@@ -251,6 +255,7 @@ def test_invoke_agent_separates_the_result_stderr_and_merged_planes(
             f"source {shlex.quote(str(PRAUTO / 'lib/state.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/quota.sh'))}",
             f"source {shlex.quote(str(PRAUTO / 'lib/agent.sh'))}",
+            ISOLATE_REAL_STATE_SHELL,
             "ACTIVE_AGENT=claude",
             f"CUR_SESSION_DIR={shlex.quote(str(session_dir))}",
             f'prepare_system_prompt() {{ printf "%s" {shlex.quote(str(session_dir / "sys"))}; }}',

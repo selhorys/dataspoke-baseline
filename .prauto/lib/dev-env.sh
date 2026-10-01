@@ -13,6 +13,29 @@ PRAUTO_DEV_ENV_SH_LOADED=1
 # when this worker recorded starting it, and a long-running command is started
 # inside a verified, terminable process group before it is allowed to act.
 
+# DEV_ENV_TOUCHED_THIS_WAKE — set true by every code path that uses the dev
+# cluster this wake (health check or probe, provisioning, a lock acquisition, a
+# branch deploy). reap_ownerless_idle_dev_env reads it as "somebody — this worker —
+# is demonstrably using the cluster right now, do not reap it out from under that".
+# It only ever moves false -> true within a wake: there is deliberately no reset,
+# because a cluster touched earlier in the wake and then abandoned (a failed
+# stage, a skipped retry) is still not evidence of idleness. Declared here rather
+# than left to first assignment so it is defined for the heartbeat's `set -u`
+# EXIT trap even on a wake that never reached a cluster stage.
+DEV_ENV_TOUCHED_THIS_WAKE=false
+# Filled by dev_env_read_cluster_namespaces; shared between the teardown
+# confirmation and the idle reaper so both read the env file's cluster and
+# namespace keys by exactly one rule. Declared for the same `set -u` reason.
+DEV_ENV_CLUSTER=""
+DEV_ENV_DATASPOKE_NS=""
+DEV_ENV_NAMESPACES=()
+# The reaper's "newest Helm release update" in ISO-8601 UTC, for its one warn line.
+REAP_NEWEST_ISO=""
+# Why teardown_provisioned_dev_env is running — `provisioned` (this worker built the
+# cluster) or `reap` (an ownerless idle cluster, or the retry of an interrupted
+# one). It only selects the wording of the log lines; the deletion is identical.
+DEV_ENV_TEARDOWN_REASON="provisioned"
+
 # env_file_value <file> <key>
 # Read a single value from an env file without sourcing it (sourcing would
 # execute the file and export every key). Prints the value, quotes stripped.
@@ -209,15 +232,17 @@ run_gated_group() {
   return 0
 }
 
-# prune_old_provision_logs <log_dir>
+# prune_old_provision_logs <log_dir> [prefix]
+# <prefix> defaults to `provision`; teardown logs reuse the same retention with
+# `teardown`.
 # Provisioning logs are unscrubbed local transcripts of a real install.sh run
 # (see spec/AI_PRAUTO.md §Provisioning) — never posted anywhere, but not kept
 # forever either. Keeps the newest 4 so this run's own new file makes 5 total.
 prune_old_provision_logs() {
-  local log_dir="$1"
+  local log_dir="$1" prefix="${2:-provision}"
   [[ -d "$log_dir" ]] || return 0
   local -a old_logs=()
-  while IFS= read -r f; do old_logs+=("$f"); done < <(ls -1t "${log_dir}"/provision-* 2>/dev/null | tail -n +5)
+  while IFS= read -r f; do old_logs+=("$f"); done < <(ls -1t "${log_dir}"/"${prefix}"-* 2>/dev/null | tail -n +5)
   [[ "${#old_logs[@]}" -gt 0 ]] && rm -f "${old_logs[@]}"
   return 0
 }
@@ -251,6 +276,7 @@ prune_old_provision_logs() {
 # declaration comment for why heartbeat.sh's EXIT trap needs it.
 provision_dev_env() {
   local env_file="$1"
+  DEV_ENV_TOUCHED_THIS_WAKE=true
   [[ -z "${REPO_DIR:-}" ]] && { warn "REPO_DIR is not set. Cannot provision."; return 1; }
   local install_script="${REPO_DIR}/helm-charts/bin/install.sh"
   [[ -f "$install_script" ]] || { warn "install.sh not found. Cannot provision."; return 1; }
@@ -388,21 +414,64 @@ if total > LIMIT:
 
 }
 
-# write_dev_env_state_marker <env_file>
+# write_dev_env_state_marker <env_file> [kind]
+# <kind> records where the marker came from: `provision` (the default, and what a
+# marker with no kind is read as) or `reap`. A teardown that was only ever
+# justified by an idleness verdict must not become an unconditional delete when a
+# later heartbeat retries it, so recover_orphaned_dev_env sends a `reap` marker
+# back through the reap gates instead of straight to uninstall.sh.
 # Persist proof of a provisioned-but-not-yet-torn-down cluster to disk, atomically
 # (mktemp + chmod + mv, matching record_codex_native_session in state.sh). This is
 # what survives a crash that skips the in-memory globals and the EXIT trap.
 write_dev_env_state_marker() {
-  local env_file="$1" tmp_file
+  local env_file="$1" kind="${2:-provision}" tmp_file
   mkdir -p "$(dirname "$DEV_ENV_STATE_FILE")" 2>/dev/null || true
   tmp_file=$(mktemp "${DEV_ENV_STATE_FILE}.tmp.XXXXXX") || return 1
-  if ! jq -n --arg env_file "$env_file" --arg provisioned_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '{env_file: $env_file, provisioned_at: $provisioned_at}' > "$tmp_file"; then
+  if ! jq -n --arg env_file "$env_file" --arg kind "$kind" --arg provisioned_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{env_file: $env_file, kind: $kind, provisioned_at: $provisioned_at}' > "$tmp_file"; then
     rm -f "$tmp_file"
     return 1
   fi
   chmod 600 "$tmp_file" 2>/dev/null || true
   mv -f "$tmp_file" "$DEV_ENV_STATE_FILE"
+}
+
+# dev_env_read_cluster_namespaces <env_file> [strict]
+# With `strict`, all four namespace keys must be set (the reaper's rule: a dev
+# profile file names every namespace, and a partial one is not one to delete by).
+# Read the env file's kube context and the four dev-profile namespaces into
+# DEV_ENV_CLUSTER / DEV_ENV_NAMESPACES (and the DataSpoke one alone into
+# DEV_ENV_DATASPOKE_NS, empty when the key is unset). Runs in the CALLER's shell:
+# the results are globals, so it must never be invoked in a command substitution.
+# Fails CLOSED, with the two consumers needing exactly the same rule: no context,
+# no namespace at all, or any value that is not a DNS-1123 label is "could not
+# read the cluster identity", never "nothing to check".
+#
+# DNS-1123 matters because a malformed or partially-written env value could
+# otherwise arrive as a kubectl OPTION. `--selector=...` as a namespace name
+# returns exit 0 and no output — indistinguishable from "all four are gone",
+# which is the failure the teardown confirmation exists to stop, and from "no
+# releases" for the reaper.
+dev_env_read_cluster_namespaces() {
+  local env_file="$1" strict="${2:-}" key ns
+  DEV_ENV_CLUSTER=""; DEV_ENV_DATASPOKE_NS=""; DEV_ENV_NAMESPACES=()
+
+  DEV_ENV_CLUSTER=$(env_file_value "$env_file" "DATASPOKE_KUBE_CLUSTER")
+  [[ -n "$DEV_ENV_CLUSTER" ]] || return 1
+
+  for key in DATASPOKE_KUBE_DATASPOKE_NAMESPACE DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE \
+             DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE; do
+    ns=$(env_file_value "$env_file" "$key")
+    if [[ -z "$ns" ]]; then
+      [[ "$strict" == strict ]] && return 1
+      continue
+    fi
+    [[ "$ns" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#ns}" -le 63 ]] || return 1
+    [[ "$key" == DATASPOKE_KUBE_DATASPOKE_NAMESPACE ]] && DEV_ENV_DATASPOKE_NS="$ns"
+    DEV_ENV_NAMESPACES+=("$ns")
+  done
+  [[ "${#DEV_ENV_NAMESPACES[@]}" -gt 0 ]] || return 1
+  return 0
 }
 
 # dev_env_namespaces_absent <env_file>
@@ -430,32 +499,18 @@ write_dev_env_state_marker() {
 # how long an unreachable endpoint takes to fail depends on whether the network
 # refuses the connection or blackholes it. Only the outer bound is a guarantee.
 dev_env_namespaces_absent() {
-  local env_file="$1" key ns cluster out rc output
+  local env_file="$1" out rc output
   local timeout_secs="${PRAUTO_DEV_ENV_NS_PROBE_TIMEOUT_SECS:-20}"
-  local -a namespaces=()
   [[ "$timeout_secs" =~ ^[1-9][0-9]*$ ]] || timeout_secs=20
   command -v kubectl >/dev/null 2>&1 || return 1
   declare -F run_with_timeout >/dev/null 2>&1 || return 1
 
-  cluster=$(env_file_value "$env_file" "DATASPOKE_KUBE_CLUSTER")
-  [[ -n "$cluster" ]] || return 1
-
-  for key in DATASPOKE_KUBE_DATASPOKE_NAMESPACE DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE \
-             DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE; do
-    ns=$(env_file_value "$env_file" "$key")
-    [[ -n "$ns" ]] || continue
-    # DNS-1123, so a malformed or partially-written env value cannot arrive as a
-    # kubectl OPTION. `--selector=...` as a namespace name would return exit 0
-    # and no output — indistinguishable here from "all four are gone".
-    [[ "$ns" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#ns}" -le 63 ]] || return 1
-    namespaces+=("$ns")
-  done
-  [[ "${#namespaces[@]}" -gt 0 ]] || return 1
+  dev_env_read_cluster_namespaces "$env_file" || return 1
 
   out=$(mktemp) || return 1
   rc=0
   run_with_timeout "$timeout_secs" \
-    kubectl --context "$cluster" get namespace "${namespaces[@]}" --ignore-not-found -o name \
+    kubectl --context "$DEV_ENV_CLUSTER" get namespace "${DEV_ENV_NAMESPACES[@]}" --ignore-not-found -o name \
     --request-timeout="${PRAUTO_KUBECTL_REQUEST_TIMEOUT:-3s}" >"$out" 2>&1 || rc=$?
   output=$(cat "$out" 2>/dev/null || true)
   rm -f "$out"
@@ -465,11 +520,18 @@ dev_env_namespaces_absent() {
 
 # teardown_provisioned_dev_env
 # Remove a dev profile that this heartbeat (or a recovered earlier one, via
-# recover_orphaned_dev_env) provisioned. Full deletion includes PVCs and
+# recover_orphaned_dev_env) provisioned — or, with DEV_ENV_TEARDOWN_REASON=reap,
+# one the idle reaper decided to delete. Full deletion includes PVCs and
 # namespaces so a temporary test cluster does not keep incurring cost. This is
 # intentionally best-effort because it runs from the EXIT trap — but it only
 # clears the durable marker on an actual success, so a failure keeps the
 # evidence around for the next heartbeat to retry instead of giving up forever.
+#
+# uninstall.sh's output goes to a private mode-600 log under the state dir, never
+# to the scheduler log: it echoes cluster endpoints, namespaces and resource
+# names, and only a fixed line with the exit code is safe to publish. (Same
+# retention as the provisioning logs; if no private log can be made the output is
+# discarded rather than shown — the teardown itself must still run.)
 teardown_provisioned_dev_env() {
   [[ "${DEV_ENV_PROVISIONED:-false}" == true ]] || return 0
   [[ "${DEV_ENV_TEARDOWN_ATTEMPTED:-false}" == true ]] && return 0
@@ -477,18 +539,29 @@ teardown_provisioned_dev_env() {
 
   local env_file="${DEV_ENV_PROVISIONED_ENV_FILE:-}"
   local uninstall_script="${REPO_DIR:-}/helm-charts/bin/uninstall.sh"
+  local start_msg="Tearing down the dev cluster provisioned by this heartbeat..."
+  local done_msg="Provisioned dev cluster torn down."
+  if [[ "${DEV_ENV_TEARDOWN_REASON:-provisioned}" == reap ]]; then
+    start_msg="Tearing down ownerless idle dev cluster..."
+    done_msg="Ownerless idle dev cluster torn down."
+  fi
   if [[ -z "$env_file" || ! -f "$uninstall_script" ]]; then
     warn "Cannot tear down the provisioned dev cluster: uninstall.sh or its env file is missing."
     return 0
   fi
 
-  info "Tearing down the dev cluster provisioned by this heartbeat..."
-  local teardown_output teardown_exit=0
-  teardown_output=$(bash "$uninstall_script" \
-    --profile dev --env-file "$env_file" --no-question --delete-all 2>&1) || teardown_exit=$?
+  info "$start_msg"
+  local td_log="" log_dir="${STATE_DIR:-${PRAUTO_DIR:-.prauto}/state}" teardown_exit=0
+  if mkdir -p "$log_dir" 2>/dev/null; then
+    prune_old_provision_logs "$log_dir" teardown
+    td_log=$(mktemp "${log_dir}/teardown-XXXXXX" 2>/dev/null) || td_log=""
+    if [[ -n "$td_log" ]] && ! chmod 600 "$td_log" 2>/dev/null; then rm -f "$td_log"; td_log=""; fi
+  fi
+  [[ -n "$td_log" ]] || td_log=/dev/null
+  bash "$uninstall_script" \
+    --profile dev --env-file "$env_file" --no-question --delete-all >"$td_log" 2>&1 || teardown_exit=$?
   if [[ "$teardown_exit" -ne 0 ]]; then
-    warn "Dev cluster teardown failed (exit ${teardown_exit}):"
-    warn "$teardown_output"
+    warn "Dev cluster teardown failed (exit ${teardown_exit}). The private teardown log was retained locally."
     warn "Leaving the durable marker in place for a later heartbeat to retry."
     return 0
   fi
@@ -501,7 +574,7 @@ teardown_provisioned_dev_env() {
     return 0
   fi
   rm -f "$DEV_ENV_STATE_FILE"
-  info "Provisioned dev cluster torn down."
+  info "$done_msg"
 }
 
 # dev_env_marker_path_is_sane <path>
@@ -545,10 +618,25 @@ recover_orphaned_dev_env() {
     rm -f "$DEV_ENV_STATE_FILE"
     return 0
   fi
+  # The marker's origin decides what authorizes the retry. A `provision` marker
+  # (or an old one with no kind) records a cluster THIS worker built, so its
+  # teardown is retried as-is. A `reap` marker records only an idleness verdict
+  # that was true when it was written; deleting on it later would destroy a cluster
+  # someone has since reinstalled, pinned or started using. Any other kind value is
+  # treated the strict way, as a reap marker.
+  local kind marked_at
+  kind=$(jq -r '.kind // "provision"' "$DEV_ENV_STATE_FILE" 2>/dev/null) || kind="reap"
+  if [[ "$kind" != provision ]]; then
+    marked_at=$(jq -r '.provisioned_at // empty' "$DEV_ENV_STATE_FILE" 2>/dev/null || true)
+    warn "Found a dev-env reap marker from an earlier heartbeat (env_file=${env_file}). Re-checking it before any teardown."
+    recover_reap_marker "$marked_at"
+    return 0
+  fi
   warn "Found a dev-env state marker from an earlier heartbeat (env_file=${env_file}). Retrying its teardown now."
   DEV_ENV_PROVISIONED=true
   DEV_ENV_PROVISIONED_ENV_FILE="$env_file"
   DEV_ENV_TEARDOWN_ATTEMPTED=false
+  DEV_ENV_TEARDOWN_REASON="provisioned"
   teardown_provisioned_dev_env
 }
 
@@ -561,6 +649,11 @@ HEALTH_CHECK_OUTPUT=""
 
 run_health_check() {
   local script="$1" env_file="$2"
+  # Every health probe — the pre-flight gate, the post-provision re-check and the
+  # post-stage flake probe — funnels through here, so marking at entry covers all
+  # of them, including a run the backstop later stops: it still reached for the
+  # cluster, which is all the idle reaper needs to know.
+  DEV_ENV_TOUCHED_THIS_WAKE=true
   local timeout="${PRAUTO_HEALTH_CHECK_TIMEOUT_SECS:-300}"
   local tmpdir out rc
 
@@ -601,6 +694,11 @@ run_health_check() {
 # Returns 0 when healthy, 1 when the stage should be skipped.
 dev_env_healthy() {
   local env_file="$1"
+  # Marked here as well as in run_health_check: every cluster stage (including the
+  # two inline lock acquires in phases.sh) goes through this gate before it takes
+  # the lock, and the early "proceeding without the pre-flight gate" returns below
+  # skip run_health_check yet still let the stage run against the cluster.
+  DEV_ENV_TOUCHED_THIS_WAKE=true
   [[ -z "${REPO_DIR:-}" ]] && { warn "REPO_DIR not set; proceeding without the pre-flight gate."; return 0; }
   local script="${REPO_DIR}/helm-charts/bin/health-check.sh"
   [[ -f "$script" ]] || { warn "health-check.sh not found; proceeding without the pre-flight gate."; return 0; }
@@ -642,6 +740,7 @@ dev_env_healthy() {
 # evidence, so a missing checkout, script, or env file is unhealthy.
 dev_env_probe_healthy() {
   local env_file="$1" script health_exit=0
+  DEV_ENV_TOUCHED_THIS_WAKE=true
   [[ -n "${REPO_DIR:-}" && -n "$env_file" ]] || { warn "Post-stage health probe cannot run: REPO_DIR or env file is unset."; return 1; }
   script="${REPO_DIR}/helm-charts/bin/health-check.sh"
   [[ -f "$script" ]] || { warn "Post-stage health probe cannot run: health-check.sh not found."; return 1; }
@@ -824,6 +923,9 @@ acquire_required_dev_lock() {
   REQUIRED_LOCK_OWNER=""
   if ! resolve_dev_env; then regression_blocked "$issue_number" "dev env file is unavailable" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
   if ! dev_env_healthy "$DEV_ENV_FILE"; then regression_blocked "$issue_number" "dev cluster health/provisioning failed" "${CURRENT_REGRESSION_BRANCH:-}"; return 1; fi
+  # dev_lock_acquire below runs in a command-substitution subshell, so it cannot
+  # carry this flag out to the caller; the acquire's caller is the place to mark it.
+  DEV_ENV_TOUCHED_THIS_WAKE=true
   if ! dev_lock_endpoint_reachable; then
     regression_blocked "$issue_number" "dev-env lock endpoint is unreachable" "${CURRENT_REGRESSION_BRANCH:-}"; return 1
   fi
@@ -1051,6 +1153,7 @@ classify_deploy_failure() {
 
 deploy_branch_api() {
   local env_file="$1"
+  DEV_ENV_TOUCHED_THIS_WAKE=true
   DEPLOY_FAILURE_KIND="infrastructure"
   local install_script="${WORKTREE_DIR:-}/helm-charts/bin/install.sh"
   [[ -z "${WORKTREE_DIR:-}" ]] || [[ ! -f "$install_script" ]] && { DEPLOYED_API_SHA=""; DEPLOYED_FRONTEND_SHA=""; warn "Branch install.sh not found. Cannot deploy API."; return 1; }
@@ -1076,6 +1179,7 @@ deploy_branch_api() {
 # deploy_branch_frontend <env_file>
 deploy_branch_frontend() {
   local env_file="$1"
+  DEV_ENV_TOUCHED_THIS_WAKE=true
   DEPLOY_FAILURE_KIND="infrastructure"
   local install_script="${WORKTREE_DIR:-}/helm-charts/bin/install.sh"
   local ns
@@ -1109,5 +1213,634 @@ deploy_branch_frontend() {
   done
   DEPLOYED_FRONTEND_SHA="$build_head"
   info "Branch frontend deployed and rolled."
+  return 0
+}
+
+
+# ---------------------------------------------------------------------------
+# Idle reaping (spec/AI_PRAUTO.md §Provisioning, "Ownerless idle clusters are
+# reaped"). Everything below fails closed: reaping is cost hygiene, never worth
+# destroying a cluster that is in use, or that is not provably a dev cluster.
+# ---------------------------------------------------------------------------
+
+# _reap_run <timeout_secs> <out_file> <command> [args...]
+# One bounded probe for the reaper: stdout to <out_file>, stderr discarded.
+# stderr is dropped, not captured, because the reaper only ever logs fixed
+# strings — kubectl/helm error text can carry cluster endpoints and is not for
+# the scheduler log. Returns the command's exit code, or 124 on timeout.
+_reap_run() {
+  local timeout_secs="$1" out_file="$2"; shift 2
+  run_with_timeout "$timeout_secs" "$@" >"$out_file" 2>/dev/null
+}
+
+# _reap_iso_utc_to_epoch <YYYY-MM-DDTHH:MM:SSZ>
+# Print the epoch for a strict ISO-8601 UTC timestamp, portably: BSD date (macOS)
+# parses with -j -f, GNU date with -d, and each rejects the other's flags, so
+# trying them in order needs no uname sniffing. The shape is checked first so
+# neither parser ever sees free-form text (GNU `-d` would happily accept "next
+# friday" or "@123"). Returns 1 on anything it cannot read — callers treat that
+# as "unparseable", which for a keep pin means "pinned".
+_reap_iso_utc_to_epoch() {
+  local value="$1" epoch=""
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$value" +%s 2>/dev/null) \
+    || epoch=$(date -u -d "$value" +%s 2>/dev/null) \
+    || return 1
+  [[ "$epoch" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$epoch"
+}
+
+# _reap_newest_helm_update_program
+# Print the python3 program that reads newline-separated Helm `updated` values
+# from the environment variable REAP_UPDATED_LINES and prints
+# "<epoch> <iso-utc>" for the newest. It is a program TEXT, not a function that
+# runs it, because run_with_timeout launches its command through `setsid`, which
+# can exec a binary but not a shell function. Helm renders
+# them as `2026-10-01 21:57:09.194417 +0900 KST` — a local wall-clock time, a
+# numeric offset and a zone NAME. Only the offset is trusted (zone abbreviations
+# are ambiguous); the fraction and name are ignored. python3 does the arithmetic
+# because BSD and GNU date disagree on every flag involved, and the data arrives
+# through the environment, never interpolated into the program text. Exits
+# non-zero if ANY line is unreadable or out of range, or if there is none: one
+# value that cannot be understood must not let the rest vouch for idleness.
+_reap_newest_helm_update_program() {
+  cat <<'PY'
+import calendar, datetime, os, re, sys
+
+pat = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.\d+)? ([+-])(\d{2}):?(\d{2})(?:\s|$)"
+)
+best = None
+for line in os.environ.get("REAP_UPDATED_LINES", "").splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    m = pat.match(line)
+    if not m:
+        sys.exit(1)
+    y, mo, d, h, mi, s = (int(m.group(i)) for i in range(1, 7))
+    sign = 1 if m.group(7) == "+" else -1
+    oh, om = int(m.group(8)), int(m.group(9))
+    if not (1 <= mo <= 12 and 1 <= d <= 31 and h <= 23 and mi <= 59 and s <= 60 and oh <= 14 and om <= 59):
+        sys.exit(1)
+    epoch = calendar.timegm((y, mo, d, h, mi, s, 0, 0, 0)) - sign * (oh * 3600 + om * 60)
+    if best is None or epoch > best:
+        best = epoch
+if best is None:
+    sys.exit(1)
+iso = datetime.datetime.fromtimestamp(best, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+print(best, iso)
+PY
+}
+
+# _reap_env_profile <env_file>
+# `dev`, `prod`, `ambiguous` or `none`, by the same rule as helm-charts' own
+# seed_profile (helm-charts/bin/lib/helpers.sh): from the file's own non-comment
+# assignments, a DATASPOKE_PROD_* name means prod and a DATASPOKE_DEV_* name means
+# dev. Duplicated rather than sourced because that library is a deployment-script
+# toolbox this harness must not load; keep the two in step. `.env.prod.example`
+# carries no DATASPOKE_DEV_* line by design, which is what makes the verdict
+# reliable here.
+_reap_env_profile() {
+  awk '
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      sub(/^export[[:space:]]+/, "", line)
+      if (line !~ /^[A-Za-z_][A-Za-z0-9_]*=/) next
+      name = substr(line, 1, index(line, "=") - 1)
+      if (name ~ /^DATASPOKE_PROD_/) prod = 1
+      else if (name ~ /^DATASPOKE_DEV_/) dev = 1
+    }
+    END {
+      if (prod && dev) print "ambiguous"
+      else if (prod) print "prod"
+      else if (dev) print "dev"
+      else print "none"
+    }
+  ' "$1" 2>/dev/null || printf 'none'
+}
+
+# dev_env_reap_gate_env
+# Is the resolved env file (DEV_ENV_FILE) one the reaper may ever delete by? The
+# reaper runs a non-interactive `--delete-all` against whatever cluster the file
+# names, so the file must be provably a dev-profile file, and the identity this
+# harness reads from it must be exactly what uninstall.sh will act on. Returns 0
+# only when ALL hold; every refusal logs one fixed line and returns 1. Purely
+# local (no network): a refusal is a property of the file, never of cluster state,
+# which is what lets marker recovery treat it as final. Fills DEV_ENV_CLUSTER,
+# DEV_ENV_NAMESPACES and DEV_ENV_DATASPOKE_NS.
+#   * the basename is not a prod env file;
+#   * its own assignments name the dev profile (DATASPOKE_DEV_* present, no
+#     DATASPOKE_PROD_*);
+#   * DATASPOKE_DEV_LOCK_URL is set EXPLICITLY — resolve_dev_env's localhost
+#     default would point the lock at an unrelated service on this host;
+#   * the cluster context and all four namespaces are set and DNS-1123 valid;
+#   * sourcing the file the way uninstall.sh does (clean environment) yields those
+#     same values, so a computed or shadowed assignment this harness's line-grep
+#     misread cannot make it delete somewhere else than it checked.
+dev_env_reap_gate_env() {
+  local file="${DEV_ENV_FILE:-}" base lock_url expected actual out rc=0
+  if [[ -z "$file" || ! -f "$file" ]]; then
+    info "Reap refused: the dev env file is unavailable."; return 1
+  fi
+  base="${file##*/}"
+  case "$base" in
+    *env.prod*) info "Reap refused: the env file is a prod env file."; return 1 ;;
+  esac
+  if [[ "$(_reap_env_profile "$file")" != dev ]]; then
+    info "Reap refused: the env file does not identify as a dev-profile file."; return 1
+  fi
+  lock_url=$(env_file_value "$file" "DATASPOKE_DEV_LOCK_URL")
+  if [[ ! "$lock_url" =~ ^https?://[^[:space:]]+$ ]]; then
+    info "Reap refused: the env file does not set DATASPOKE_DEV_LOCK_URL explicitly."; return 1
+  fi
+  if ! dev_env_read_cluster_namespaces "$file" strict; then
+    info "Reap refused: the env file does not name a cluster and all four dev namespaces."; return 1
+  fi
+  if ! declare -F run_with_timeout >/dev/null 2>&1; then
+    info "Reap refused: no bounded runner is available."; return 1
+  fi
+  out=$(mktemp) || { info "Reap refused: could not create a scratch file."; return 1; }
+  _reap_run 10 "$out" env -i PATH="$PATH" bash -c '
+    set -a
+    source "$1" >/dev/null 2>&1
+    printf "%s\n" "${DATASPOKE_KUBE_CLUSTER-}" "${DATASPOKE_KUBE_DATASPOKE_NAMESPACE-}" \
+      "${DATASPOKE_DEV_KUBE_DATAHUB_NAMESPACE-}" "${DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE-}" \
+      "${DATASPOKE_DEV_KUBE_DUMMY_DATA_NAMESPACE-}" "${DATASPOKE_DEV_LOCK_URL-}"
+  ' _ "$file" || rc=$?
+  actual=$(cat "$out" 2>/dev/null || true)
+  rm -f "$out"
+  expected=$(printf '%s\n' "$DEV_ENV_CLUSTER" "${DEV_ENV_NAMESPACES[@]}" "$lock_url")
+  if [[ "$rc" -ne 0 || "$actual" != "$expected" ]]; then
+    info "Reap refused: the env file's sourced values do not match what was read from it."; return 1
+  fi
+  return 0
+}
+
+# _reap_lock_bound_to_cluster <cluster> <dataspoke_ns> <owner> <timeout_secs> <scratch_file>
+# After a 200 acquire: is the lock we now hold THE TARGET CLUSTER'S lock? The lock
+# URL is plain HTTP from an env file; nothing in it ties it to the cluster the
+# uninstall will delete, and "I hold a lock" on some other service says nothing
+# about this cluster's users. So prove it on the target cluster itself: present the
+# token the acquire minted to that cluster's own dev-lock service (installed in the
+# DataSpoke namespace as service dev-lock:8080 — helm-charts/bin/dev-peripherals/
+# dev-lock.sh), through the API server's service proxy, as a lease renewal.
+# /lock/renew answers 200 only when the token AND owner match the current holder
+# (403 token mismatch, 409 not locked; lock-service.yaml), so a 200 naming us is
+# proof that the holder of THIS cluster's lock is the acquisition we just made.
+# Proof by owner NAME alone — a plain GET of /lock — is not enough: two workers can
+# share a worker id, and the name is printed on every GitHub comment.
+#
+# `kubectl create --raw` prints the response body on success and exits non-zero on
+# any HTTP error status, so exit 0 plus a body naming us is the only pass; no
+# answer, a non-2xx, another owner or an unreadable reply is a mismatch. The renew
+# also extends the lease, which is harmless: we hold the lock.
+#
+# The body carries the token, so it is built with dev_lock_json_body (token via the
+# environment, never argv) and handed to kubectl as a mode-600 file deleted at
+# once, not on its command line: run_with_timeout backgrounds its command, which
+# gives it a /dev/null stdin, so `-f -` cannot be bounded and fed from a pipe.
+_reap_lock_bound_to_cluster() {
+  local cluster="$1" dsns="$2" owner="$3" timeout_secs="$4" out="$5" rc=0 body bodyfile
+  [[ -n "${DEV_LOCK_TOKEN:-}" ]] || return 1
+  body=$(dev_lock_json_body owner "$owner" token "$DEV_LOCK_TOKEN") || return 1
+  bodyfile=$(mktemp) || return 1
+  chmod 600 "$bodyfile" 2>/dev/null || { rm -f "$bodyfile"; return 1; }
+  printf '%s' "$body" >"$bodyfile"
+  _reap_run "$timeout_secs" "$out" \
+    kubectl --context "$cluster" create --raw "/api/v1/namespaces/${dsns}/services/dev-lock:8080/proxy/lock/renew" \
+    -f "$bodyfile" --request-timeout="${PRAUTO_KUBECTL_REQUEST_TIMEOUT:-3s}" || rc=$?
+  rm -f "$bodyfile"
+  [[ "$rc" -eq 0 ]] || return 1
+  jq -e --arg owner "$owner" '(.locked == true) and (.owner == $owner)' <"$out" >/dev/null 2>&1
+}
+
+# _reap_namespaces_not_recreated <cluster> <marker_epoch> <probe_timeout_secs> <scratch_file>
+# Lockless recovery only. The Helm `since` check cannot see two kinds of human
+# reinstall: install.sh creates the dev namespaces FIRST (a wake landing before any
+# release exists finds no newer Helm update), and dummy-data has no Helm release at
+# all (re-applying it leaves no Helm trace). A namespace is the earlier and more
+# durable trace, so compare each still-present dev namespace's creationTimestamp
+# with the marker time. One context-pinned, bounded call for all four names;
+# --ignore-not-found makes the absent ones simply not appear, and kubectl answers
+# a single hit as an object and several as a List, which the jq filter flattens.
+# Returns 0 = every present namespace predates the marker (none present passes);
+# 1 = one was created after it (conclusive: the cluster is being rebuilt);
+# 2 = could not tell (probe error or timeout, unreadable or missing timestamp).
+_reap_namespaces_not_recreated() {
+  local cluster="$1" marker_epoch="$2" timeout_secs="$3" out="$4" rc=0 stamps stamp epoch
+  _reap_run "$timeout_secs" "$out" \
+    kubectl --context "$cluster" get namespace "${DEV_ENV_NAMESPACES[@]}" --ignore-not-found -o json \
+    --request-timeout="${PRAUTO_KUBECTL_REQUEST_TIMEOUT:-3s}" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    info "Skipping idle reap: could not read the dev namespaces' creation times."; return 2
+  fi
+  [[ -s "$out" ]] || return 0
+  if ! stamps=$(jq -r 'if .kind == "List" then .items[] else . end | (.metadata.creationTimestamp // "missing")' <"$out" 2>/dev/null) \
+      || [[ -z "$stamps" ]]; then
+    info "Skipping idle reap: the dev namespaces' creation times were unreadable."; return 2
+  fi
+  while IFS= read -r stamp; do
+    if ! epoch=$(_reap_iso_utc_to_epoch "$stamp"); then
+      info "Skipping idle reap: a dev namespace creation time could not be parsed."; return 2
+    fi
+    if (( epoch > marker_epoch )); then
+      info "Skipping idle reap: a dev namespace was created after the reap began."; return 1
+    fi
+  done <<<"$stamps"
+  return 0
+}
+
+# _reap_final_checks_pass <cluster> <dataspoke_ns> <idle|since> <arg> <probe_timeout_secs> <scratch_file> [ds_absent_ok]
+# With `ds_absent_ok` (recover mode, after a partly-run uninstall) a DataSpoke
+# namespace that is cleanly gone is not "could not tell": it can carry no keep pin,
+# so only the Helm check runs.
+# The keep-pin and idleness verdict. Run twice per reap: once lock-free as an
+# advisory gate (so an ordinary busy cluster never makes this worker contact its
+# lock service at all), then again with the lock held as the authoritative check,
+# so nothing can change between this answer and the uninstall.
+#   idle  <threshold_secs>: pass only if the newest Helm release update is strictly
+#         older than the threshold. No releases at all is "idle unknown" (a fresh
+#         or half-installed cluster looks exactly like this) — not a pass.
+#   since <marker_epoch>: pass only if nothing was updated after the reap began
+#         (newest update <= marker time). Used when a reap marker is retried; there,
+#         no releases at all is expected (a partly-run uninstall removes them first)
+#         and passes.
+# Returns 0 = proven idle and unpinned; 1 = conclusively NOT reapable (a keep pin,
+# or activity inside the window); 2 = could not tell (failed/timed-out/unparseable
+# probe). Reap treats both non-zero results as "skip"; marker recovery drops its
+# marker on 1 and keeps it on 2. Logs one fixed line either way; sets
+# REAP_NEWEST_ISO on pass.
+_reap_final_checks_pass() {
+  local cluster="$1" dsns="$2" mode="$3" arg="$4" timeout_secs="$5" out="$6" ds_absent_ok="${7:-}"
+  local request_timeout="${PRAUTO_KUBECTL_REQUEST_TIMEOUT:-3s}"
+  local rc=0 ns_json pin pin_epoch now ns updated lines="" newest newest_epoch
+  REAP_NEWEST_ISO=""
+
+  # --ignore-not-found turns "namespace gone" into exit 0 with no output, which
+  # is read below as its own (non-error) answer rather than as a failure.
+  _reap_run "$timeout_secs" "$out" \
+    kubectl --context "$cluster" get namespace "$dsns" --ignore-not-found -o json \
+    --request-timeout="$request_timeout" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    info "Skipping idle reap: could not read the DataSpoke namespace."; return 2
+  fi
+  ns_json=$(cat "$out" 2>/dev/null || true)
+  now=$(date +%s)
+  if [[ -z "$ns_json" && "$ds_absent_ok" == ds_absent_ok ]]; then
+    pin="none"   # no namespace, no annotation: nothing to pin
+  elif [[ -z "$ns_json" ]]; then
+    info "Skipping idle reap: the DataSpoke namespace is no longer present."; return 2
+  else
+    # Keep pin. `has()` rather than `// empty`: an annotation set to the empty
+    # string is a pin nobody can parse, which must block, not read as "no pin".
+    pin=$(printf '%s' "$ns_json" | jq -r '
+      (.metadata.annotations // {})
+      | if has("dataspoke.io/keep-until") then "pinned:" + (.["dataspoke.io/keep-until"] | tostring) else "none" end
+    ' 2>/dev/null) || pin=""
+  fi
+  case "$pin" in
+    none) : ;;
+    pinned:*)
+      if ! pin_epoch=$(_reap_iso_utc_to_epoch "${pin#pinned:}"); then
+        info "Skipping idle reap: the dataspoke.io/keep-until pin is unparseable."; return 1
+      fi
+      if (( pin_epoch > now )); then
+        info "Skipping idle reap: a dataspoke.io/keep-until pin is still in effect."; return 1
+      fi ;;
+    *)
+      info "Skipping idle reap: could not read the DataSpoke namespace annotations."; return 2 ;;
+  esac
+
+  # Idleness: newest Helm release update across the dev namespaces. `--all` so a
+  # pending or failed release counts — an install in flight is the clearest
+  # activity there is, and the default (deployed-only) listing would hide it.
+  # helm lists a namespace that does not exist as empty, so absent namespaces
+  # simply contribute nothing.
+  for ns in "${DEV_ENV_NAMESPACES[@]}"; do
+    rc=0
+    _reap_run "$timeout_secs" "$out" \
+      helm --kube-context "$cluster" list --all -n "$ns" -o json || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      info "Skipping idle reap: a Helm release listing failed."; return 2
+    fi
+    if ! updated=$(jq -r '.[] | (.updated // "missing")' "$out" 2>/dev/null); then
+      info "Skipping idle reap: a Helm release listing was unreadable."; return 2
+    fi
+    [[ -z "$updated" ]] || lines="${lines}${updated}"$'\n'
+  done
+  if [[ -z "$lines" ]]; then
+    if [[ "$mode" == since ]]; then return 0; fi
+    info "Skipping idle reap: no Helm releases to measure idleness from."; return 2
+  fi
+  if ! newest=$(REAP_UPDATED_LINES="$lines" run_with_timeout 10 python3 -c "$(_reap_newest_helm_update_program)" 2>/dev/null); then
+    info "Skipping idle reap: Helm release timestamps could not be parsed."; return 2
+  fi
+  newest_epoch="${newest%% *}"
+  if [[ ! "$newest_epoch" =~ ^[0-9]+$ ]]; then
+    info "Skipping idle reap: Helm release timestamps could not be parsed."; return 2
+  fi
+  if [[ "$mode" == since ]]; then
+    if (( newest_epoch > arg )); then
+      info "Skipping idle reap: the dev cluster was updated after the reap began."; return 1
+    fi
+  # Strictly older than the threshold. A timestamp in the future (clock skew)
+  # yields a negative age, which is never idle.
+  elif (( now - newest_epoch <= arg )); then
+    info "Skipping idle reap: the dev cluster was updated within the idle threshold."; return 1
+  fi
+  REAP_NEWEST_ISO="${newest#* }"
+  return 0
+}
+
+# _reap_engine <reap|recover> <threshold_secs | marker_epoch>
+# The shared body of a fresh reap and of a reap-marker retry, run once the env
+# file has passed dev_env_reap_gate_env. Order matters: cheap lock-free checks
+# first, so an ordinary busy wake never contacts the lock service; then the lock;
+# then the same checks again, authoritatively, because the spec's guarantee is
+# that the lock is held "from the final checks through the uninstall".
+#
+# Returns 0 = a teardown was attempted (it handled the marker and the lock);
+# 10 = skipped, nothing deleted, any marker untouched; 11 = recover mode only: the
+# cluster is conclusively not reapable (pinned, or updated after the reap began),
+# so the caller drops the marker; 12 = no dev namespaces exist at all.
+#
+# The DataSpoke namespace anchors reapability of a FRESH reap: it carries the keep
+# pin and hosts the dev-lock service. If it is gone while other dev namespaces
+# remain, neither the pin nor the lock can be consulted, so that is a partial
+# cluster to remove by hand, not one to delete on a guess.
+#
+# RECOVER mode has one more case, because the uninstall this retries is the thing
+# that made the cluster partial: uninstall.sh deletes the dev-lock service early
+# and the DataSpoke namespace late, so an interrupted run can leave a cluster whose
+# lock can never be taken again. There the lock is "unholdable" — proven by a clean,
+# context-pinned API answer (`--ignore-not-found`, exit 0, empty output: an error
+# or timeout is "could not tell", never absence) that the dev-lock Service is absent
+# from the DataSpoke namespace, or that the namespace itself is. The retry then
+# runs WITHOUT the lock, on the lock-free `since` check alone: no Helm release
+# updated after the marker (none at all passes), no still-present dev namespace
+# created after the marker (install.sh creates namespaces before releases, and
+# dummy-data has no release — see _reap_namespaces_not_recreated), and no keep pin
+# on a still-present DataSpoke namespace. A human reinstall recreates dev-lock and refreshes Helm, and
+# either signal aborts this path (drop on a conclusive answer, keep on "could not
+# tell"). While the dev-lock Service exists the token-bound lock is still required.
+_reap_engine() {
+  local mode="$1" arg="$2" fmode="idle" tool owner lock_code out dsabsent=""
+  local rc=0 verdict=0 lockless=false
+  local timeout_secs="${PRAUTO_DEV_ENV_NS_PROBE_TIMEOUT_SECS:-20}"
+  [[ "$timeout_secs" =~ ^[1-9][0-9]*$ ]] || timeout_secs=20
+  [[ "$mode" == recover ]] && fmode="since"
+
+  for tool in kubectl helm jq python3 curl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      info "Skipping idle reap: ${tool} is not available."; return 10
+    fi
+  done
+  declare -F run_with_timeout >/dev/null 2>&1 || { info "Skipping idle reap: no bounded runner is available."; return 10; }
+  out=$(mktemp) || { info "Skipping idle reap: could not create a scratch file."; return 10; }
+
+  # Which dev namespaces exist? (One call; a missing one is simply not listed.)
+  _reap_run "$timeout_secs" "$out" \
+    kubectl --context "$DEV_ENV_CLUSTER" get namespace "${DEV_ENV_NAMESPACES[@]}" --ignore-not-found -o name \
+    --request-timeout="${PRAUTO_KUBECTL_REQUEST_TIMEOUT:-3s}" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    rm -f "$out"; info "Skipping idle reap: the dev cluster did not answer."; return 10
+  fi
+  if [[ -z "$(cat "$out" 2>/dev/null || true)" ]]; then
+    rm -f "$out"; return 12
+  fi
+  if ! grep -Fxq "namespace/${DEV_ENV_DATASPOKE_NS}" "$out"; then
+    if [[ "$mode" != recover ]]; then
+      rm -f "$out"
+      warn "Found a partial dev cluster without its DataSpoke namespace; not reaping — remove manually."
+      return 10
+    fi
+    dsabsent="ds_absent_ok"
+  fi
+
+  # Advisory pass, lock-free.
+  _reap_final_checks_pass "$DEV_ENV_CLUSTER" "$DEV_ENV_DATASPOKE_NS" "$fmode" "$arg" "$timeout_secs" "$out" "$dsabsent" || verdict=$?
+  if [[ "$verdict" -ne 0 ]]; then
+    rm -f "$out"
+    [[ "$verdict" -eq 1 && "$mode" == recover ]] && return 11
+    return 10
+  fi
+
+  # Recover mode: is the lock holdable at all? Asked AFTER the Helm check, so a
+  # reinstall in between shows up as a live dev-lock Service (token-bound path
+  # below, whose under-lock re-check then sees the newer update).
+  if [[ "$mode" == recover ]]; then
+    if [[ -n "$dsabsent" ]]; then
+      lockless=true
+    else
+      rc=0
+      _reap_run "$timeout_secs" "$out" \
+        kubectl --context "$DEV_ENV_CLUSTER" get service dev-lock -n "$DEV_ENV_DATASPOKE_NS" --ignore-not-found -o name \
+        --request-timeout="${PRAUTO_KUBECTL_REQUEST_TIMEOUT:-3s}" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        rm -f "$out"; info "Skipping idle reap: could not tell whether the dev-lock service exists."; return 10
+      fi
+      [[ -z "$(cat "$out" 2>/dev/null || true)" ]] && lockless=true
+    fi
+  fi
+
+  if [[ "$lockless" == true ]]; then
+    # No lock exists to take, so the guard closest to the uninstall is these checks
+    # once more, immediately before it. The namespace-creation check runs on both
+    # sides of the Helm re-check: once on entering the lockless branch, and again as
+    # the very last probe before the uninstall.
+    verdict=0
+    _reap_namespaces_not_recreated "$DEV_ENV_CLUSTER" "$arg" "$timeout_secs" "$out" || verdict=$?
+    if [[ "$verdict" -eq 0 ]]; then
+      _reap_final_checks_pass "$DEV_ENV_CLUSTER" "$DEV_ENV_DATASPOKE_NS" "$fmode" "$arg" "$timeout_secs" "$out" "$dsabsent" || verdict=$?
+    fi
+    if [[ "$verdict" -eq 0 ]]; then
+      _reap_namespaces_not_recreated "$DEV_ENV_CLUSTER" "$arg" "$timeout_secs" "$out" || verdict=$?
+    fi
+    rm -f "$out"
+    if [[ "$verdict" -ne 0 ]]; then
+      [[ "$verdict" -eq 1 ]] && return 11
+      return 10
+    fi
+    warn "Retrying an interrupted idle reap without the lock (its dev-lock service is already gone)..."
+  else
+    # The lock, held from here through the uninstall. An unreachable lock service
+    # is not evidence that nobody holds it; and no stale-token reclaim here — a 409
+    # means someone is using the cluster.
+    if ! dev_lock_endpoint_reachable; then
+      rm -f "$out"; info "Skipping idle reap: the dev-env lock service is unreachable."; return 10
+    fi
+    owner="prauto-${PRAUTO_WORKER_ID}"
+    lock_code=$(dev_lock_acquire "$owner" "prauto idle reap")
+    if [[ "$lock_code" != 200 ]]; then
+      rm -f "$out"; info "Skipping idle reap: the dev-env lock was not acquired (HTTP ${lock_code})."; return 10
+    fi
+    # Register the lock before anything that can fail, so release_required_dev_lock
+    # can surrender it on every skip path below. dev_lock_acquire ran in a
+    # subshell; its token reaches this shell only through the token file.
+    REQUIRED_LOCK_OWNER="$owner"
+    dev_lock_adopt_token "$owner" || true
+    # Same fail-closed rule as the stage acquires: an uninstall that outlives an
+    # unrenewable lease would run without the lock it is relying on.
+    if ! dev_lock_start_renewer "$owner"; then
+      release_required_dev_lock
+      rm -f "$out"; info "Skipping idle reap: the dev-env lock cannot be renewed."; return 10
+    fi
+    if ! _reap_lock_bound_to_cluster "$DEV_ENV_CLUSTER" "$DEV_ENV_DATASPOKE_NS" "$owner" "$timeout_secs" "$out"; then
+      release_required_dev_lock
+      rm -f "$out"; info "Skipping idle reap: the lock held is not confirmed to be the target cluster's lock."; return 10
+    fi
+
+    # Authoritative checks, under the lock.
+    verdict=0
+    _reap_final_checks_pass "$DEV_ENV_CLUSTER" "$DEV_ENV_DATASPOKE_NS" "$fmode" "$arg" "$timeout_secs" "$out" || verdict=$?
+    rm -f "$out"
+    if [[ "$verdict" -ne 0 ]]; then
+      release_required_dev_lock
+      [[ "$verdict" -eq 1 && "$mode" == recover ]] && return 11
+      return 10
+    fi
+    [[ "$mode" == recover ]] && warn "Retrying an interrupted idle reap (nothing changed since it began)..."
+  fi
+
+  if [[ "$mode" == reap ]]; then
+    # Reap. The marker goes down BEFORE the uninstall — the same evidence
+    # provisioning records, tagged `reap` — so a heartbeat killed mid-uninstall is
+    # finished by the next one's marker recovery (which re-checks, never deletes
+    # blindly). If it cannot be persisted, do nothing: a half-deleted cluster with
+    # no marker is the one outcome nothing recovers.
+    warn "Reaping ownerless idle dev cluster (newest Helm update ${REAP_NEWEST_ISO}, threshold ${arg}s)..."
+    if ! write_dev_env_state_marker "$DEV_ENV_FILE" reap; then
+      release_required_dev_lock
+      info "Skipping idle reap: could not persist the dev-env marker."; return 10
+    fi
+  fi
+  DEV_ENV_PROVISIONED=true
+  DEV_ENV_PROVISIONED_ENV_FILE="$DEV_ENV_FILE"
+  DEV_ENV_TEARDOWN_ATTEMPTED=false
+  DEV_ENV_TEARDOWN_REASON="reap"
+  teardown_provisioned_dev_env || true
+
+  # A lockless retry holds nothing to settle.
+  if [[ "$lockless" == true ]]; then
+    return 0
+  fi
+  if [[ ! -e "$DEV_ENV_STATE_FILE" ]]; then
+    # Deletion confirmed. The lock service lived in the deleted cluster, so a
+    # release call would only talk to nothing: stop the renewer and discard the
+    # local claim instead.
+    dev_lock_stop_renewer
+    REQUIRED_LOCK_OWNER=""
+    dev_lock_clear_token
+  else
+    # Not confirmed gone: the marker stays for a later heartbeat's recovery, and
+    # the service may still exist, so give the lock back (best effort).
+    release_required_dev_lock
+  fi
+  return 0
+}
+
+# recover_reap_marker <marked_at_iso>
+# Finish — or deliberately abandon — a reap that an earlier heartbeat began and did
+# not complete. Called by recover_orphaned_dev_env for a `reap` marker, with
+# DEV_ENV_FILE already resolved and sanity-checked. The marker proves only that an
+# idleness verdict was once true; the cluster may since have been reinstalled,
+# pinned or started by someone else, so every reap gate runs again before the
+# uninstall is retried:
+#   * file-level refusal (not provably a dev file): drop the marker, never delete;
+#   * namespaces already gone: confirm, then clear;
+#   * keep pin now in effect, or any Helm release updated after the reap began:
+#     drop the marker without deleting;
+#   * dev-lock service (or the whole DataSpoke namespace) cleanly absent — the state
+#     a partly-run uninstall.sh leaves — and nothing updated since the reap began:
+#     retry the uninstall WITHOUT the lock (see _reap_engine);
+#   * anything undetermined — a lock conflict or token-proof failure, an unreachable
+#     service or cluster, a probe that errors: KEEP the marker and retry on a later
+#     heartbeat.
+# Dropping loses a retry but destroys nothing; the asymmetry is the point.
+recover_reap_marker() {
+  local marked_at="${1:-}" marked_epoch rc=0
+  if ! marked_epoch=$(_reap_iso_utc_to_epoch "$marked_at"); then
+    warn "Reap marker has no readable timestamp; dropping it without a teardown."
+    rm -f "$DEV_ENV_STATE_FILE"; return 0
+  fi
+  if ! dev_env_reap_gate_env; then
+    warn "Reap marker's env file no longer passes the dev-cluster gate; dropping it without a teardown."
+    rm -f "$DEV_ENV_STATE_FILE"; return 0
+  fi
+  if [[ -z "${PRAUTO_WORKER_ID:-}" ]]; then
+    warn "No worker identity to hold the dev-env lock under; keeping the reap marker."; return 0
+  fi
+  _reap_engine recover "$marked_epoch" || rc=$?
+  case "$rc" in
+    0) : ;;
+    11) warn "The dev cluster changed since the reap began; dropping the reap marker without deleting."
+        rm -f "$DEV_ENV_STATE_FILE" ;;
+    12) if dev_env_namespaces_absent "$DEV_ENV_FILE"; then
+          rm -f "$DEV_ENV_STATE_FILE"
+          info "The reaped dev cluster is already gone; marker cleared."
+        else
+          warn "Could not confirm the reaped dev cluster is gone; keeping the reap marker."
+        fi ;;
+    *) warn "Keeping the reap marker; a later heartbeat will retry." ;;
+  esac
+  return 0
+}
+
+# reap_ownerless_idle_dev_env
+# Tear down a dev-profile cluster that this worker did NOT provision, but only
+# when it is demonstrably idle and provably a dev cluster. Called once from
+# heartbeat.sh's EXIT trap, so it NEVER returns non-zero and every failure is a
+# logged skip. See _reap_engine for ordering and dev_env_reap_gate_env for what
+# makes an env file eligible.
+reap_ownerless_idle_dev_env() {
+  local threshold="${PRAUTO_DEV_ENV_REAP_IDLE_SECS-7200}" rc=0
+
+  # (a) Threshold. Invalid disables rather than falls back to the default: a typo
+  # in a destructive cost knob must not silently arm the destructive behaviour.
+  # The length cap keeps the 10# conversion below inside bash's integer range.
+  if [[ ! "$threshold" =~ ^[0-9]+$ ]] || (( ${#threshold} > 12 )); then
+    warn "Invalid PRAUTO_DEV_ENV_REAP_IDLE_SECS; idle-cluster reaping is disabled."
+    return 0
+  fi
+  threshold=$(( 10#$threshold ))   # 10#: a zero-padded value is not octal
+  if (( threshold == 0 )); then
+    info "Idle-cluster reaping is disabled (PRAUTO_DEV_ENV_REAP_IDLE_SECS=0)."
+    return 0
+  fi
+
+  # (b) Ownership and this wake's own use. A marker means marker recovery owns the
+  # cluster; DEV_ENV_PROVISIONED means this very wake built it (and its teardown
+  # has already run or been retried above); either way it is not "ownerless".
+  if [[ -z "${DEV_ENV_STATE_FILE:-}" ]]; then
+    info "Skipping idle reap: the dev-env marker path is unavailable."; return 0
+  fi
+  if [[ -e "$DEV_ENV_STATE_FILE" ]]; then
+    info "Skipping idle reap: a dev-env provisioning marker exists."; return 0
+  fi
+  if [[ "${DEV_ENV_PROVISIONED:-false}" == true ]]; then
+    info "Skipping idle reap: this heartbeat provisioned the cluster."; return 0
+  fi
+  if [[ "${DEV_ENV_TOUCHED_THIS_WAKE:-false}" == true ]]; then
+    info "Skipping idle reap: this heartbeat used the dev cluster."; return 0
+  fi
+  if [[ -z "${PRAUTO_WORKER_ID:-}" ]]; then
+    info "Skipping idle reap: no worker identity to hold the lock under."; return 0
+  fi
+
+  # (c) The cluster this worker is bound to, and whether it is one we may delete.
+  if ! resolve_dev_env; then
+    info "Skipping idle reap: the dev env file is unavailable."; return 0
+  fi
+  dev_env_reap_gate_env || return 0
+
+  _reap_engine reap "$threshold" || rc=$?
+  case "$rc" in
+    0) : ;;
+    12) info "No dev cluster found to reap." ;;
+    *) : ;;   # the engine logged its own fixed skip reason
+  esac
   return 0
 }

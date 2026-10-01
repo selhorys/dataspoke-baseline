@@ -20,6 +20,15 @@ source "$PRAUTO_DIR/lib/helpers.sh"
 WORKTREE_DIR=""
 CLEANUP_DONE=false
 CLEANUP_IN_PROGRESS=false
+# True only once THIS process owns the heartbeat lock. cleanup() also runs for a
+# wake that exited early because another heartbeat held it; that wake must not
+# touch a cluster at all (the idle reaper below), since the lock holder is the
+# one with the authority to.
+HEARTBEAT_LOCK_HELD=false
+# Set by handle_signal before it calls cleanup, so the exit-time idle reaper —
+# a potentially long, networked cost-hygiene step — is skipped when the wake is
+# being killed and must exit fast.
+CLEANUP_FROM_SIGNAL=false
 cleanup() {
   # A signal handler calls cleanup explicitly and then disables EXIT before it
   # exits. The guard also makes cleanup safe if an error path invokes it while
@@ -113,6 +122,18 @@ cleanup() {
   if declare -F teardown_provisioned_dev_env >/dev/null; then
     teardown_provisioned_dev_env || true
   fi
+  # Cost hygiene for a cluster nobody owns (spec/AI_PRAUTO.md §Provisioning,
+  # "Ownerless idle clusters are reaped"). Placed after this wake's own teardown
+  # and its lock release above — the reaper takes and manages its own dev-env
+  # lock, so nothing here may still hold it — and BEFORE release_lock, so a
+  # second heartbeat cannot start and race the uninstall. Gated on: this process
+  # holding the heartbeat lock, a loaded config (the worker identity names the
+  # dev-env lock owner), and not being signal-driven. Every failure inside is a
+  # logged skip and `|| true` keeps the trap's own exit path intact either way.
+  if [[ "${HEARTBEAT_LOCK_HELD:-false}" == true && "${CLEANUP_FROM_SIGNAL:-false}" != true \
+        && -n "${PRAUTO_WORKER_ID:-}" ]] && declare -F reap_ownerless_idle_dev_env >/dev/null; then
+    reap_ownerless_idle_dev_env || true
+  fi
   release_lock 2>/dev/null || true
   CLEANUP_DONE=true
   CLEANUP_IN_PROGRESS=false
@@ -123,6 +144,7 @@ handle_signal() {
   # must perform the cleanup itself. Disable all traps before cleanup to avoid
   # a second teardown when `exit` below fires EXIT.
   trap - EXIT INT TERM
+  CLEANUP_FROM_SIGNAL=true
   cleanup || true
   exit "$status"
 }
@@ -140,6 +162,7 @@ source "$PRAUTO_DIR/lib/state.sh"
 if ! acquire_lock; then
   exit 0
 fi
+HEARTBEAT_LOCK_HELD=true
 info "Lock acquired (PID $$)."
 
 # ---------------------------------------------------------------------------
