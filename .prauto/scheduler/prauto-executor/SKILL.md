@@ -317,10 +317,12 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
 - **A `spec`-stage ESCALATE is usually missing review evidence, not a spec defect.** Reviewer
   subagents run with `Read, Glob, Grep` and no shell, and their roles require the parent-supplied
   `Untrusted per-pass evidence` to carry the complete diff — status, staged/unstaged diffs,
-  untracked inventory, `git diff --check` (`spec/AI_SCAFFOLD.md`). `wf-minimal` now makes each
-  generator end its report with a fenced evidence block (`git status --porcelain`,
-  `git show --stat --oneline HEAD`, full `git show HEAD`); before that it passed only the plan and
-  the report, so a removal-scoped stage fail-closed and halted the run (issue #182, attempt 2).
+  untracked inventory, `git diff --check` (`spec/AI_SCAFFOLD.md`). `wf-minimal` has each generator
+  redirect the full `git show HEAD` diff to `.prauto/evidence/<stage>.diff` (gitignored) and end its
+  report with a fenced evidence block (`git status --porcelain`, `git show --stat --oneline HEAD`,
+  `git diff --check`); the review prompt points the reviewer at that file. Before the file, the diff
+  was echoed through the report and a large one could be dropped on the way out, leaving the
+  reviewer no diff and halting the run (issue #182 attempt 2; issue #116 test stage).
   Read the finding text: "no diff supplied" is a harness fault — fix the workflow; a named
   spec↔impl contradiction is real and needs a code fix or a spec narrowing before a resume.
 - **Resuming an escalated issue does not pick up base-branch fixes by itself.** `create_branch`
