@@ -153,6 +153,7 @@ wires them via the runtime admin API (`/api/v1/admin/peripherals/{datahub,langfu
 | `--components <list>` | all-for-profile | **Dev only.** Comma-separated subset (e.g. `api`, `dataspoke-infra`, `datahub`). |
 | `--from-component <name>` | — | **Dev only.** Resume an interrupted full install at this component. |
 | `--skip-build` | false | Skip Docker image rebuild (api/airflow/postgres). |
+| `--build-jobs <n>` | unset (unbounded) | Cap how many image builds run concurrently in a full install's build phase. `<n>` is a positive integer (`^[1-9][0-9]*$`); anything else, including a blank `--build-jobs` value, is a hard error. `1` runs the builds serially. Values longer than 6 digits are clamped to `999999`. Equivalent env var: `DATASPOKE_BUILD_JOBS` (the flag wins). The variable is read after the env file is sourced, so an assignment in the env file, even a blank one, overrides a value exported in the shell; the flag is the reliable one-off override. A set-but-blank `DATASPOKE_BUILD_JOBS` counts as unset (so a line can be blanked in an env file); a non-blank value is validated by the same grammar. Bounds image builds only — peripheral installs are never throttled. No effect under `--skip-build`, or in a single-component run (which builds one image). See §Image Builds → Parallelism. |
 | `--skip-seed` | false (dev) | Skip post-install admin-API seeding. |
 | `--values <path>` | — | Extra values file passed to the umbrella chart (prod). **Single use** — a repeated `--values` is a hard error, so an operator layering several overlays merges them into one file first. |
 | `--image-tag <tag>` | `dev` | Override the image tag for api/airflow/postgres (prod CI). Validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` before use — it flows into several `helm --set`/`--set-string` tokens, where an unvalidated comma or newline could inject an arbitrary values path. |
@@ -178,7 +179,7 @@ the release (§Prod operator workflow).
 | # | Phase | Components | Notes |
 |---|---|---|---|
 | 1 | Pre-flight | tool check, context switch, namespace ensure, nginx-ingress install | nginx-ingress must complete first to provide `INGRESS_IP` / `_DOMAIN` for downstream. |
-| 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `dev-peripherals/datahub.sh` ‖ `dev-peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. `build-image.sh frontend` is added only when `--frontend cluster`. |
+| 2 | **Parallel bootstrap** | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` ‖ `dev-peripherals/datahub.sh` ‖ `dev-peripherals/langfuse.sh` | bash `&` + `wait`. Failures of any branch abort the install. `build-image.sh frontend` is added only when `--frontend cluster`. The peripheral installs launch first, then the builds; `--build-jobs` / `DATASPOKE_BUILD_JOBS` caps only the builds, so DataHub and Langfuse start immediately even at `--build-jobs 1`. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values-dev.yaml` | Depends on phase 2: images pulled by deployment, their resolved digests stamped into pod annotations (§Digest stamping), DataHub URL/PAT/Kafka + Langfuse host/public-key fed via `--set` for downstream seeding. `frontend.enabled` is `false` unless `--frontend cluster`, which appends the frontend `--set` flags and waits for the `dataspoke-frontend` rollout. |
 | 4 | **Parallel post-bootstrap** | `dev-peripherals/dummy-data.sh` ‖ `dev-peripherals/dev-lock.sh` | Both depend on cluster connectivity but not on each other. |
 | 5 | Post-install seeding | `seed-peripheral-config.sh`, `seed-runtime-config.sh`, `seed-admin-user.sh` | From inside the API pod, PATCHes `/internal/admin/peripherals/{datahub,langfuse}`, `/internal/admin/conf`, and POSTs `/internal/admin/bootstrap` (idempotent: seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists). Skipped by `--skip-seed`. |
@@ -188,7 +189,7 @@ the release (§Prod operator workflow).
 | # | Phase | Components | Notes |
 |---|---|---|---|
 | 1 | Pre-flight | tool check, context switch, namespace ensure, IngressClass/StorageClass checks, then — only under `--skip-build` — image-digest resolution, then Secret checks | No nginx-ingress install — operator's controller. Digest resolution, when it runs here, lands ahead of the derived Airflow key Secrets this phase writes, only when `--skip-build` means the image already exists in the registry; otherwise it waits for phase 2's push (see §Digest stamping). The operator-owned credentials Secret is not among them — prod verifies it and never writes it (§The pre-flight). |
-| 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. `build-image.sh frontend` runs under the default `--frontend cluster`; skipped under `--frontend none`. |
+| 2 | Image build | `build-image.sh api` ‖ `build-image.sh airflow` ‖ `build-image.sh postgres` | Skipped by `--skip-build` when CI built and pushed the images. `build-image.sh frontend` runs under the default `--frontend cluster`; skipped under `--frontend none`. Concurrency is unbounded unless capped by `--build-jobs` / `DATASPOKE_BUILD_JOBS`. |
 | 3 | Umbrella chart | `helm upgrade --install dataspoke ./helm-charts/dataspoke -f values.yaml -f <operator-overlay>` | Operator supplies values overlay with their own ingress hosts, TLS, registry, replica counts, source-credential references. Digest stamping applies in prod as well (resolved here instead of phase 1 unless `--skip-build` was passed), so the same tag name carrying new content still rolls api/frontend, and event-consumer too when the overlay enables it. `frontend.enabled` is set from `--frontend` (`cluster`→true, `none`→false; default `cluster`). |
 | — | Admin seed | `post-install/seed-admin-user.sh` | Runs after the chart phase unless `--skip-seed` is passed, calling the API from inside its own pod rather than through the ingress. Idempotent; seeds the default `dataspoke@dataspoke.local / dataspoke` Admin only when no Admin exists. Carries no `step` marker of its own. |
 
@@ -1447,6 +1448,23 @@ builds with bash `&`/`wait`, optionally alongside the DataHub and Langfuse
 installs (~10-minute concurrent path vs ~20-minute serial). Image build
 output is buffered per branch so the operator sees one stream finish at a
 time.
+
+**Build concurrency bound.** The default is unbounded. `--build-jobs <n>` (or
+`DATASPOKE_BUILD_JOBS`; §Installation → Flags) caps the number of image builds
+in flight, and the bound applies to builds only: a build task waits for a free
+slot before it launches, while the peripheral installs (DataHub, Langfuse,
+dummy data, dev-lock) are never counted or delayed — which is why the dev
+bootstrap phase launches them ahead of the builds. The wait is a `kill -0`
+poll rather than `wait -n`, because the macOS system bash is 3.2 and `wait -n`
+needs 4.3. The bound only matters where builds share a local Docker daemon:
+the `AWS` branch and the local-docker fallback (empty, or any value other than
+`GCP`/`gcp`/`AWS`/`aws`) build locally, while `GCP` builds remotely through
+`gcloud builds submit` and gains nothing from it. Concurrent local
+builds can exhaust the daemon's memory and kill it (§Troubleshooting → Docker
+daemon dies during image builds); when a build task fails with that signature,
+`install.sh` prints a single hint after the failing logs, ahead of the final
+error. Ordinary build failures never print it, and the hint never echoes log
+contents.
 
 The umbrella chart pulls `${REGISTRY}/postgres:dev`, `${REGISTRY}/airflow:dev`,
 `${REGISTRY}/api:dev` (or the operator-supplied tag in prod).
@@ -2750,6 +2768,61 @@ group, resets offsets to latest, restarts GMS. If it recurs outside install,
 manually reset offsets on `MetadataChangeLog_Timeseries_v1` and
 `MetadataChangeLog_Versioned_v1` for group `generic-mae-consumer-job-client`,
 then restart the GMS pod.
+
+### Docker daemon dies during image builds
+
+Symptom: several `build-*` tasks fail together with `broken pipe` against
+`docker.sock`, `error during connect`, `Cannot connect to the Docker daemon`,
+or `Is the docker daemon running`. The local daemon (Docker Desktop, Colima, a
+small VM) ran out of memory under concurrent builds and died; the remaining
+builds then fail fast against the dead socket. `install.sh` recognises these
+signatures in a failed `build-*` log and prints one hint before its final
+error.
+
+| `DATASPOKE_KUBE_CLOUD_VENDOR` | Build path | Affected |
+|---|---|---|
+| `AWS` | local `docker build` + `docker push` | yes |
+| empty, or any value other than `GCP`/`gcp`/`AWS`/`aws` | local `docker build` + `docker push` (the `build-image.sh` fallback branch, using whatever docker credentials are ambient) | yes |
+| `GCP` | `gcloud builds submit` (remote) | no |
+
+Recovery:
+
+1. Restart the daemon (or its VM; give it more memory if it keeps dying).
+2. Re-run the install with `--build-jobs 1` (or set `DATASPOKE_BUILD_JOBS=1`
+   in the env file, since an exported shell value is overridden by it) so the
+   builds run serially. If the bound is already 1, the remaining lever is
+   daemon memory.
+3. Alternatively, build each image individually with
+   `ENV_FILE=<resolved env file> <build-image.sh> <name> <tag>`, then re-run
+   `install.sh` with `--skip-build` and the same `--image-tag`, `--env-file`,
+   and `--values` as the original run.
+
+Step 3 constraints:
+
+- `ENV_FILE=` prefix is mandatory. `build-image.sh` defaults `ENV_FILE` to
+  `.env.dev`, so an unprefixed call resolves the dev registry and pushes the
+  image there rather than to the registry the install targets.
+- `<tag>` must equal the tag the install uses: the `--image-tag` value, or
+  `dev` when it is not passed. The `--skip-build` re-run must pass that same
+  `--image-tag`; otherwise it deploys whatever already sits under its own tag.
+  It must likewise keep the original `--env-file` and `--values`; dropping
+  `--env-file` silently falls back to the profile's default env file and
+  registry.
+- `<name>` covers the full image set: `api`, `airflow`, `postgres`, plus
+  `frontend` when the UI is deployed (`--frontend cluster`, the prod default).
+  Images that already built and pushed successfully under that tag may be
+  skipped. A missed image is not caught: `--skip-build` deploys the stale
+  content under the tag, and `airflow` and `postgres` are not digest-pinned
+  (§Digest stamping), so stale baked DAGs or a stale database image can roll
+  out silently.
+
+The hint `install.sh` prints carries the absolute path of the resolved env
+file, the resolved `IMAGE_TAG`, and the absolute path of the installed
+`build-image.sh` in place of the `<resolved env file>`, `<tag>`, and
+`<build-image.sh>` placeholders, so the whole command (env file prefix and
+script path) is copy-pasteable and runs from any working directory. Its
+env-var alternative to `--build-jobs 1` names that same env file. It also
+repeats the keep-the-original-flags advice for the `--skip-build` re-run.
 
 ### Service unreachable via ingress
 

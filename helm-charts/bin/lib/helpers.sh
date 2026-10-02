@@ -2359,6 +2359,51 @@ assert_image_tag() {
   fi
 }
 
+# assert_build_jobs <source_label> <value>
+# Grammar-check the image-build concurrency bound (`--build-jobs` /
+# DATASPOKE_BUILD_JOBS): a positive integer, no sign, no leading zero, no
+# whitespace. The value is only ever used in an arithmetic comparison against a
+# running-build count, and `(( ))` evaluates its operand as an arithmetic
+# EXPRESSION — it expands a command substitution and an array subscript — so an
+# unvalidated string must never reach it. A `0` would also be a silent
+# deadlock rather than "serial": no slot could ever be free. <source_label>
+# names where the value came from so the error points at the right knob.
+assert_build_jobs() {
+  local what="$1" value="$2"
+  if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+    # The rejected value is echoed through sanitize_remote_text: it is an
+    # arbitrary operator/env-file string and may carry control characters.
+    error "Invalid ${what} '$(sanitize_remote_text "${value}" 40)'. Must be a positive integer (^[1-9][0-9]*\$) — the maximum number of
+image builds run at once; 1 builds serially. Leave it unset for an unbounded build phase."
+  fi
+}
+
+# log_shows_docker_daemon_death <logfile>
+# Return 0 when a build task's captured log carries a signature of the LOCAL
+# Docker daemon having died, 1 otherwise (including an unreadable log).
+#
+# Concurrent local `docker build`s can exhaust a small daemon's memory (Docker
+# Desktop, Colima, a small VM) and kill it; every build still in flight then
+# fails against the dead socket, in a handful of different phrasings depending
+# on where each client was when the socket went away. The set is deliberately
+# narrow and docker-socket-specific: a bare `broken pipe` is an ordinary
+# network error and a failed `RUN` step is an ordinary build error, and the
+# caller turns a match into "retry serially" advice that would only mislead for
+# those. Extending it for another daemon's wording is a one-line edit here.
+#
+# Only a boolean leaves this function: the log is untrusted build output and is
+# never echoed, so no byte of it can reach the operator's terminal through the
+# hint. `-a` keeps a log with stray binary bytes from turning grep's answer
+# into "Binary file matches" noise.
+log_shows_docker_daemon_death() {
+  local logfile="$1"
+  [[ -r "${logfile}" ]] || return 1
+  grep -qaiE -e 'broken pipe.*(docker\.sock|error during connect)' \
+    -e '(docker\.sock|error during connect).*broken pipe' \
+    -e 'cannot connect to the docker daemon' \
+    -e 'is the docker daemon running' "${logfile}" 2>/dev/null
+}
+
 # assert_ingress_class_present <class>
 # Prove the IngressClass the deployment binds to is registered in this
 # cluster. Required in prod with no default: install.sh passes the class by

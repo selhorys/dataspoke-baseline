@@ -38,6 +38,8 @@ The `--frontend` flag controls how the Next.js UI is handled:
 
 `--frontend local` and `--frontend cluster` are dev-only modes. In prod the default is `--frontend cluster` (always deployed).
 
+Image builds run concurrently by default. On a host whose local Docker daemon is small (Docker Desktop, Colima, a small VM — relevant when `DATASPOKE_KUBE_CLOUD_VENDOR` is `AWS`, empty, or any value other than `GCP`/`gcp`/`AWS`/`aws` — all build on the local daemon; `GCP` builds remotely), pass `--build-jobs <n>` (or set `DATASPOKE_BUILD_JOBS`) to cap concurrent builds; `--build-jobs 1` builds serially. It bounds image builds only, never the DataHub/Langfuse installs, and has no effect with `--skip-build`. If the daemon dies mid-install, see [Troubleshooting](#troubleshooting).
+
 ### Health check
 
 ```bash
@@ -1222,6 +1224,33 @@ reclaimable. Lock state is in-memory: a pod restart releases whatever was held.
 
 See `spec/feature/HELM_CHART.md §Troubleshooting` for the full list of known
 issues and mitigations (pod eviction, OpenSearch OOM, MAE consumer stall, etc.).
+
+**Docker daemon dies during image builds** (several `build-*` tasks fail with
+`broken pipe` on `docker.sock` or `Cannot connect to the Docker daemon`):
+restart the daemon, then re-run with `--build-jobs 1` (or set
+`DATASPOKE_BUILD_JOBS=1` in the env file the install uses — an assignment there,
+even a blank one, overrides a value exported in the shell). Or build each image
+individually and re-run `install.sh` with `--skip-build`, keeping the original
+`--image-tag`, `--env-file` and `--values`:
+
+```bash
+ENV_FILE=<resolved env file> ./helm-charts/bin/build-image.sh <name> <tag>
+```
+
+- The `ENV_FILE=` prefix is mandatory — `build-image.sh` defaults to `.env.dev`,
+  so an unprefixed call resolves the dev registry and pushes there.
+- `<tag>` must equal the install's `--image-tag` (default `dev`), and the
+  `--skip-build` re-run must pass that same `--image-tag`, `--env-file` and
+  `--values` — dropping `--env-file` silently falls back to the profile's default
+  env file and registry.
+- Rebuild the full image set: `api`, `airflow`, `postgres`, plus `frontend`
+  when the UI is deployed (`--frontend cluster`, the prod default). Images that
+  already built and pushed under that tag may be skipped; a missed image is
+  deployed stale and silently, since `airflow` and `postgres` are not
+  digest-pinned.
+
+The hint `install.sh` prints already carries the resolved env file and tag. See
+`spec/feature/HELM_CHART.md §Troubleshooting` for the affected vendors.
 
 Reinstall a failing component:
 
