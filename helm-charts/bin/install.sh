@@ -19,6 +19,13 @@
 #                               cluster — build image and deploy in-cluster via Helm.
 #                                         (prod default; also available in dev)
 #   --skip-build                Skip Docker image rebuilds (api/airflow/postgres/frontend).
+#   --build-jobs <n>            Cap how many image builds run at once in a full install
+#                               (positive integer; 1 = serial). Default: unbounded.
+#                               Equivalent env var: DATASPOKE_BUILD_JOBS (the flag wins).
+#                               Bounds image builds only — the DataHub/Langfuse installs
+#                               are never throttled. Useful when builds share a small
+#                               local Docker daemon (DATASPOKE_KUBE_CLOUD_VENDOR=AWS, or
+#                               empty); see spec/feature/HELM_CHART.md §Troubleshooting.
 #   --skip-seed                 Skip post-install admin-API seeding (both profiles).
 #   --values <path>             Extra values file for the umbrella chart (prod, single use).
 #   --image-tag <tag>           Override image tag (default: dev).
@@ -71,6 +78,14 @@ EXTRA_VALUES=""
 IMAGE_TAG="dev"
 IMAGE_TAG_EXPLICIT=false
 NO_DIGEST_PIN=false
+# --build-jobs is only CAPTURED here. DATASPOKE_BUILD_JOBS may live in the env
+# file, which is sourced after argument parsing, so the flag-over-env-var
+# resolution and the grammar check happen right after that `source` (see
+# "Resolve the image-build concurrency bound" below). `set -u` safety: the pair
+# starts defined, and _SET distinguishes `--build-jobs ""` (an error) from the
+# flag being absent.
+BUILD_JOBS_FLAG=""
+BUILD_JOBS_FLAG_SET=false
 
 # Resolved once per install (see resolve_image_digest in lib/helpers.sh) and
 # read by _api_image_helm_set_args / _frontend_helm_set_args to pin the image
@@ -103,6 +118,12 @@ while [[ $# -gt 0 ]]; do
     --frontend)        FRONTEND_MODE="${2:-}"; shift 2 ;;
     --skip-build)      SKIP_BUILD=true; shift ;;
     --skip-seed)       SKIP_SEED=true; shift ;;
+    --build-jobs)
+      # An explicit check, unlike the `${2:-}; shift 2` siblings: with no
+      # following argument `shift 2` fails without shifting and, under
+      # `set -e`, would end the script with no message at all.
+      [[ $# -ge 2 ]] || error "--build-jobs requires a value (a positive integer)."
+      BUILD_JOBS_FLAG="$2"; BUILD_JOBS_FLAG_SET=true; shift 2 ;;
     --no-digest-pin)   NO_DIGEST_PIN=true; shift ;;
     --values)
       if [[ -n "${EXTRA_VALUES}" ]]; then
@@ -187,6 +208,30 @@ source "$ENV_FILE"
 # an editor that inherits a permissive umask.
 chmod 600 "$ENV_FILE" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# Resolve the image-build concurrency bound
+# ---------------------------------------------------------------------------
+# BUILD_JOBS empty means unbounded — the historical behaviour, and the right one
+# wherever builds are remote (GCP Cloud Build). The explicit flag wins over
+# DATASPOKE_BUILD_JOBS; an env var that is set but blank counts as unset (the
+# natural way to "comment out" a line in an env file), while a blank FLAG value
+# is a hard error. The grammar is assert_build_jobs's in lib/helpers.sh, and it
+# runs before the value reaches any arithmetic.
+BUILD_JOBS=""
+if [[ "$BUILD_JOBS_FLAG_SET" == "true" ]]; then
+  assert_build_jobs "--build-jobs" "$BUILD_JOBS_FLAG"
+  BUILD_JOBS="$BUILD_JOBS_FLAG"
+elif [[ -n "${DATASPOKE_BUILD_JOBS:-}" ]]; then
+  assert_build_jobs "DATASPOKE_BUILD_JOBS" "$DATASPOKE_BUILD_JOBS"
+  BUILD_JOBS="$DATASPOKE_BUILD_JOBS"
+fi
+# A syntactically valid value can still overflow bash's 64-bit arithmetic, which
+# wraps to a negative number and would make every slot test "full" forever. No
+# install runs anywhere near a million builds, so cap the length instead.
+if [[ -n "$BUILD_JOBS" && ${#BUILD_JOBS} -gt 6 ]]; then
+  BUILD_JOBS=999999
+fi
+
 # Every *_NAMESPACE var below is interpolated into `kubectl apply -f -` YAML
 # documents throughout this script (metadata.name / metadata.namespace), so an
 # unvalidated value could inject an arbitrary extra manifest. The grammar is
@@ -270,6 +315,102 @@ _run_bg() {
   info "  Started background task: $label (pid $!)"
 }
 
+# Seconds between slot checks while _run_bg_build waits. A variable so a test
+# can shrink it; production never overrides it.
+_BUILD_SLOT_POLL_SECS=1
+# Result slot of _count_live_builds (a global rather than command substitution,
+# so the count costs no subshell per poll).
+_LIVE_BUILDS=0
+
+# Count the still-running tasks of THIS phase whose label starts with `build-`.
+# Peripherals (datahub, langfuse, dummy-data, dev-lock) are deliberately not
+# counted: the bound is on the local Docker daemon, which they do not use.
+_count_live_builds() {
+  local i
+  _LIVE_BUILDS=0
+  for i in "${!PIDS[@]}"; do
+    [[ "${LABELS[$i]}" == build-* ]] || continue
+    # Same non-blocking liveness probe _wait_all reaps with: bash collects an
+    # exited child on SIGCHLD, so kill -0 fails once it is gone.
+    if kill -0 "${PIDS[$i]}" 2>/dev/null; then
+      _LIVE_BUILDS=$(( _LIVE_BUILDS + 1 ))
+    fi
+  done
+}
+
+# _run_bg_build <label> <cmd...>
+# _run_bg for an image build, held back until a build slot is free when
+# BUILD_JOBS (--build-jobs / DATASPOKE_BUILD_JOBS) is set; with it empty this is
+# exactly _run_bg. Concurrent LOCAL `docker build`s can exhaust a small
+# daemon's memory and kill it, taking every build in flight down with it — the
+# bound is the operator's lever against that.
+#
+# The wait is a `kill -0` poll, not `wait -n`: the macOS system bash is 3.2 and
+# `wait -n` needs 4.3, and this is the same idiom _wait_all already depends on.
+# The launcher blocks while it waits, so the 30s heartbeat (which lives in
+# _wait_all) is silent for that stretch; the one-line note below keeps the
+# pause from looking like a hang. Callers launch any task that must not wait
+# (the dev peripherals) BEFORE the builds for the same reason.
+_run_bg_build() {
+  if [[ -n "${BUILD_JOBS:-}" ]]; then
+    _count_live_builds
+    if (( _LIVE_BUILDS >= BUILD_JOBS )); then
+      info "  Waiting for a build slot before $1 (${_LIVE_BUILDS}/${BUILD_JOBS} builds running)"
+      while (( _LIVE_BUILDS >= BUILD_JOBS )); do
+        sleep "$_BUILD_SLOT_POLL_SECS"
+        _count_live_builds
+      done
+    fi
+  fi
+  _run_bg "$@"
+}
+
+# "up to N parallel" / "serial" / "parallel" — for a phase's step() title.
+_build_parallelism_label() {
+  if [[ -z "${BUILD_JOBS:-}" ]]; then
+    printf 'parallel'
+  elif [[ "$BUILD_JOBS" == "1" ]]; then
+    printf 'serial'
+  else
+    printf 'up to %s parallel' "$BUILD_JOBS"
+  fi
+}
+
+# The one-line hint printed when a failed build task's log shows the local
+# Docker daemon died (log_shows_docker_daemon_death). It names the resolved
+# $ENV_FILE and $IMAGE_TAG — the ENV_FILE= prefix is mandatory, because
+# build-image.sh defaults ENV_FILE to .env.dev and an unprefixed call would
+# resolve the DEV registry and push there. The env-file path is printed
+# ABSOLUTE (resolved in a subshell; the global $ENV_FILE is left untouched, as
+# child scripts consume it): a cwd-relative --env-file pasted from another
+# directory could resolve to a different file and push to the wrong registry.
+# `%q` shell-quotes the path so the line stays copy-pasteable (and inert) for an
+# env file with spaces or odd characters. Never includes log text.
+_docker_daemon_death_hint() {
+  local images="api, airflow, postgres"
+  if [[ "$FRONTEND_MODE" == "cluster" ]]; then images+=", frontend"; fi
+  # The build-image.sh path comes from $SCRIPT_DIR (absolute) so the command
+  # works from any cwd. $ENV_FILE may be cwd-relative (--env-file), so it is made
+  # absolute here (falling back to it unchanged if its directory cannot be
+  # entered); the re-run advice below still says to keep the original flags.
+  local envabs envq tagq scriptq
+  envabs="$(cd "$(dirname "$ENV_FILE")" 2>/dev/null && printf '%s/%s' "$(pwd)" "$(basename "$ENV_FILE")")" || envabs=""
+  [[ -n "$envabs" ]] || envabs="$ENV_FILE"
+  envq="$(printf '%q' "$envabs")"
+  tagq="$(printf '%q' "$IMAGE_TAG")"
+  scriptq="$(printf '%q' "${SCRIPT_DIR:-helm-charts/bin}/build-image.sh")"
+  # The lead clause only says "concurrent" when the builds could have been.
+  local lead first
+  if [[ "${BUILD_JOBS:-}" == "1" ]]; then
+    lead="The Docker daemon appears to have died during image builds."
+    first="Restart the Docker daemon (or its VM) and give it more memory; the builds already ran serially (--build-jobs 1)."
+  else
+    lead="The Docker daemon appears to have died during concurrent image builds."
+    first="Restart the Docker daemon, then retry with --build-jobs 1 (or set DATASPOKE_BUILD_JOBS=1 in ${envq}; the env file overrides a shell-exported value) so the builds run serially."
+  fi
+  printf '%s' "${lead} ${first} Or build the images individually (one per name: ${images}) with: ENV_FILE=${envq} ${scriptq} <name> ${tagq} (the ENV_FILE= prefix is mandatory), then re-run the same install.sh command adding --skip-build (keep --image-tag ${tagq}, --env-file and --values exactly as before; dropping --env-file silently switches registry). See spec/feature/HELM_CHART.md §Troubleshooting."
+}
+
 _wait_all() {
   # Report each task the moment it finishes, and print a heartbeat naming what is
   # still outstanding while we wait.
@@ -281,7 +422,7 @@ _wait_all() {
   # shown only on failure, so a healthy slow run and a hung one produced identical
   # output: nothing. In-order waiting made it worse, since a task that finished
   # early stayed unreported until every task ahead of it in the array completed.
-  local failed=0 remaining=${#PIDS[@]} waited=0
+  local failed=0 remaining=${#PIDS[@]} waited=0 daemon_death=0
   local -a done_flags=()
   local i pid label rc heartbeat=0
   for i in "${!PIDS[@]}"; do done_flags[i]=0; done
@@ -304,6 +445,12 @@ _wait_all() {
           warn "  [FAIL] $label (exit $rc, t+$((SECONDS - START_TIME))s)"
           cat "${INSTALL_TMPDIR}/${label//\//-}.log" >&2 || true
           failed=$(( failed + 1 ))
+          # Only a build task can mean "the local Docker daemon died"; the flag
+          # is acted on once, after every failing log has been dumped.
+          if [[ "$label" == build-* ]] \
+            && log_shows_docker_daemon_death "${INSTALL_TMPDIR}/${label//\//-}.log"; then
+            daemon_death=1
+          fi
         fi
       fi
     done
@@ -330,6 +477,11 @@ _wait_all() {
   PIDS=()
   LABELS=()
   if (( failed > 0 )); then
+    # One hint however many builds died with the signature, printed after the
+    # failing logs so it is the last thing read before the final error.
+    if (( daemon_death )); then
+      warn "$(_docker_daemon_death_hint)"
+    fi
     error "${failed} background task(s) failed — see output above."
   fi
 }
@@ -1781,24 +1933,33 @@ if [[ "$PROFILE" == "dev" ]]; then
   # Phase 2: Parallel bootstrap
   # Build images ‖ install DataHub ‖ install Langfuse
   # -----------------------------------------------------------------------
-  step 2 5 "parallel bootstrap (image builds + DataHub + Langfuse)"
-
-  if [[ "$SKIP_BUILD" == "false" ]]; then
-    _run_bg "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
-    _run_bg "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
-    _run_bg "build-postgres" bash "$SCRIPT_DIR/build-image.sh" postgres "${IMAGE_TAG}"
-    if [[ "$FRONTEND_MODE" == "cluster" ]]; then
-      _run_bg "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
-    fi
+  if [[ "$SKIP_BUILD" == "false" && -n "$BUILD_JOBS" ]]; then
+    step 2 5 "parallel bootstrap (image builds, $(_build_parallelism_label), + DataHub + Langfuse)"
   else
-    info "  --skip-build: skipping image builds."
+    step 2 5 "parallel bootstrap (image builds + DataHub + Langfuse)"
   fi
 
+  # The peripherals launch BEFORE the builds. _run_bg_build blocks its caller
+  # while it waits for a build slot (--build-jobs), so anything launched after
+  # it would be delayed behind the builds; launching them first means DataHub
+  # and Langfuse start immediately even at --build-jobs 1. Nothing else depends
+  # on the launch order — _wait_all reports each task as it finishes.
   if _has_component datahub; then
     _run_bg "datahub" bash "$SCRIPT_DIR/dev-peripherals/datahub.sh"
   fi
   if _has_component langfuse; then
     _run_bg "langfuse" bash "$SCRIPT_DIR/dev-peripherals/langfuse.sh"
+  fi
+
+  if [[ "$SKIP_BUILD" == "false" ]]; then
+    _run_bg_build "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
+    _run_bg_build "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
+    _run_bg_build "build-postgres" bash "$SCRIPT_DIR/build-image.sh" postgres "${IMAGE_TAG}"
+    if [[ "$FRONTEND_MODE" == "cluster" ]]; then
+      _run_bg_build "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
+    fi
+  else
+    info "  --skip-build: skipping image builds."
   fi
 
   _wait_all
@@ -2243,13 +2404,13 @@ elif [[ "$PROFILE" == "prod" ]]; then
   # Phase 2: Image builds (skippable)
   # -----------------------------------------------------------------------
   if [[ "$SKIP_BUILD" == "false" ]]; then
-    step 2 3 "image builds (parallel)"
+    step 2 3 "image builds ($(_build_parallelism_label))"
 
-    _run_bg "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
-    _run_bg "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
-    _run_bg "build-postgres" bash "$SCRIPT_DIR/build-image.sh" postgres "${IMAGE_TAG}"
+    _run_bg_build "build-api"      bash "$SCRIPT_DIR/build-image.sh" api      "${IMAGE_TAG}"
+    _run_bg_build "build-airflow"  bash "$SCRIPT_DIR/build-image.sh" airflow  "${IMAGE_TAG}"
+    _run_bg_build "build-postgres" bash "$SCRIPT_DIR/build-image.sh" postgres "${IMAGE_TAG}"
     if [[ "$FRONTEND_MODE" == "cluster" ]]; then
-      _run_bg "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
+      _run_bg_build "build-frontend" bash "$SCRIPT_DIR/build-image.sh" frontend "${IMAGE_TAG}"
     fi
     _wait_all
   else
