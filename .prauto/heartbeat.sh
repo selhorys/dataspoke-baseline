@@ -429,8 +429,19 @@ if [[ "${ALL_CLAIMED_COUNT:-0}" -gt 0 ]]; then
             info "Squash-finalizing PR #${REVIEW_PR_NUMBER} for issue #${CUR_ISSUE_NUMBER}..."
             checkout_branch_worktree "$REVIEW_PR_BRANCH"
             cd "$WORKTREE_DIR"
-            if squash_and_finalize_pr "$REVIEW_PR_NUMBER" "$REVIEW_PR_BRANCH" "$REVIEW_PR_TITLE" "$REVIEW_PR_BODY" "$CUR_ISSUE_NUMBER"; then
+            if squash_and_finalize_pr "$REVIEW_PR_NUMBER" "$REVIEW_PR_BRANCH" "$REVIEW_PR_TITLE" "$REVIEW_PR_BODY" "$CUR_ISSUE_NUMBER" "$REVIEW_PR_HEAD_SHA"; then
               info "Squash-finalize complete for #${CUR_ISSUE_NUMBER}."
+            fi
+            cleanup_worktree
+            ;;
+          conflict_resolution)
+            info "Resolving base-branch conflicts on PR #${REVIEW_PR_NUMBER} for issue #${CUR_ISSUE_NUMBER}..."
+            fetch_approved_plan "$CUR_ISSUE_NUMBER"
+            checkout_branch_worktree "$REVIEW_PR_BRANCH"
+            cd "$WORKTREE_DIR"
+            if resolve_pr_conflicts "$REVIEW_PR_NUMBER" "$REVIEW_PR_BRANCH" "$CUR_ISSUE_NUMBER" \
+                "$REVIEW_PR_TITLE" "$APPROVED_PLAN_TEXT"; then
+              info "Conflict resolution complete for #${CUR_ISSUE_NUMBER}."
             fi
             cleanup_worktree
             ;;

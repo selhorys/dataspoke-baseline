@@ -147,7 +147,8 @@ executor dispatches them in step 6.
 4. **Claim a new issue** if under `PRAUTO_OPEN_ISSUE_LIMIT`.
 5. **Process all claimed issues** (oldest first, self-contained state machine per issue):
    `prauto:done`/`prauto:failed` skip, `prauto:wip` derives phase and dispatches a worker
-   subagent for the actionable phase, `prauto:review` squash-finalizes or addresses feedback.
+   subagent for the actionable phase, `prauto:review` squash-finalizes, resolves base-branch
+   conflicts, or addresses feedback.
 6. **Dispatch** — one worker subagent per actionable issue (analysis, implementation,
    integration-fix), then a reviewer subagent over the worker's diff where the contract calls
    for adversarial review (implementation).
@@ -257,6 +258,7 @@ Phase is always derived fresh from GitHub -- never read from local state.
 | `implementation` | Worker writes code, runs unit tests, commits |
 | `integration-fix` | Run integration tests; on failure, worker fixes (up to N attempts) |
 | `pr-review` | Worker addresses reviewer feedback on existing PR |
+| `conflict-resolution` | Worker resolves a base-branch merge conflict on an existing PR |
 | `pr` | Push branch, create/update PR |
 
 ### The plan gate is evidence-based
@@ -374,6 +376,7 @@ costs a worker a full ceiling of wall-clock per attempt and is capped either way
 |----------|---------|
 | New issue -> PR | Push and create or update the PR in `prauto:wip`; run the required post-PR regression and, when needed, its bounded targeted retry; move the issue and PR to `prauto:review` only after readiness succeeds |
 | PR feedback | Return to `prauto:wip`, address with commits, push, run the required post-PR regression and, when needed, its bounded targeted retry; restore `prauto:review` only on readiness success |
+| Base-branch conflict | Merge the base and resolve (worker only for conflicted hunks, executor verifies and commits), return to `prauto:wip`, push, run the same post-PR readiness gate; restore `prauto:review` only on readiness success; squash needs a fresh approval on the merged head. A rejected resolution leaves the branch unchanged and asks a human |
 | Workflow ESCALATE | Do **not** finalize a PR; remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment naming the escalating stage and its findings |
 | Max retries | Remove `prauto:wip`/`prauto:plan-review`, add `prauto:failed`, post abandonment comment (naming any accumulated infrastructure-block reasons, see [Deterministic environmental-flake exception](#deterministic-environmental-flake-exception)) |
 
@@ -444,7 +447,7 @@ state from human-readable prose when the required structured event is absent.
 
 The executor applies two Claude CLI environment variables to the **implementation invocation
 only** — passed per-invocation, never exported process-wide. Analysis, pr-review,
-squash-commit, feedback-response, and the two fix sessions (integration-fix, E2E-fix) are
+squash-commit, feedback-response, conflict-resolution, and the two fix sessions (integration-fix, E2E-fix) are
 unaffected and keep the CLI's own defaults.
 
 - **`CLAUDE_CODE_WORKFLOWS`** (default `1`). Claude Code registers its `Workflow` tool only on
@@ -476,11 +479,13 @@ of the implementation-phase environment.
 | Implementation | Read + Write + Edit + subagents + workflow + limited Bash (git; `uv sync`/`uv run` pytest, python3, ruff, mypy; `npm run`, `npx prettier`, `npx tsc`, `npx eslint`, `pnpm`) | `PRAUTO_MAX_TURNS_IMPLEMENTATION` |
 | Integration fix / E2E fix | Same allowed-tools list as implementation; Claude sessions additionally add `Agent`, `Workflow`, and `Task` to `--disallowedTools` (see the denylist note below). The repair contract requires foreground verification within the bounded session; only the Claude delegation-tool denial is mechanically enforced. | `PRAUTO_MAX_TURNS_INTEGRATION_FIX` / `PRAUTO_MAX_TURNS_E2E_FIX` |
 | PR review | Same as implementation | `PRAUTO_MAX_TURNS_IMPLEMENTATION` |
+| Conflict resolution | Fix-session tools and `--disallowedTools` additions, plus ref-moving, merge-ending, worktree-rewriting and git-configuration denials (see [Base-branch conflicts](#base-branch-conflicts)) | `PRAUTO_MAX_TURNS_CONFLICT_FIX` |
 | Squash commit / Feedback response | No tools (text only) | 1 |
 
 **Denylist (all phases)**: `git push`, `rm -rf`, `sudo`, `kubectl`, `helm`, `curl`, `wget`,
 `gh`, `Read(.prauto/config.local.env)`, `Read(.prauto/state/*)`, `WebFetch`, `WebSearch`. Integration
-and E2E fix sessions add `Agent`, `Workflow`, and `Task` on top of this list for Claude. Those
+fix, E2E fix, and conflict-resolution sessions add `Agent`, `Workflow`, and `Task` on top of this
+list for Claude. Those
 Claude `--disallowedTools` entries enforce that a fixed repair session cannot invoke the
 corresponding delegation tools. The allowed-tools list (`--allowedTools`) is not itself a removal
 under `--dangerously-skip-permissions`, so it is a manifest rather than a security boundary. Tool
@@ -491,7 +496,7 @@ flags bind the parent session only; Codex has no equivalent per-session tool-den
 commits on the branch and continue from there.
 
 **Branch-reuse reconciliation**: When the executor reuses an existing `prauto/I-<n>` branch for a
-new worktree, or checks out an existing PR branch for the review-stage squash and feedback paths,
+new worktree, or checks out an existing PR branch for the review-stage squash, conflict-resolution, and feedback paths,
 it first reconciles the local branch ref with `origin/<branch>`, because `git worktree add <branch>`
 would otherwise pick a local ref that is stale after a human rebases and force-pushes the remote,
 and the later lease-guarded force-push would silently overwrite human commits. The executor fetches
@@ -826,6 +831,41 @@ feedback-addressed marker breaks the re-pickup loop; new reviewer comments after
 make the PR actionable again. A feedback fix returns the PR to `prauto:wip` and must complete the
 same post-PR readiness gate against its pushed head before `prauto:review` is restored.
 
+### Base-branch conflicts
+
+For a `prauto:review` issue, a PR that GitHub reports as conflicting with the base branch
+(`CONFLICTING`/`DIRTY`; `UNKNOWN` is not a conflict) is routed to conflict resolution ahead of
+feedback and regardless of approval; otherwise it could never become squash-ready. The executor
+merges `origin/<base>` into the PR branch — a merge, never a rebase, so existing history and review
+context stay intact. It starts only from origin's head: a local branch carrying commits origin does
+not have is refused rather than published unchecked. When git cannot merge on its own, a bounded
+worker session resolves the conflicted paths and stages them. Its tool grant denies `git push` and
+additionally denies ref-moving, merge-ending, worktree-rewriting and git-configuration commands —
+defense in depth, not a boundary (see [Security Model](#security-model)). The executor's acceptance
+does not rely on those denials. It accepts only a result in which the merge is still in progress on
+an unmoved `HEAD`, no path is unmerged, every non-conflicted index entry is exactly git's own merge
+result (no change outside the conflicted set is accepted), no resolved blob carries a conflict
+marker absent from both parents, and git's control surface did not change during the session — the
+effective configuration with every origin file it includes (which covers the include file carrying
+the bot's `core.sshCommand`), the attributes files, and the hooks directories. This detects
+tampering during the conflict session only; configuration an earlier phase left behind is part of
+its baseline, the accepted risk of a worker that runs as the executor's own user (see [Security
+Model](#security-model)) — git configuration can make later executor git commands run programs with
+the executor's credentials. It then commits the index with hooks, fsmonitor, signing, credential
+helpers and the `ext::` transport disabled, resets the worktree to that commit so the regression
+exercises exactly the pushed head, posts the scrubbed resolution summary, and returns the issue and
+PR to `prauto:wip` for the same post-PR readiness gate as a feedback pass. Because approval is bound
+to the head commit (see [Squash-finalize](#squash-finalize)), the merged head needs a fresh human
+approval. A rejected result restores the branch, records the `{PR head, base head}` pair (origin's
+head, as GitHub reports it) in local state, and asks a human on the PR. The executor does not retry
+while that pair is unchanged, so an unresolvable conflict does not dispatch a fresh session on every
+wake. A session that ends on quota only restores the branch and retries on a later wake. A session
+error (which includes max-turns, budget, and timeout ends) is retried once for the same pair and
+then recorded like a rejection. A failed push or label transition after the merge commit restores
+the branch and the prior labels and retries on a later wake. The squash-finalize path likewise
+brings a branch that is behind up to date by merging the base; a conflict there is aborted and
+picked up by this path on a later wake.
+
 ### Test execution
 
 Prauto runs the unattended form of the protocol in [`TESTING.md`](TESTING.md), which is
@@ -1050,10 +1090,15 @@ against real LLM, Redis, or notification backends.
 
 ### Squash-finalize
 
-**Trigger**: PR has `prauto:review` label, assigned to worker, mergeable, clean, latest review
-APPROVED.
+**Trigger**: PR has `prauto:review` label, assigned to worker, mergeable, clean, and an org
+member's latest review is APPROVED **on the current head commit**. An approval left on an earlier
+commit does not count: anything prauto pushes after it (feedback commits, a base merge) has not been
+reviewed. The squash is bound to that approved head: if the branch moved between the check and the
+checkout it is skipped, the force-push lease is taken on the approved head, and only reviewers who
+approved that commit are credited as co-authors.
 
-**Steps**: Rebase on base -> generate squash commit message (1-turn worker, no tools) ->
+**Steps**: Merge the base when the branch is behind it (a conflict aborts and is left to
+[base-branch conflict resolution](#base-branch-conflicts)) -> generate squash commit message (1-turn worker, no tools) ->
 `git reset --soft` + commit -> force-push with lease -> post the squashed commit link on the
 issue -> update PR title -> labels to `prauto:done` on issue + PR. Does **not** merge or close --
 left to the human.

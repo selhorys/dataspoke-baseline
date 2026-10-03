@@ -175,6 +175,275 @@ finalize_issue_pr() {
   fi
 }
 
+# new_conflict_marker_lines <path> <blob_spec> <parent_spec...>
+# Print the conflict-marker lines (`<<<<<<< ` / `>>>>>>> `; a bare `=======` is
+# also a legal Markdown setext underline) of <blob_spec> that appear in none of
+# the parent blobs. A marker-like line that already existed on either side (a
+# git tutorial, a test fixture) is not something the resolution introduced.
+new_conflict_marker_lines() {
+  local path="$1" blob="$2"; shift 2
+  local markers parents="" spec line
+  markers=$(executor_git show "$blob" 2>/dev/null | grep -E '^(<<<<<<<|>>>>>>>)( |$)') || return 0
+  for spec in "$@"; do
+    parents+=$(executor_git show "$spec" 2>/dev/null || printf '')$'\n'
+  done
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    grep -Fxq -- "$line" <<< "$parents" || printf '%s: %s\n' "$path" "$line"
+  done <<< "$markers"
+}
+
+# stage0_index_entries <excluded_paths>
+# Print the merged (stage-0) index entries, minus the given newline-separated
+# paths, prefixed by an "ok" line so an empty result can never pass for a failed
+# listing. The list reaches awk through ENVIRON: a newline inside an `awk -v`
+# value is an error in BSD awk, which would silently empty both snapshots.
+stage0_index_entries() {
+  local excluded="$1" listing
+  listing=$(executor_git ls-files -s 2>/dev/null) || return 1
+  printf 'ok\n'
+  printf '%s\n' "$listing" | PRAUTO_EXCLUDED_PATHS="$excluded" awk -F'\t' '
+    BEGIN { n = split(ENVIRON["PRAUTO_EXCLUDED_PATHS"], e, "\n"); for (i = 1; i <= n; i++) if (e[i] != "") skip[e[i]] = 1 }
+    NF >= 2 { split($1, meta, " "); if (meta[3] == "0" && !($2 in skip)) print }' | sort
+}
+
+# restore_review_labels <issue_number> <branch>
+# Label-only return to prauto:review (no reviewer request), for a push that
+# never happened: the PR head is what it was before this attempt.
+restore_review_labels() {
+  local issue_number="$1" branch="$2"
+  set_pr_review_label "$branch" || return 1
+  gh issue edit "$issue_number" -R "$PRAUTO_GITHUB_REPO" \
+    --remove-label "$PRAUTO_GITHUB_LABEL_WIP" \
+    --add-label "$PRAUTO_GITHUB_LABEL_REVIEW" 2>/dev/null
+}
+
+# restore_conflict_branch <orig_head>
+# Put the worktree and branch back exactly at <orig_head>. Hooks and fsmonitor
+# are disabled: a worker session ran in this worktree.
+restore_conflict_branch() {
+  local orig_head="$1"
+  executor_git merge --abort >/dev/null 2>&1 || true
+  executor_git reset --hard "$orig_head" >/dev/null 2>&1 \
+    || warn "Could not restore ${orig_head:0:12} after a failed conflict resolution."
+  executor_git clean -fdq >/dev/null 2>&1 || true
+}
+
+# abandon_conflict_resolution <pr> <issue> <orig_head> <guard_head> <base_sha> <reason> <files> [record]
+# Restore the branch (nothing was pushed, origin is untouched). Unless
+# record=false (an agent quota or session error, which deserves a retry),
+# remember the failed {PR head, base head} pair and ask a human.
+abandon_conflict_resolution() {
+  local pr_number="$1" issue_number="$2" orig_head="$3" guard_head="$4" base_sha="$5" reason="$6" files="$7" record="${8:-true}"
+  restore_conflict_branch "$orig_head"
+  warn "PR #${pr_number}: conflict resolution failed: ${reason}"
+  [[ "$record" == true ]] || return 0
+  record_conflict_attempt "$issue_number" "$guard_head" "$base_sha"
+  local listing="${files:-(none listed)}"
+  prauto_pr_comment "$pr_number" "Merge conflict with \`${PRAUTO_BASE_BRANCH}\` needs a human
+
+Merging \`origin/${PRAUTO_BASE_BRANCH}\` (${base_sha:0:12}) into this branch conflicted, and the automatic resolution was not accepted: ${reason}.
+The branch is unchanged. Affected files:
+
+\`\`\`
+${listing}
+\`\`\`
+
+Resolve the conflict and push. prauto retries by itself once the base branch or this branch moves." \
+    "Failed to post the conflict-resolution failure on PR #${pr_number}."
+}
+
+# resolve_pr_conflicts <pr_number> <branch> <issue_number> [pr_title] [plan]
+# Merge origin/<base> into the PR branch. When git cannot merge on its own, a
+# worker resolves ONLY the conflicted paths in the index. The executor accepts the
+# result only if: the worker made no commit and kept the merge in progress; no
+# path is unmerged; every non-conflicted index entry is exactly what git merged;
+# and no conflicted blob carries a marker line absent from both parents. It then
+# commits the index, resets the worktree to that commit, pushes, and sends the PR
+# through the post-PR readiness gate exactly as a feedback pass does. Approval
+# is bound to the head commit (check_review_pr), so the merged head needs a
+# fresh human approval before it can be squash-finalized. Must be called from
+# inside the PR worktree. Returns 1 when nothing was pushed.
+resolve_pr_conflicts() {
+  local pr_number="$1" branch="$2" issue_number="$3" pr_title="${4:-}" plan="${5:-}"
+  local base_ref="origin/${PRAUTO_BASE_BRANCH}" orig_head guard_head base_sha conflicted=""
+
+  export GIT_AUTHOR_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_AUTHOR_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
+  export GIT_COMMITTER_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
+
+  orig_head=$(git rev-parse --verify HEAD 2>/dev/null) || { warn "PR #${pr_number}: could not read HEAD."; return 1; }
+  # The guard is compared against GitHub's headRefOid, i.e. origin's head.
+  guard_head=$(git rev-parse --verify --quiet "refs/remotes/origin/${branch}" 2>/dev/null || printf '%s' "$orig_head")
+  git fetch origin "$PRAUTO_BASE_BRANCH" 2>/dev/null || { warn "PR #${pr_number}: git fetch failed."; return 1; }
+  base_sha=$(git rev-parse --verify "${base_ref}^{commit}" 2>/dev/null) || { warn "PR #${pr_number}: cannot resolve ${base_ref}."; return 1; }
+
+  # Only origin's head is what reviewers can see. Local-only commits (a kept
+  # checkpoint) would be published under this merge without any check.
+  if [[ "$orig_head" != "$guard_head" ]]; then
+    abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+      "the local branch has commits origin/${branch} does not" ""
+    return 1
+  fi
+  if git merge-base --is-ancestor "$base_ref" HEAD 2>/dev/null; then
+    info "PR #${pr_number}: origin/${branch} already contains ${base_ref}; GitHub's conflict state is stale. Nothing to do."
+    return 1
+  fi
+  local control_before
+  control_before=$(git_control_fingerprint) || control_before=""
+  if [[ -z "$control_before" ]]; then
+    warn "PR #${pr_number}: cannot fingerprint git configuration; not resolving conflicts this wake."
+    return 1
+  fi
+  if executor_git merge --no-ff --no-commit "$base_ref" >/dev/null 2>&1; then
+    info "PR #${pr_number}: ${base_ref} merged without conflicts."
+  else
+    conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || printf '')
+    if [[ -z "$conflicted" ]]; then
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "git could not start the merge" ""
+      return 1
+    fi
+    local clean_entries
+    clean_entries=$(stage0_index_entries "$conflicted") || clean_entries=""
+    info "PR #${pr_number}: conflicts in $(wc -l <<< "$conflicted" | tr -d ' ') file(s); dispatching a resolution session."
+    run_conflict_resolution "$issue_number" "$branch" "$conflicted" "$pr_title" "$plan"
+    if [[ "$AGENT_STATUS" == "quota" ]]; then
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "the resolution session hit the agent quota; retrying on a later wake" "$conflicted" false
+      return 1
+    fi
+    if [[ "$AGENT_STATUS" != "ok" ]]; then
+      # max-turns, budget and timeout ends all classify as error: retry once,
+      # then record the pair so the same conflict is not paid for every wake.
+      local errors
+      errors=$(note_conflict_session_error "$issue_number" "$guard_head" "$base_sha")
+      if [[ "$errors" -lt 2 ]]; then
+        abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+          "the resolution session ended with status ${AGENT_STATUS}; retrying on a later wake" "$conflicted" false
+      else
+        abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+          "the resolution session ended with status ${AGENT_STATUS} on ${errors} attempts" "$conflicted"
+      fi
+      return 1
+    fi
+
+    # Executor-side verification. The worker's report is never evidence, and
+    # every git call here runs with the worker's hooks/fsmonitor disabled.
+    local head_now merge_head unmerged markers="" found p control_after
+    control_after=$(git_control_fingerprint) || control_after=""
+    if [[ "$control_after" != "$control_before" ]]; then
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "git configuration, attributes, or hooks changed during the session" "$conflicted"
+      return 1
+    fi
+    head_now=$(executor_git rev-parse --verify HEAD 2>/dev/null || printf '')
+    merge_head=$(executor_git rev-parse --verify --quiet MERGE_HEAD 2>/dev/null || printf '')
+    if [[ "$head_now" != "$orig_head" || "$merge_head" != "$base_sha" ]]; then
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "the session committed, aborted, or redirected the merge" "$conflicted"
+      return 1
+    fi
+    unmerged=$(executor_git diff --name-only --diff-filter=U 2>/dev/null || printf '')
+    if [[ -n "$unmerged" ]]; then
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "files are still unmerged" "$unmerged"
+      return 1
+    fi
+    local entries_now
+    entries_now=$(stage0_index_entries "$conflicted") || entries_now=""
+    if [[ -z "$clean_entries" || "$entries_now" != "$clean_entries" ]]; then
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "the session changed files outside the conflicted set" "$conflicted"
+      return 1
+    fi
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      # A path resolved by deletion has no stage-0 blob and nothing to scan.
+      executor_git cat-file -e ":0:${p}" 2>/dev/null || continue
+      found=$(new_conflict_marker_lines "$p" ":0:${p}" "${orig_head}:${p}" "${base_sha}:${p}")
+      [[ -n "$found" ]] && markers+="${found}"$'\n'
+    done <<< "$conflicted"
+    markers="${markers%$'\n'}"
+    if [[ -n "$markers" ]]; then
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "conflict markers remain" "$markers"
+      return 1
+    fi
+  fi
+
+  if executor_git rev-parse --verify --quiet MERGE_HEAD >/dev/null 2>&1; then
+    executor_git commit --no-edit --no-verify \
+      --author="${PRAUTO_GIT_AUTHOR_NAME} <${PRAUTO_GIT_AUTHOR_EMAIL}>" \
+      -m "Merge ${base_ref} into ${branch}" >/dev/null 2>&1 || {
+      abandon_conflict_resolution "$pr_number" "$issue_number" "$orig_head" "$guard_head" "$base_sha" \
+        "the merge commit could not be created" "$conflicted"
+      return 1
+    }
+  fi
+  # Only the committed index is the result: drop any unstaged or untracked worker
+  # leftovers so the regression below exercises exactly the pushed head.
+  executor_git reset --hard HEAD >/dev/null 2>&1 || true
+  executor_git clean -fdq >/dev/null 2>&1 || true
+
+  clear_conflict_attempt "$issue_number"
+  # The merged head has not passed readiness; return to WIP before pushing it.
+  if ! regression_set_wip "$issue_number" "$branch"; then
+    warn "Cannot establish WIP state for the conflict merge on #${issue_number}; retrying later."
+    restore_conflict_branch "$orig_head"
+    return 1
+  fi
+  if ! push_branch_ref "$branch" 2>/dev/null; then
+    warn "PR #${pr_number}: pushing the conflict merge failed (did ${branch} move?); restoring and retrying later."
+    restore_conflict_branch "$orig_head"
+    # Nothing new reached origin: put back the review state the PR had.
+    restore_review_labels "$issue_number" "$branch" || \
+      prauto_pr_comment "$pr_number" "Base branch merge not pushed
+
+Pushing the merge of \`${base_ref}\` failed and the review labels could not be restored. The branch is unchanged; prauto retries on a later wake." \
+        "Failed to post the conflict push-failure note on PR #${pr_number}."
+    return 1
+  fi
+  info "PR #${pr_number}: pushed the merge of ${base_ref}."
+  link_branch_to_issue "$issue_number" "$branch" || true
+  publish_commit_checkpoints "$issue_number" "$branch" || true
+
+  local summary="${CONFLICT_RESOLUTION_SUMMARY:-}" body
+  if [[ -n "$conflicted" ]]; then
+    summary=$(scrub_secrets "$summary")
+    [[ ${#summary} -gt 6000 ]] && summary="${summary:0:6000}
+... (truncated)"
+    body="Merged \`${base_ref}\` (${base_sha:0:12}) and resolved conflicts in:
+
+\`\`\`
+${conflicted}
+\`\`\`
+
+${summary}"
+  else
+    body="Merged \`${base_ref}\` (${base_sha:0:12}) without conflicts."
+  fi
+  prauto_pr_comment "$pr_number" "Base branch merged
+
+${body}
+
+The post-PR regression reruns on the merged head. Approval is bound to the head commit, so this PR needs a fresh approval before it can be squash-finalized." \
+    "Failed to post the conflict-resolution comment on PR #${pr_number}."
+  CONFLICT_RESOLUTION_SUMMARY=""
+
+  create_or_update_pr "$issue_number" "" "$branch"
+  if run_post_pr_regression "$issue_number" "$branch"; then
+    if regression_ready "$issue_number" "$branch"; then
+      complete_job "$issue_number"
+      info "Conflict merge for #${issue_number} pushed and regression-gated."
+    else
+      warn "Regression passed but review labels could not be established for #${issue_number}."
+    fi
+  else
+    warn "Conflict merge for #${issue_number} is not review-ready; it remains in prauto:wip."
+  fi
+  return 0
+}
+
 # tail_chars <text> <max_chars> — keep the last N characters (failure summaries
 # print last).
 tail_chars() {

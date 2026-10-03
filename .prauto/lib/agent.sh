@@ -880,6 +880,32 @@ run_pr_review() {
   REVIEW_RESPONSE="$AGENT_OUTPUT"
 }
 
+# run_conflict_resolution <issue_number> <branch> <conflicted_files> <pr_title> <plan>
+# A merge of origin/<base> is in progress in the worktree; the worker resolves the
+# conflicted files and stages them. It never commits, aborts, or pushes: the
+# executor (resolve_pr_conflicts) verifies the index and tree and commits. A
+# fixed repair session, so delegation tools are denied as for the fix sessions.
+# Sets CONFLICT_RESOLUTION_SUMMARY.
+#
+# On top of the fix-session denial, the session may not move refs, end or
+# restart the merge, rewrite the worktree wholesale, or touch git configuration
+# and hooks. The executor's verification does not depend on these denials (it
+# rejects a moved HEAD, a lost MERGE_HEAD, or any non-conflicted index change);
+# they keep the session inside the state the executor checks.
+CONFLICT_DENY_TOOLS_EXTRA="Bash(git commit *),Bash(git merge *),Bash(git rebase *),Bash(git reset *),Bash(git checkout *),Bash(git switch *),Bash(git restore *),Bash(git stash *),Bash(git update-ref *),Bash(git config *),Bash(git clean *),Write(.git/**),Edit(.git/**),Write(${REPO_DIR:-.}/.git/**),Edit(${REPO_DIR:-.}/.git/**)"
+run_conflict_resolution() {
+  local issue_number="$1" branch="$2" conflicted_files="$3" pr_title="$4" plan="${5:-}"
+  local prompt
+  prompt=$(render_prompt "${PRAUTO_DIR}/prompts/conflict-resolution.md" \
+    "number=${issue_number}" "branch=${branch}" "base=${PRAUTO_BASE_BRANCH}" \
+    "conflicted_files=${conflicted_files}" "pr_title=${pr_title}" "plan=${plan}" \
+    "author_name=${PRAUTO_GIT_AUTHOR_NAME}" "author_email=${PRAUTO_GIT_AUTHOR_EMAIL}")
+  invoke_agent "$prompt" "$IMPLEMENTATION_ALLOWED_TOOLS" "${PRAUTO_CLAUDE_MAX_TURNS_CONFLICT_FIX:-100}" \
+    "${PRAUTO_CLAUDE_MAX_BUDGET_CONFLICT_FIX:-${PRAUTO_CLAUDE_MAX_BUDGET_IMPLEMENTATION:-}}" \
+    "${DENY_TOOLS},${FIX_DENY_TOOLS_EXTRA},${CONFLICT_DENY_TOOLS_EXTRA}"
+  CONFLICT_RESOLUTION_SUMMARY="$AGENT_RESULT"
+}
+
 # generate_feedback_response <issue_number> <issue_title> <feedback> <previous_plan>
 generate_feedback_response() {
   local issue_number="$1" issue_title="$2" feedback="$3" previous_plan="$4"

@@ -8,6 +8,7 @@ so there is no `spec/*.md` citation to make.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -107,6 +108,24 @@ fi
 if [[ "$1" == api ]] && [[ "$*" == *"/comments"* ]]; then
   printf '[]'
   exit 0
+fi
+
+# check_review_pr's PR detail, org-member list and base-branch head. Each is
+# answered only when its knob is set, so every other scenario keeps the silent
+# catch-all behaviour below.
+if [[ "$1" == pr && "$2" == view ]]; then
+  [[ -n "${GH_PR_VIEW_JSON:-}" ]] && cat "$GH_PR_VIEW_JSON"
+  exit 0
+fi
+
+if [[ "$1" == api ]] && [[ "$*" == *"orgs/"*"/members"* ]]; then
+  [[ -n "${GH_ORG_MEMBERS:-}" ]] && printf '%s' "$GH_ORG_MEMBERS"
+  exit 0
+fi
+
+if [[ "$1" == api ]] && [[ "$*" == *"/branches/"* ]]; then
+  printf '%s' "${GH_BASE_SHA:-}"
+  exit "${GH_BRANCH_EXIT:-0}"
 fi
 
 exit 0
@@ -450,10 +469,37 @@ def test_check_review_pr_ignores_cross_repository_fork_entry(tmp_path: Path) -> 
     assert "pr list" not in calls_text
 
 
-# --- squash rebase preparation ----------------------------------------------
+# --- sync_pr_branch_with_base -------------------------------------------------
+#
+# spec: spec/AI_PRAUTO.md §Base-branch conflicts ("The squash-finalize path likewise brings a
+# branch that is behind up to date by merging the base; a conflict there is aborted and
+# picked up by this path on a later wake") and §Squash-finalize ("Merge the base when the
+# branch is behind it (a conflict aborts ...)").
+
+_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "test",
+    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "test",
+    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+}
 
 
-def test_squash_rebase_skips_when_branch_already_contains_base(tmp_path: Path) -> None:
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        check=False,
+        text=True,
+        env={**os.environ, **_GIT_ENV},
+    )
+    if check:
+        assert result.returncode == 0, f"git {' '.join(args)}: {result.stderr}"
+    return result
+
+
+def test_sync_skips_when_branch_already_contains_base(tmp_path: Path) -> None:
     events = tmp_path / "git.events"
     result = _run(
         _source_pr()
@@ -464,20 +510,20 @@ git() {
   case "$1" in
     fetch) printf 'fetch %s\\n' "$*" >> "$GIT_EVENTS" ;;
     merge-base) return 0 ;;
-    rebase) printf 'rebase %s\\n' "$*" >> "$GIT_EVENTS" ;;
+    merge|rebase) printf 'mutate %s\\n' "$*" >> "$GIT_EVENTS" ;;
   esac
 }
-rebase_pr_branch_if_needed 203
+sync_pr_branch_with_base 203
 """,
         env=_base_env(tmp_path),
     )
 
     assert result.returncode == 0, result.stderr
-    assert events.read_text() == "fetch fetch origin dev\n"
-    assert "already contains origin/dev; skipping rebase" in result.stdout
+    assert events.read_text() == "fetch fetch origin dev\n"  # fetched, then nothing mutated
+    assert "already contains origin/dev; skipping merge" in result.stdout
 
 
-def test_squash_rebase_runs_when_branch_is_behind_base(tmp_path: Path) -> None:
+def test_sync_merges_the_base_when_branch_is_behind(tmp_path: Path) -> None:
     events = tmp_path / "git.events"
     result = _run(
         _source_pr()
@@ -488,16 +534,85 @@ git() {
   case "$1" in
     fetch) printf 'fetch %s\\n' "$*" >> "$GIT_EVENTS" ;;
     merge-base) return 1 ;;
+    merge) printf 'merge %s\\n' "$*" >> "$GIT_EVENTS" ;;
     rebase) printf 'rebase %s\\n' "$*" >> "$GIT_EVENTS" ;;
   esac
 }
-rebase_pr_branch_if_needed 203
+sync_pr_branch_with_base 203
 """,
         env=_base_env(tmp_path),
     )
 
     assert result.returncode == 0, result.stderr
-    assert events.read_text() == "fetch fetch origin dev\nrebase rebase origin/dev\n"
+    # A merge, never a rebase: existing history is kept (spec §Base-branch conflicts).
+    assert events.read_text() == "fetch fetch origin dev\nmerge merge --no-edit origin/dev\n"
+
+
+def test_sync_merges_for_real_when_branch_is_behind(tmp_path: Path) -> None:
+    repo, branch_head, base_head = _diverged_repo(tmp_path, conflicting=False)
+
+    result = _run(
+        _source_pr() + "\nPRAUTO_BASE_BRANCH=dev\ncd " + shlex.quote(str(repo))
+        + '\nsync_pr_branch_with_base 203; printf "rc=%s\\n" "$?"',
+        env={**_base_env(tmp_path), **_GIT_ENV},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == "rc=0"
+    parents = _git(repo, "rev-list", "--parents", "-n1", "HEAD").stdout.split()[1:]
+    assert parents == [branch_head, base_head]  # a merge commit, old head first
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+def test_sync_aborts_a_conflicting_merge_and_leaves_the_tree_clean(tmp_path: Path) -> None:
+    repo, branch_head, base_head = _diverged_repo(tmp_path, conflicting=True)
+    # Backstop: the merge really conflicts, so the abort path below is the one under test.
+    probe = _git(repo, "merge", "--no-edit", base_head, check=False)
+    assert probe.returncode != 0
+    _git(repo, "merge", "--abort")
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == branch_head
+
+    result = _run(
+        _source_pr() + "\nPRAUTO_BASE_BRANCH=dev\ncd " + shlex.quote(str(repo))
+        + '\nsync_pr_branch_with_base 203; printf "rc=%s\\n" "$?"',
+        env={**_base_env(tmp_path), **_GIT_ENV},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == "rc=1"
+    assert "conflicted" in result.stdout  # the conflict warning, not a fetch failure
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == branch_head
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    assert _git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode != 0
+
+
+def _diverged_repo(tmp_path: Path, *, conflicting: bool) -> tuple[Path, str, str]:
+    """A clone checked out on a PR branch while origin/dev has moved on.
+
+    Returns (clone, branch head, origin/dev head). `conflicting` makes both sides edit the
+    same line of one file; otherwise they touch different files.
+    """
+    remote, repo, other = tmp_path / "remote.git", tmp_path / "repo", tmp_path / "other"
+    _git(tmp_path, "init", "--bare", "-b", "dev", str(remote))
+    _git(tmp_path, "init", "-b", "dev", str(repo))
+    _git(repo, "remote", "add", "origin", str(remote))
+    (repo / "shared.txt").write_text("base\n")
+    _git(repo, "add", "shared.txt")
+    _git(repo, "commit", "-m", "base")
+    _git(repo, "push", "origin", "dev")
+    _git(repo, "checkout", "-b", "prauto/I-1")
+    (repo / ("shared.txt" if conflicting else "work.txt")).write_text("branch\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "branch work")
+    branch_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(tmp_path, "clone", str(remote), str(other))
+    (other / ("shared.txt" if conflicting else "dev.txt")).write_text("dev\n")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-m", "dev work")
+    _git(other, "push", "origin", "dev")
+    base_head = _git(other, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "fetch", "origin", "dev")
+    return repo, branch_head, base_head
 
 
 def test_check_review_pr_returns_waiting_on_api_error_object_without_jq_error(
@@ -602,3 +717,204 @@ def test_derive_phase_from_github_does_not_report_pr_for_fork_only_entry(
     calls_text = calls.read_text()
     assert "api repos/owner/repo/pulls?head=owner:prauto/I-42&state=open" in calls_text
     assert "pr list" not in calls_text
+
+
+# --- check_review_pr: head-bound approval and base-branch conflicts -------------
+#
+# spec: spec/AI_PRAUTO.md §Squash-finalize (Trigger: an org member's latest review is APPROVED
+# "on the current head commit"; an approval left on an earlier commit does not count) and
+# §Base-branch conflicts (CONFLICTING/DIRTY is routed to conflict resolution ahead of feedback
+# and regardless of approval; UNKNOWN is not a conflict; a failed attempt is recorded against
+# the {PR head, base head} pair and not retried while the pair is unchanged; a new base commit
+# or a human push re-arms it).
+
+HEAD_SHA = "a" * 40
+OLD_SHA = "b" * 40
+BASE_SHA = "c" * 40
+NEW_BASE_SHA = "d" * 40
+
+
+def _review(login: str, state: str, oid: str, at: str = "2026-01-01T00:00:00Z") -> dict:
+    return {
+        "author": {"login": login},
+        "state": state,
+        "submittedAt": at,
+        "commit": {"oid": oid},
+    }
+
+
+def _pr_detail(
+    mergeable: str,
+    merge_state: str,
+    reviews: list[dict] | None = None,
+    head: str = HEAD_SHA,
+) -> dict:
+    return {
+        "mergeable": mergeable,
+        "mergeStateStatus": merge_state,
+        "headRefOid": head,
+        "reviews": reviews if reviews is not None else [],
+    }
+
+
+def _check_review(
+    tmp_path: Path, detail: dict, *, base_sha: str = BASE_SHA, pre: str = ""
+) -> tuple[dict[str, str], str]:
+    """Run check_review_pr 42 against a stubbed PR; returns (parsed result, gh call log)."""
+    bin_dir, calls = _make_gh_stub(tmp_path)
+    pulls_responses = tmp_path / "pulls.jsonl"
+    pulls_responses.write_text(
+        '[{"number": 20, "head": {"repo": {"full_name": "owner/repo"}}}]\n'
+    )
+    view = tmp_path / "view.json"
+    view.write_text(json.dumps(detail))
+    state_dir = tmp_path / "state"
+    script = (
+        _source_pr(with_issues=True)
+        + f"\nsource {shlex.quote(str(PRAUTO / 'lib/state.sh'))}"
+        + ISOLATE_REAL_STATE_SHELL
+        + f"\nSTATE_DIR={shlex.quote(str(state_dir))}"
+        + '\nmkdir -p "$STATE_DIR"'
+        + "\nPRAUTO_GITHUB_REPO=owner/repo"
+        + "\nPRAUTO_BRANCH_PREFIX=prauto/"
+        + "\nPRAUTO_BASE_BRANCH=dev"
+        + "\nPRAUTO_WORKER_ID=worker"
+        + "\nPRAUTO_GITHUB_ACTOR=bot"
+        + f"\n{pre}"
+        + "\nrc=0; check_review_pr 42 || rc=$?"
+        + '\nprintf "OUT:rc=%s\\nOUT:action=%s\\nOUT:head=%s\\n" '
+        + '"$rc" "$REVIEW_PR_ACTION" "$REVIEW_PR_HEAD_SHA"'
+    )
+    result = _run(
+        script,
+        env={
+            **_base_env(bin_dir),
+            "GH_CALLS": str(calls),
+            "GH_PULLS_RESPONSES": str(pulls_responses),
+            "GH_PULLS_CALL_INDEX": str(tmp_path / "pulls.idx"),
+            "GH_PR_VIEW_JSON": str(view),
+            "GH_ORG_MEMBERS": '["alice"]',
+            "GH_BASE_SHA": base_sha,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    parsed = dict(
+        line[4:].split("=", 1) for line in result.stdout.splitlines() if line.startswith("OUT:")
+    )
+    return parsed, calls.read_text()
+
+
+def test_conflicting_pr_routes_to_conflict_resolution_without_approval(tmp_path: Path) -> None:
+    out, calls = _check_review(tmp_path, _pr_detail("CONFLICTING", "DIRTY"))
+
+    assert (out["rc"], out["action"]) == ("0", "conflict_resolution")
+    assert "branches/dev" in calls  # the base head was read for the repeat guard
+
+
+def test_conflicting_pr_with_a_current_approval_still_routes_to_conflict_resolution(
+    tmp_path: Path,
+) -> None:
+    detail = _pr_detail("CONFLICTING", "DIRTY", [_review("alice", "APPROVED", HEAD_SHA)])
+
+    out, _ = _check_review(tmp_path, detail)
+
+    assert out["action"] == "conflict_resolution"
+    assert out["rc"] == "0"
+
+
+def test_dirty_merge_state_routes_to_conflict_resolution(tmp_path: Path) -> None:
+    out, _ = _check_review(tmp_path, _pr_detail("MERGEABLE", "DIRTY"))
+
+    assert out["action"] == "conflict_resolution"
+    assert out["rc"] == "0"
+
+
+def test_unknown_mergeability_is_not_a_conflict(tmp_path: Path) -> None:
+    detail = _pr_detail("UNKNOWN", "UNKNOWN", [_review("alice", "APPROVED", HEAD_SHA)])
+
+    out, calls = _check_review(tmp_path, detail)
+
+    assert (out["rc"], out["action"]) == ("1", "")
+    assert "branches/" not in calls  # never reached the conflict branch
+
+
+def test_clean_approval_on_the_current_head_is_squash_ready_and_binds_the_head(
+    tmp_path: Path,
+) -> None:
+    detail = _pr_detail("MERGEABLE", "CLEAN", [_review("alice", "APPROVED", HEAD_SHA)])
+
+    out, _ = _check_review(tmp_path, detail)
+
+    assert out == {"rc": "0", "action": "squash_ready", "head": HEAD_SHA}
+
+
+def test_approval_on_an_older_commit_is_not_squash_ready(tmp_path: Path) -> None:
+    detail = _pr_detail("MERGEABLE", "CLEAN", [_review("alice", "APPROVED", OLD_SHA)])
+
+    out, _ = _check_review(tmp_path, detail)
+
+    assert out["action"] != "squash_ready"
+    assert (out["rc"], out["action"]) == ("1", "")
+
+
+def test_latest_review_on_the_head_that_is_not_an_approval_is_not_squash_ready(
+    tmp_path: Path,
+) -> None:
+    reviews = [
+        _review("alice", "APPROVED", HEAD_SHA, "2026-01-01T00:00:00Z"),
+        _review("alice", "CHANGES_REQUESTED", HEAD_SHA, "2026-01-02T00:00:00Z"),
+    ]
+
+    out, _ = _check_review(tmp_path, _pr_detail("MERGEABLE", "CLEAN", reviews))
+
+    assert out["action"] != "squash_ready"
+
+
+def test_approval_from_a_non_member_does_not_count(tmp_path: Path) -> None:
+    detail = _pr_detail("MERGEABLE", "CLEAN", [_review("mallory", "APPROVED", HEAD_SHA)])
+
+    out, _ = _check_review(tmp_path, detail)
+
+    assert out["action"] != "squash_ready"
+
+
+def test_failed_attempt_on_the_same_head_and_base_suppresses_the_retry(tmp_path: Path) -> None:
+    pre = f"record_conflict_attempt 42 {HEAD_SHA} {BASE_SHA}"
+
+    out, calls = _check_review(tmp_path, _pr_detail("CONFLICTING", "DIRTY"), pre=pre)
+
+    assert (out["rc"], out["action"]) == ("1", "")
+    assert "branches/dev" in calls  # the guard was consulted, not skipped for lack of a base
+    record = json.loads((tmp_path / "state" / "conflict-attempt-42.json").read_text())
+    assert (record["head_sha"], record["base_sha"]) == (HEAD_SHA, BASE_SHA)  # backstop
+
+
+def test_a_moved_base_rearms_a_failed_attempt(tmp_path: Path) -> None:
+    pre = f"record_conflict_attempt 42 {HEAD_SHA} {BASE_SHA}"
+
+    out, _ = _check_review(
+        tmp_path, _pr_detail("CONFLICTING", "DIRTY"), base_sha=NEW_BASE_SHA, pre=pre
+    )
+
+    assert out["action"] == "conflict_resolution"
+    assert out["rc"] == "0"
+
+
+def test_a_human_push_rearms_a_failed_attempt(tmp_path: Path) -> None:
+    pre = f"record_conflict_attempt 42 {OLD_SHA} {BASE_SHA}"
+
+    out, _ = _check_review(tmp_path, _pr_detail("CONFLICTING", "DIRTY", head=HEAD_SHA), pre=pre)
+
+    assert out["action"] == "conflict_resolution"
+    assert out["rc"] == "0"
+
+
+def test_an_error_counter_record_without_failed_at_does_not_suppress(tmp_path: Path) -> None:
+    pre = f"note_conflict_session_error 42 {HEAD_SHA} {BASE_SHA} >/dev/null"
+
+    out, _ = _check_review(tmp_path, _pr_detail("CONFLICTING", "DIRTY"), pre=pre)
+
+    record = json.loads((tmp_path / "state" / "conflict-attempt-42.json").read_text())
+    assert record["session_errors"] == 1 and "failed_at" not in record  # backstop: it exists
+    assert out["action"] == "conflict_resolution"
+    assert out["rc"] == "0"

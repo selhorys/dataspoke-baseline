@@ -205,13 +205,16 @@ ${commit_log}
 
 # check_review_pr <issue_number>
 # For a prauto:review issue, determine the next action. Priority: squash-finalize
-# (approved + mergeable + clean) > address feedback > waiting.
-# Sets: REVIEW_PR_NUMBER/BRANCH/ACTION/TITLE/BODY, ACTIONABLE_COMMENTS.
+# (approved + mergeable + clean) > resolve base-branch conflicts > address
+# feedback > waiting.
+# Sets: REVIEW_PR_NUMBER/BRANCH/ACTION/TITLE/BODY/HEAD_SHA, ACTIONABLE_COMMENTS.
+# REVIEW_PR_HEAD_SHA is the head the squash-ready approval was checked against.
 # Returns 0 if actionable, 1 if waiting/no-pr.
 check_review_pr() {
   local issue_number="$1"
   REVIEW_PR_BRANCH="${PRAUTO_BRANCH_PREFIX}I-${issue_number}"
   REVIEW_PR_ACTION=""
+  REVIEW_PR_HEAD_SHA=""
 
   local owner="${PRAUTO_GITHUB_REPO%%/*}" pr_list_json
   pr_list_json=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls?head=${owner}:${REVIEW_PR_BRANCH}&state=open" 2>/dev/null \
@@ -225,28 +228,56 @@ check_review_pr() {
 
   local pr_detail
   pr_detail=$(gh pr view "$REVIEW_PR_NUMBER" -R "$PRAUTO_GITHUB_REPO" \
-    --json mergeable,mergeStateStatus,reviews 2>/dev/null) || pr_detail=""
+    --json mergeable,mergeStateStatus,reviews,headRefOid 2>/dev/null) || pr_detail=""
 
-  # Priority 1: squash-ready (approved + MERGEABLE + CLEAN).
+  # Priority 1: squash-ready (approved + MERGEABLE + CLEAN). An approval counts
+  # only when it was left on the current head commit: anything prauto pushes
+  # after an approval (feedback commits, a base merge) has not been reviewed, so
+  # it needs a fresh approval before it is squash-finalized.
   if [[ -n "$pr_detail" ]] && fetch_org_members 2>/dev/null; then
     local mergeable merge_state approver
     mergeable=$(printf '%s' "$pr_detail" | jq -r '.mergeable')
     merge_state=$(printf '%s' "$pr_detail" | jq -r '.mergeStateStatus')
     approver=$(printf '%s' "$pr_detail" | jq -r --argjson members "$ORG_MEMBERS_JSON" '
-      (.reviews // [])
+      .headRefOid as $head
+      | (.reviews // [])
       | map(select(.author.login as $a | $members | index($a) != null))
       | group_by(.author.login)
       | map(sort_by(.submittedAt) | last)
-      | map(select(.state == "APPROVED"))
+      | map(select(.state == "APPROVED" and ($head // "") != "" and (.commit.oid // "") == $head))
       | first // empty | .author.login // empty')
     if [[ -n "$approver" ]] && [[ "$mergeable" == "MERGEABLE" ]] && [[ "$merge_state" == "CLEAN" ]]; then
       REVIEW_PR_ACTION="squash_ready"
+      REVIEW_PR_HEAD_SHA=$(printf '%s' "$pr_detail" | jq -r '.headRefOid // ""')
       info "PR #${REVIEW_PR_NUMBER}: approved by '${approver}', mergeable, clean → squash-ready."
       return 0
     fi
   fi
 
-  # Priority 2: feedback-needed (unaddressed non-prauto comments).
+  # Priority 2: conflict-resolution (the PR no longer merges cleanly into the
+  # base). Approval is not required: an approved PR is exactly the one that
+  # would otherwise sit unsquashable forever. It outranks feedback because a
+  # feedback pass on a stale base would only conflict again. UNKNOWN (GitHub
+  # still computing mergeability) is not a conflict; a later wake re-reads it.
+  if [[ -n "$pr_detail" ]]; then
+    local conflict_mergeable conflict_state conflict_head conflict_base
+    conflict_mergeable=$(printf '%s' "$pr_detail" | jq -r '.mergeable // ""')
+    conflict_state=$(printf '%s' "$pr_detail" | jq -r '.mergeStateStatus // ""')
+    if [[ "$conflict_mergeable" == "CONFLICTING" ]] || [[ "$conflict_state" == "DIRTY" ]]; then
+      conflict_head=$(printf '%s' "$pr_detail" | jq -r '.headRefOid // ""')
+      conflict_base=$(gh api "repos/${PRAUTO_GITHUB_REPO}/branches/${PRAUTO_BASE_BRANCH}" \
+        --jq '.commit.sha // ""' 2>/dev/null) || conflict_base=""
+      if conflict_attempt_is_unchanged "$issue_number" "$conflict_head" "$conflict_base"; then
+        info "PR #${REVIEW_PR_NUMBER}: conflicts with ${PRAUTO_BASE_BRANCH}; the last resolution attempt failed on this same head and base. Waiting for a human or a new base commit."
+        return 1
+      fi
+      REVIEW_PR_ACTION="conflict_resolution"
+      info "PR #${REVIEW_PR_NUMBER}: conflicts with ${PRAUTO_BASE_BRANCH} → conflict resolution."
+      return 0
+    fi
+  fi
+
+  # Priority 3: feedback-needed (unaddressed non-prauto comments).
   local pr_review_comments pr_issue_comments
   pr_review_comments=$(gh api "repos/${PRAUTO_GITHUB_REPO}/pulls/${REVIEW_PR_NUMBER}/comments" \
     --jq '[.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}]' 2>/dev/null || printf '[]')
@@ -307,48 +338,61 @@ check_review_pr() {
   return 1
 }
 
-# Rebase only when the current PR branch does not already contain the fetched
-# base branch. Replaying an already-merged base through `git rebase` can invent
-# conflicts for changes which the PR branch has already integrated.
-rebase_pr_branch_if_needed() {
+# sync_pr_branch_with_base <pr_number>
+# Bring the PR branch up to date with the fetched base branch by MERGING it, only
+# when the branch does not already contain it. The squash that follows resets
+# softly to the merge base, so merging yields the same squashed tree as a rebase
+# would, while conflicting at most once instead of once per replayed commit. A
+# conflicting merge is aborted and reported; check_review_pr then sees the PR as
+# CONFLICTING on a later wake and routes it to resolve_pr_conflicts.
+sync_pr_branch_with_base() {
   local pr_number="$1"
 
   git fetch origin "$PRAUTO_BASE_BRANCH" 2>/dev/null || { warn "PR #${pr_number}: git fetch failed."; return 1; }
   if git merge-base --is-ancestor "origin/${PRAUTO_BASE_BRANCH}" HEAD 2>/dev/null; then
-    info "PR #${pr_number}: branch already contains origin/${PRAUTO_BASE_BRANCH}; skipping rebase."
+    info "PR #${pr_number}: branch already contains origin/${PRAUTO_BASE_BRANCH}; skipping merge."
     return 0
   fi
 
-  git rebase "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null || {
-    warn "PR #${pr_number}: rebase failed. Aborting."
-    git rebase --abort 2>/dev/null || true
+  git merge --no-edit "origin/${PRAUTO_BASE_BRANCH}" >/dev/null 2>&1 || {
+    warn "PR #${pr_number}: merging origin/${PRAUTO_BASE_BRANCH} conflicted. Aborting; a later wake resolves it."
+    git merge --abort 2>/dev/null || true
     return 1
   }
 }
 
 # restore_squash_head <sha>
-# Undo a partial squash (rebase, reset --soft, squash commit) after a failure,
+# Undo a partial squash (base merge, reset --soft, squash commit) after a failure,
 # so the local branch keeps its pre-squash head. The squash is regenerated on the
 # next wake; a rewritten local ref left behind would read as diverged from origin
 # and make reconcile_branch_with_origin fail every later wake instead of retrying.
 restore_squash_head() {
   local sha="$1"
+  git merge --abort 2>/dev/null || true
   git rebase --abort 2>/dev/null || true
   git reset --hard "$sha" >/dev/null 2>&1 || warn "Could not restore the pre-squash head ${sha:0:12}."
 }
 
-# squash_and_finalize_pr <pr_number> <pr_branch> <pr_title> <pr_body> <issue_number>
+# squash_and_finalize_pr <pr_number> <pr_branch> <pr_title> <pr_body> <issue_number> [approved_sha]
 # Squash the PR branch into one commit, force-push, mark prauto:done. Does NOT
 # merge or close — left to the human. Must be called from inside the worktree.
+# approved_sha (check_review_pr's REVIEW_PR_HEAD_SHA) binds the squash to the
+# head that was approved: a push landing between that check and this checkout
+# is refused, the force-push lease is taken on it, and only reviewers who
+# approved that commit are credited.
 squash_and_finalize_pr() {
-  local pr_number="$1" pr_branch="$2" pr_title="$3" pr_body="$4" issue_number="$5"
+  local pr_number="$1" pr_branch="$2" pr_title="$3" pr_body="$4" issue_number="$5" approved_sha="${6:-}"
 
   export GIT_AUTHOR_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_AUTHOR_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
   export GIT_COMMITTER_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
 
   local orig_head
   orig_head=$(git rev-parse --verify HEAD 2>/dev/null) || { warn "PR #${pr_number}: could not read HEAD."; return 1; }
-  rebase_pr_branch_if_needed "$pr_number" || { restore_squash_head "$orig_head"; return 1; }
+  if [[ -n "$approved_sha" && "$orig_head" != "$approved_sha" ]]; then
+    warn "PR #${pr_number}: branch head ${orig_head:0:12} is not the approved head ${approved_sha:0:12}. Skipping."
+    return 1
+  fi
+  sync_pr_branch_with_base "$pr_number" || { restore_squash_head "$orig_head"; return 1; }
 
   local merge_base
   merge_base=$(git merge-base HEAD "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null) || {
@@ -373,7 +417,8 @@ squash_and_finalize_pr() {
     [[ -z "$approver_email" ]] && approver_email="${approver_login}@users.noreply.github.com"
     co_authored_by+="Co-Authored-By: ${approver_name} <${approver_email}>"$'\n'
   done < <(gh pr view "$pr_number" -R "$PRAUTO_GITHUB_REPO" \
-    --json reviews --jq '[.reviews[] | select(.state=="APPROVED") | .author.login] | unique | .[]' 2>/dev/null)
+    --json reviews 2>/dev/null | jq -r --arg sha "$approved_sha" \
+      '[.reviews[] | select(.state=="APPROVED" and ($sha == "" or (.commit.oid // "") == $sha)) | .author.login] | unique | .[]' 2>/dev/null)
 
   [[ -n "$co_authored_by" ]] && SQUASH_COMMIT_MESSAGE="${SQUASH_COMMIT_MESSAGE}
 
@@ -399,7 +444,8 @@ ${co_authored_by%$'\n'}"
   # Force-push with lease, ALWAYS over SSH via the worker's dedicated key (scoped
   # by ~/.gitconfig includeIf). GH_TOKEN is API-only and never near the push path.
   local expected_sha lease_flag="--force-with-lease"
-  expected_sha=$(git rev-parse "refs/remotes/origin/${pr_branch}" 2>/dev/null || printf '')
+  expected_sha="$approved_sha"
+  [[ -n "$expected_sha" ]] || expected_sha=$(git rev-parse "refs/remotes/origin/${pr_branch}" 2>/dev/null || printf '')
   [[ -n "$expected_sha" ]] && lease_flag="--force-with-lease=refs/heads/${pr_branch}:${expected_sha}"
 
   git push "$lease_flag" origin "HEAD:refs/heads/${pr_branch}" 2>/dev/null || {

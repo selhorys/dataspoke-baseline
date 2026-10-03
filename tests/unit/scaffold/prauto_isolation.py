@@ -30,12 +30,14 @@ REAL_STATE_DIR = ROOT / ".prauto" / "state"
 SCRATCH_STATE_ENV = "PRAUTO_TEST_STATE_DIR"
 
 # The durable names a heartbeat owns: the provisioning/reap marker, the private
-# provision/teardown transcripts, and the dev-lock token claim.
+# provision/teardown transcripts, the dev-lock token claim, and the per-issue
+# base-branch conflict-attempt guard (a stray one would suppress a real retry).
 GUARDED_PATTERNS = (
     "dev-env-provisioned.json",
     "provision-*",
     "teardown-*",
     "dev-lock-token.json",
+    "conflict-attempt-*",
 )
 
 # `:?` makes a harness run outside the autouse fixture fail loudly rather than

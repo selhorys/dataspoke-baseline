@@ -30,7 +30,7 @@ See `spec/AI_PRAUTO.md` for the full specification.
 | `config.env` | Repo-level conventions (committed): labels, branch prefix, max retries, model, org-member filter, reviewer |
 | `config.local.env` | Instance identity + secrets (gitignored): `PRAUTO_WORKER_ID`, `PRAUTO_AGENT`, dev-cluster binding, `GH_TOKEN`, `ANTHROPIC_API_KEY` |
 | `config.local.env.example` | Committed template for `config.local.env` |
-| `prompts/*.md` | Worker phase prompt templates (analysis, implementation, integration-fix, e2e-fix, pr-review, squash-commit, feedback-response, system-append) — consumed by the executor's dispatch |
+| `prompts/*.md` | Worker phase prompt templates (analysis, implementation, integration-fix, e2e-fix, pr-review, conflict-resolution, squash-commit, feedback-response, system-append) — consumed by the executor's dispatch |
 | `state/` | Runtime state (gitignored) — session artifacts and logs |
 | `worktrees/` | Per-issue git worktrees (gitignored) |
 | `scheduler/launch.sh` | Hermes-binding launcher — detach+verify the executor and monitor in one step |

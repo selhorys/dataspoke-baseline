@@ -174,6 +174,58 @@ cleanup_worktree() {
   WORKTREE_DIR=""
 }
 
+# executor_git <args...>
+# git with repository hooks, fsmonitor, commit signing programs, credential
+# helpers/askpass and the ext:: transport disabled. Executor git commands that
+# run in a worktree a worker session used go through this. It does NOT neutralize
+# every config-driven program (core.sshCommand must stay: the bot's push key is
+# configured there; filter drivers are not overridden); resolve_pr_conflicts
+# covers that by rejecting a session that changed git's effective configuration,
+# attributes, or hooks (git_control_fingerprint). Plain git elsewhere in the
+# harness is unaffected.
+executor_git() {
+  git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false \
+    -c credential.helper= -c core.askPass= -c protocol.ext.allow=never "$@"
+}
+
+# git_control_fingerprint
+# One hash over git's control surface as seen from the current worktree: the
+# effective configuration with every origin (so include.path / includeIf targets,
+# such as the file carrying the bot's core.sshCommand, are covered), the content
+# of each config origin file, the attributes files (info/attributes and any
+# core.attributesFile), and the hooks directories. Taken before and after a
+# worker session; any difference means the session changed how later executor
+# git commands behave. It detects tampering DURING that session only; state an
+# earlier phase left behind is part of the baseline (see spec §Security Model).
+# Prints nothing and returns 1 when it cannot be computed. Hashes with git
+# itself, so it needs nothing beyond git.
+git_control_fingerprint() {
+  local common gitdir listing origins attributes f d
+  local -a hook_dirs=()
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  gitdir=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
+  listing=$(git config --list --show-origin --includes 2>/dev/null) || return 1
+  origins=$(printf '%s\n' "$listing" | awk -F'\t' '$1 ~ /^file:/ { print substr($1, 6) }' | sort -u)
+  attributes=$(git config --path --get core.attributesFile 2>/dev/null || printf '')
+  {
+    printf '%s\n' "$listing"
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      if [[ -f "$f" ]]; then printf '%s %s\n' "$f" "$(git hash-object --no-filters --stdin < "$f")"; else printf '%s absent\n' "$f"; fi
+    done <<< "$(printf '%s\n%s\n%s\n' "$origins" "${common}/info/attributes" "$attributes")"
+    # A linked worktree has no per-worktree hooks directory; enumerate only the
+    # directories that exist, so a missing one is not a failure under pipefail.
+    for d in "${common}/hooks" "${gitdir}/hooks"; do
+      [[ -d "$d" ]] && hook_dirs+=("$d")
+    done
+    if [[ "${#hook_dirs[@]}" -gt 0 ]]; then
+      find "${hook_dirs[@]}" -type f | sort -u | while IFS= read -r f; do
+        printf '%s %s\n' "$f" "$(git hash-object --no-filters --stdin < "$f")"
+      done
+    fi
+  } | git hash-object --no-filters --stdin
+}
+
 # push_branch_ref <branch>
 # Push HEAD to the named branch, allowing the intentional history rewrite from a
 # rebase while refusing to overwrite a remote update made after this worktree was
@@ -191,7 +243,7 @@ push_branch_ref() {
   local refspec="HEAD:refs/heads/${branch}"
   local -a push_options=(-u)
   [[ -n "$lease_flag" ]] && push_options=("$lease_flag" -u)
-  git push "${push_options[@]}" origin "$refspec"
+  executor_git push "${push_options[@]}" origin "$refspec"
 }
 
 # push_branch <branch>

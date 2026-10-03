@@ -215,6 +215,85 @@ complete_job() {
   clear_blocked_reasons "$issue_number"
 }
 
+# ---- Base-branch conflict attempts (local state) -----------------------------
+# A conflict-resolution attempt that the executor could not verify records the
+# exact {PR head, base head} pair it failed on. check_review_pr skips the PR
+# while both are unchanged, so an unresolvable conflict does not buy a fresh
+# agent session every wake; a new base commit or a human push re-arms it. Like
+# the retry counter, this survives reset_ephemeral_state.
+
+# conflict_attempt_file <issue_number>
+conflict_attempt_file() {
+  local issue_number="$1"
+  [[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
+  printf '%s/conflict-attempt-%s.json' "$STATE_DIR" "$issue_number"
+}
+
+# record_conflict_attempt <issue_number> <head_sha> <base_sha>
+# Best-effort: losing the record only costs one repeated attempt.
+record_conflict_attempt() {
+  local issue_number="$1" head_sha="$2" base_sha="$3" cf tmp
+  cf=$(conflict_attempt_file "$issue_number") || return 0
+  [[ -n "$head_sha" && -n "$base_sha" ]] || return 0
+  tmp="${cf}.tmp.$$"
+  if jq -n --argjson issue_number "$issue_number" --arg head_sha "$head_sha" \
+      --arg base_sha "$base_sha" --arg failed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{issue_number: $issue_number, head_sha: $head_sha, base_sha: $base_sha, failed_at: $failed_at}' \
+      > "$tmp" 2>/dev/null && mv -f "$tmp" "$cf"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  warn "Could not record the failed conflict attempt for #${issue_number}."
+  return 0
+}
+
+# clear_conflict_attempt <issue_number>
+clear_conflict_attempt() {
+  local issue_number="$1" cf
+  cf=$(conflict_attempt_file "$issue_number") || return 0
+  rm -f "$cf"
+  return 0
+}
+
+# note_conflict_session_error <issue_number> <head_sha> <base_sha>
+# Count a resolution session that ended in a (non-quota) error for this exact
+# {head, base} pair and print the new count. A max-turns, budget, or timeout end
+# is reported as an error too, so the caller turns a repeat into a recorded
+# failure instead of paying for a fresh session on every wake.
+note_conflict_session_error() {
+  local issue_number="$1" head_sha="$2" base_sha="$3" cf tmp count=0
+  cf=$(conflict_attempt_file "$issue_number") || { printf '1'; return 0; }
+  if [[ -f "$cf" ]]; then
+    count=$(jq -r --arg head_sha "$head_sha" --arg base_sha "$base_sha" \
+      'if .head_sha == $head_sha and .base_sha == $base_sha and (.session_errors | type) == "number"
+       then .session_errors else 0 end' "$cf" 2>/dev/null) || count=0
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  fi
+  count=$((count + 1))
+  tmp="${cf}.tmp.$$"
+  if jq -n --argjson issue_number "$issue_number" --arg head_sha "$head_sha" \
+      --arg base_sha "$base_sha" --argjson session_errors "$count" \
+      '{issue_number: $issue_number, head_sha: $head_sha, base_sha: $base_sha, session_errors: $session_errors}' \
+      > "$tmp" 2>/dev/null && mv -f "$tmp" "$cf"; then
+    :
+  else
+    rm -f "$tmp"
+  fi
+  printf '%s' "$count"
+}
+
+# conflict_attempt_is_unchanged <issue_number> <head_sha> <base_sha>
+# Returns 0 only when a recorded failure names exactly this head and base. An
+# unknown sha, a missing or malformed record never suppresses an attempt.
+conflict_attempt_is_unchanged() {
+  local issue_number="$1" head_sha="$2" base_sha="$3" cf
+  [[ -n "$head_sha" && -n "$base_sha" ]] || return 1
+  cf=$(conflict_attempt_file "$issue_number") || return 1
+  [[ -f "$cf" ]] || return 1
+  jq -e --arg head_sha "$head_sha" --arg base_sha "$base_sha" \
+    '.head_sha == $head_sha and .base_sha == $base_sha and (.failed_at | type) == "string"' "$cf" >/dev/null 2>&1
+}
+
 # ---- Retry counter (local state, not GitHub comments) ------------------------
 # Quota-pause cycles do not reach the normal dispatch path, so a state-file
 # counter correctly tracks only genuine attempt starts. The counter is checked

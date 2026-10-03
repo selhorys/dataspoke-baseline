@@ -37,11 +37,13 @@ def test_snapshot_covers_exactly_the_guarded_names(tmp_path: Path) -> None:
         "provision-AbC123",
         "teardown-XyZ789",
         "dev-lock-token.json",
+        "conflict-attempt-5.json",
         "retry-count-1.json",  # not guarded: owned by other tests/heartbeats
         "heartbeat.log",
     ):
         (tmp_path / name).write_text("x")
     assert sorted(snapshot_real_state(tmp_path)) == [
+        "conflict-attempt-5.json",
         "dev-env-provisioned.json",
         "dev-lock-token.json",
         "provision-AbC123",
