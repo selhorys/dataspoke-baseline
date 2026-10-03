@@ -93,7 +93,8 @@ URL and token (see §Credential Model), attaches the `Authorization` header, and
 `curl`. Every skill calls the API through this wrapper rather than constructing auth inline, so
 credential handling lives in one audited place. `bin/datahub-graphql` is the parallel primitive
 for direct DataHub access — it resolves `datahub_gms_url` + `datahub_token` and posts a GraphQL
-query to `<datahub_gms_url>/graphql`, used by the validation skill for dataset-URN search.
+query to that GMS origin's GraphQL endpoint (the helper owns the path), used by the validation
+skill for dataset-URN search.
 
 `bin/dataspoke-schema` makes the deployment authoritative about its own contract. It fetches
 `/openapi.json` and emits only the operations whose path contains a given fragment, together
@@ -175,7 +176,7 @@ Resolved configuration lives in `~/.dataspoke/config.json`, written `chmod 600`:
   "token": "dsk_…",
   "redoc_url": "https://api.dataspoke.example.com/redoc",
   "ui_url": "https://app.dataspoke.example.com",
-  "datahub_gms_url": "https://datahub.example.com/api/gms",
+  "datahub_gms_url": "https://datahub-gms.example.com",
   "datahub_token": "<DataHub PAT>"
 }
 ```
@@ -193,7 +194,9 @@ Environment variables override the file when present, for CI and ephemeral shell
 Alongside the `dsk_` token, the config may carry **optional** direct-DataHub
 credentials — a DataHub GMS URL (`datahub_gms_url`) and a DataHub personal access
 token (`datahub_token`). They are the user's own DataHub credentials, distinct from
-the DataSpoke token, and the same `chmod 600` file holds both. These power the
+the DataSpoke token, and the same `chmod 600` file holds both. `datahub_gms_url` is the GMS
+**origin** with no path component; the config-file shape is owned by
+`plugin/skills/dataspoke-access/SKILL.md`. These power the
 validation skill's dataset-URN search, which queries DataHub's GraphQL endpoint
 directly (see §Validation Routine Authoring). DataHub access is optional: when it is
 absent, the URN-search capability is preserved — the plugin requests the user's

@@ -51,7 +51,7 @@ def helper_environment(tmp_path: Path) -> dict[str, str]:
     return {
         "HOME": str(tmp_path / "home"),
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "DATAHUB_GMS_URL": "https://datahub.example.test/api/gms",
+        "DATAHUB_GMS_URL": "https://datahub.example.test",
         "DATAHUB_TOKEN": "test-token_123",
         "CURL_ARGUMENT_LOG": str(curl_log),
         "CURL_STDIN_LOG": str(curl_stdin),
@@ -325,3 +325,31 @@ def test_oversized_at_path_body_is_rejected_before_curl(
 
     assert result.returncode == 2
     assert not _curl_was_called(helper_environment)
+
+
+@pytest.mark.parametrize(
+    "gms_url",
+    ["https://datahub.example.test", "https://datahub.example.test/"],
+    ids=["origin", "origin-trailing-slash"],
+)
+def test_gms_origin_resolves_to_api_graphql_endpoint(
+    helper_environment: dict[str, str], gms_url: str
+) -> None:
+    """``DATAHUB_GMS_URL`` is the GMS origin; the helper owns the ``/api/graphql`` path.
+
+    spec: spec/AI_PLUGIN.md §Credential Model / §Optional DataHub access
+    (``datahub_gms_url`` is the GMS origin with no path component; the helper owns the
+    endpoint path).
+    spec: plugin/skills/dataspoke-access/SKILL.md config section ("the helper appends
+    ``/api/graphql`` itself") — the documented source of the ``/api/graphql`` suffix.
+    """
+    helper_environment["DATAHUB_GMS_URL"] = gms_url
+
+    result = _run_helper(helper_environment, _body("query { search { total } }"))
+
+    assert result.returncode == 0, result.stderr
+    # Backstop: the recorder ran, so the URL assertion below is not vacuous.
+    assert _curl_was_called(helper_environment)
+    arguments = Path(helper_environment["CURL_ARGUMENT_LOG"]).read_text(encoding="utf-8")
+    # curl receives the resolved URL as its final positional argument.
+    assert arguments.splitlines()[-1] == "https://datahub.example.test/api/graphql"
