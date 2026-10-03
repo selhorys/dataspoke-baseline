@@ -2288,10 +2288,13 @@ running while you test" as a contract it enforces, not a hope.
   `Forwarding from 127.0.0.1:<port>` line. A TCP connect to the local port is
   never sufficient on its own, because a leftover process already holding the
   port accepts the connect while the new `kubectl` has exited with
-  `address already in use`. The connect probe is a secondary liveness check
-  that sends no bytes, since these ports front Postgres, Redis and Kafka. If a
-  kubectl version never prints the line, a live process whose port answers and
-  whose log shows no bind error is accepted once the start timeout elapses.
+  `address already in use`. The connect probe is used only by the fallback
+  below, never as liveness polling, and sends no bytes, since these ports front
+  Postgres, Redis and Kafka. If a kubectl version never prints the line, a live
+  process whose log shows no bind error is accepted once the start timeout
+  elapses, but only when its port answers and the listener is confirmed to be
+  that process's own socket; a foreign listener, or ownership that cannot be
+  verified, is reported failed rather than guessed at.
   The same rule, fallback included, applies to every spawn, respawns
   included: a respawned forward gets a fresh log and `PORT_FORWARD_START_TIMEOUT_SECS`
   from its own spawn, so such a kubectl does not loop through backoff forever.
@@ -2319,8 +2322,11 @@ running while you test" as a contract it enforces, not a hope.
   directory from `mktemp -d` (honouring `TMPDIR`), or under `--log-dir <dir>`
   for a stable path. Each spawn rotates the previous file to
   `pf-<local-port>.log.prev`, so a stale readiness line cannot satisfy a new
-  spawn and growth stays bounded at two generations. The directory is named in
-  the banner and retained on exit for post-mortem.
+  spawn. Rotation bounds the number of log files (two per forward), not their
+  size: kubectl logs a line per client connection, so the log of a forward that
+  is never respawned keeps growing, and each poll re-reads it for the
+  connection-loss signature. The directory is named in the banner and retained
+  on exit for post-mortem.
 - **Signals and portability.** SIGINT and SIGTERM exit promptly and kill the
   forwards that are running at that moment (including respawned ones), leaving
   no `kubectl` child behind. The script runs on the bash 3.2 that ships with
