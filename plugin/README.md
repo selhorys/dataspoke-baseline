@@ -15,6 +15,7 @@ DataSpoke). This plugin only ever talks to a deployment's **public API** (`/api/
 ```text
 /plugin marketplace add <org>/<repo>      # this repository is a single-plugin marketplace
 /plugin install dataspoke@dataspoke       # <plugin>@<marketplace>
+/reload-plugins                           # load the skills in the current session
 ```
 
 For local development against a checkout: `/plugin marketplace add ./` then
@@ -22,9 +23,10 @@ For local development against a checkout: `/plugin marketplace add ./` then
 
 ## Quickstart
 
-1. **Connect** — `/dataspoke:dataspoke-access` and give it your deployment URL plus either a
-   `dsk_` API token or your login (it mints one). Access is stored in `~/.dataspoke/config.json`
-   (`chmod 600`).
+1. **Connect** — `/dataspoke:dataspoke-access` and give it your **API** URL (e.g.
+   `https://api.dataspoke.example.com`) plus either a `dsk_` API token or your login (it mints
+   one). If your Web UI is served from a different host, it asks for that too. Access is stored
+   in `~/.dataspoke/config.json` (`chmod 600`).
 2. **Use a feature** — e.g. `/dataspoke:dataspoke-validation` while writing a pipeline, to get
    validation code for the partition it just wrote; `/dataspoke:dataspoke-ingestion` to manage
    sources.

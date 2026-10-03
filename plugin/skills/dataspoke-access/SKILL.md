@@ -15,14 +15,17 @@ Access lives in `~/.dataspoke/config.json` (`chmod 600`):
 
 ```json
 {
-  "api_base_url": "https://dataspoke.example.com/api/v1",
+  "api_base_url": "https://api.dataspoke.example.com/api/v1",
   "token": "dsk_…",
-  "redoc_url": "https://dataspoke.example.com/redoc",
-  "ui_url": "https://dataspoke.example.com",
+  "redoc_url": "https://api.dataspoke.example.com/redoc",
+  "ui_url": "https://app.dataspoke.example.com",
   "datahub_gms_url": "https://datahub.example.com/gms",
   "datahub_token": "…"
 }
 ```
+
+The URLs may sit on different hosts: `api_base_url` and `redoc_url` are the **API** origin (every
+DataSpoke call the plugin makes goes there), `ui_url` is the browsable **Web UI**.
 
 `datahub_gms_url` and `datahub_token` are **optional** — they are only needed for the validation
 skill's DataHub URN search (the `datahub-graphql` helper), not for basic DataSpoke access.
@@ -77,19 +80,26 @@ to fetch the values themselves. Step 5's write is a merge performed entirely ins
 which is the only thing that ever touches the old values; they're never printed, logged, or
 handed back to the agent.
 
-1. **Collect the base URL.** Ask the user for the deployment origin (e.g.
-   `https://dataspoke.example.com`, or the dev `http://api.<INGRESS_IP>.nip.io`). Derive
-   `redoc_url` = `<origin>/redoc`, `ui_url` = `<origin>`, `api_base_url` = `<origin>/api/v1`.
+1. **Collect the base URL.** A deployment publishes two roles: the **API** (`/ready`, `/api/v1`,
+   `/redoc`, `/openapi.json`) and the **Web UI** (the browsable app). Ask the user for the **API**
+   origin (e.g. `https://api.dataspoke.example.com`, or the dev
+   `http://api.<INGRESS_IP>.nip.io`). Ask for the UI origin **only if** the user says the UI is
+   served elsewhere. Derive `api_base_url` = `<api-origin>/api/v1`, `redoc_url` =
+   `<api-origin>/redoc`, and `ui_url` = the UI origin — when one origin serves both, all three
+   derive from it. Every DataSpoke call the plugin makes goes to the API origin: pointing
+   `api_base_url` at the UI host makes even `/ready` fail.
 
-   Then probe the origin **before collecting any credential**, so a typo or an unreachable
+   Then probe the API origin **before collecting any credential**, so a typo or an unreachable
    deployment surfaces as a clear message rather than a confusing failure mid-mint. `/ready`
    is public — no token needed:
    ```bash
-   curl -sS --max-time 10 -w '\n%{http_code}\n' "<origin>/ready"
+   curl -sS --max-time 10 -w '\n%{http_code}\n' "<api-origin>/ready"
    ```
    A `200` with a `{"status": …, "checks": {…}}` body confirms a reachable DataSpoke. On a
    connection failure or a non-200 code, report what was tried and ask the user to correct the
-   origin — do not proceed to step 2. `/ready` reports state and never returns 503, so read the
+   origin — do not proceed to step 2. If the origin is reachable and TLS-valid but `/ready`
+   fails, it may be the UI host: ask for the API origin instead of retyping the same host or
+   declaring the deployment unhealthy. `/ready` reports state and never returns 503, so read the
    body too: `status: "degraded"` (any `false` entry in `checks` — `datahub`, `postgres`,
    `redis`) still arrives as 200. Surface which dependency is down as a warning and let the user
    decide whether to continue; minting works while DataHub is degraded, but feature skills that
@@ -120,7 +130,7 @@ handed back to the agent.
      #    never places it on a command line, in shell history, or in the process table.
      printf 'DataSpoke account password: ' >&2; read -rs DS_PASSWORD; echo
      DS_EMAIL="<email>" DS_PASSWORD="$DS_PASSWORD" python3 -c "import json,os; print(json.dumps({'email': os.environ['DS_EMAIL'], 'password': os.environ['DS_PASSWORD']}))" \
-       | curl -sS -X POST "<origin>/api/v1/auth/token" \
+       | curl -sS -X POST "<api-origin>/api/v1/auth/token" \
            -H "Content-Type: application/json" -d @-
      unset DS_PASSWORD
      # → {"access_token":"…","expires_in":…}
@@ -131,7 +141,7 @@ handed back to the agent.
      #    to curl the same way too, via stdin config rather than a -H argv literal:
      printf 'access_token from step 1 (paste, not echoed): ' >&2; read -rs DS_ACCESS; echo
      printf 'header = "Authorization: Bearer %s"\n' "$DS_ACCESS" \
-       | curl -sS -K - -X POST "<origin>/api/v1/auth/api-tokens" \
+       | curl -sS -K - -X POST "<api-origin>/api/v1/auth/api-tokens" \
            -H "Content-Type: application/json" -d '{"name":"claude-code-plugin"}'
      unset DS_ACCESS
      # → {"token":"dsk_…","id":…,"name":…,"role_snapshot":…}  (token shown ONCE)
