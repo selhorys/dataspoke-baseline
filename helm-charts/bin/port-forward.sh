@@ -11,18 +11,26 @@
 #
 # The forwards are supervised. A forward counts as active only once kubectl
 # itself confirms the bind ("Forwarding from 127.0.0.1:<port>"), so a port that
-# something else already holds is reported as FAILED instead of counted. A
-# forward that later dies or goes stale (its pod was replaced) is logged and
-# respawned with backoff. If none comes up the script exits non-zero. Each
-# forward writes kubectl's output to pf-<port>.log in a private temp directory
-# (named in the banner, kept on exit) or under --log-dir.
+# something else already holds is reported as FAILED instead of counted. The one
+# exception: if kubectl prints no such line within the start budget (a kubectl
+# that words its output differently), the forward is accepted only when lsof
+# shows the listener on that port belongs to this forward's own kubectl, and it
+# is reported as confirmed via listener ownership. Otherwise it is FAILED. A
+# forward that later dies (its pod was replaced or its connection dropped) is
+# logged and respawned with backoff. If none comes up the script exits non-zero.
+# Each forward writes kubectl's output to pf-<port>.log in a private temp
+# directory (named in the banner, kept on exit) or under --log-dir.
+#
+# --log-dir must be a real directory (not a symlink) owned by you and not group-
+# or world-writable; the script refuses anything else, because another user able
+# to write there could plant or forge the logs that decide what counts as active.
 #
 # Tunables (environment): PORT_FORWARD_POLL_SECS (3), PORT_FORWARD_START_TIMEOUT_SECS (15).
 #
 # Usage:
 #   ./helm-charts/bin/port-forward.sh                   # forward all TCP services
 #   ./helm-charts/bin/port-forward.sh --env-file <path> # use a specific env file
-#   ./helm-charts/bin/port-forward.sh --log-dir <dir>   # keep per-forward logs in <dir>
+#   ./helm-charts/bin/port-forward.sh --log-dir <dir>   # keep per-forward logs in <dir> (yours, mode 700)
 #   ./helm-charts/bin/port-forward.sh --help
 set -euo pipefail
 
@@ -125,6 +133,7 @@ PF_NEXT=()     # $SECONDS at which a failed forward may be respawned
 PF_FAILS=()    # consecutive failures, drives the backoff
 PF_QUIET=()    # 1 once a failure has been reported and not yet recovered from
 PF_REASON=()   # sanitized reason for the current failure
+PF_VIA=()      # how the forward was verified: log (kubectl's bind line) | owner (lsof)
 PF_ACTIVE=0    # count set by _report_startup
 SLEEP_PID=""   # the interruptible sleep in _nap, killed by cleanup
 
@@ -134,11 +143,18 @@ BACKOFF_MIN_SECS=3
 BACKOFF_MAX_SECS=30
 
 # kubectl's own human-readable output. These strings can change between kubectl
-# versions; _forward_check has a permissive fallback for a missing readiness line.
+# versions; _forward_check has a fallback for a missing readiness line.
 PF_BIND_RE='Unable to listen on port|unable to listen on any of the requested ports|address already in use'
-# Connection-loss signatures. Deliberately NOT "Handling connection for <port>",
-# which kubectl logs for every ordinary client connection.
-PF_STALE_RE='lost connection to pod|error forwarding port|an error occurred forwarding'
+PF_INUSE_RE='address already in use'
+# The one forward-level loss signature: kubectl lost its stream to the pod. It is
+# deliberately the ONLY one. "Handling connection for <port>", "error forwarding
+# port N to pod ..." and "an error occurred forwarding ..." are logged PER
+# CONNECTION (an ordinary client, a backend that refused or reset one connection,
+# a probe hitting a backend that is down). Killing the forward on one of those
+# would sever every other connection open through it. A svc/ forward on an old
+# kubectl that stays alive pinned to a replaced pod, without ever logging
+# "lost connection to pod", is therefore not detected; current kubectl exits.
+PF_STALE_RE='lost connection to pod'
 
 # A malformed tunable would make the arithmetic below abort mid-supervision.
 for _pf_knob in POLL_SECS START_TIMEOUT_SECS; do
@@ -156,11 +172,22 @@ _ts() { date '+%H:%M:%S'; }
 # _pf_log <i> — the log file of forward <i> (pf-<local-port>.log).
 _pf_log() { printf '%s/pf-%s.log' "$LOG_DIR" "${PF_LPORT[$1]}"; }
 
-# _pf_last_line <i> — the last non-empty log line, sanitized (it is kubectl
-# output) and bounded to one line; a placeholder when kubectl wrote nothing.
+# _pf_last_line <i> — the line that says why forward <i> failed, sanitized (it is
+# kubectl output) and bounded to one line. A bind failure ends with a generic
+# "unable to listen on any of the requested ports" line, one line below the one
+# that names the cause ("... bind: address already in use"), so prefer, in order:
+# the last "address already in use" line, the last other bind-failure line, then
+# the last non-empty line. A placeholder when kubectl wrote nothing.
 _pf_last_line() {
-  local line=""
-  line="$(grep -v '^[[:space:]]*$' "$(_pf_log "$1")" 2>/dev/null | tail -n 1 || true)"
+  local line="" log
+  log="$(_pf_log "$1")"
+  line="$(grep -Ei "$PF_INUSE_RE" "$log" 2>/dev/null | tail -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    line="$(grep -Ei "$PF_BIND_RE" "$log" 2>/dev/null | tail -n 1 || true)"
+  fi
+  if [[ -z "$line" ]]; then
+    line="$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -n 1 || true)"
+  fi
   line="$(sanitize_remote_text "$line")"
   printf '%s' "${line:-no output from kubectl}"
 }
@@ -171,6 +198,18 @@ _pf_last_line() {
 # Postgres, Redis and Kafka, which log a stray byte as a protocol error (same
 # idiom as health-check.sh's _tcp_check).
 _tcp_open() { ( exec 3<>/dev/tcp/127.0.0.1/"$1" ) 2>/dev/null; }
+
+# _listener_owned_by <port> <pid> — does <pid> hold the listening socket on <port>?
+# Returns 0 yes, 1 no (another process holds it, or lsof cannot see the owner,
+# which fails safe), 2 cannot tell because lsof is not installed. This is what
+# stops a foreign listener from satisfying the no-bind-line fallback: a bare
+# connect succeeds against any process on the port.
+_listener_owned_by() {
+  local owners=""
+  command -v lsof >/dev/null 2>&1 || return 2
+  owners="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)"
+  printf '%s\n' "$owners" | grep -qx "$2"
+}
 
 # _backoff_secs <consecutive-failures> — 3s, doubling, capped at 30s.
 _backoff_secs() {
@@ -188,24 +227,34 @@ _pf_register() {
   local i="${#PF_LPORT[@]}"
   PF_LPORT[$i]="$1"; PF_NS[$i]="$2"; PF_SVC[$i]="$3"; PF_REMOTE[$i]="$4"
   PF_PID[$i]=""; PF_STATE[$i]="failed"; PF_SPAWNED[$i]=0; PF_NEXT[$i]=0
-  PF_FAILS[$i]=0; PF_QUIET[$i]=0; PF_REASON[$i]=""
+  PF_FAILS[$i]=0; PF_QUIET[$i]=0; PF_REASON[$i]=""; PF_VIA[$i]="log"
 }
 
 # _spawn_forward <i> — start (or restart) forward <i> with a fresh log.
 # The previous log is rotated to .prev so a stale "Forwarding from" line can
-# never satisfy the readiness check of the new process, and so growth stays
-# bounded at two generations (kubectl logs a line per client connection).
-# The subshell sets umask 077 before kubectl opens its log, then exec's it, so
-# $! is kubectl's own pid.
+# never satisfy the readiness check of the new process. Rotation bounds the
+# NUMBER of log files (two per forward), not their size: kubectl logs a line per
+# client connection, so one long-lived process's log keeps growing.
+# The log is created fresh and exclusively: any leftover or planted file (or
+# symlink) at that path is removed first, and the subshell sets noclobber so a
+# file that reappears makes the redirect fail instead of being followed or
+# overwritten. The subshell also sets umask 077 before kubectl opens its log,
+# then exec's it, so $! is kubectl's own pid. If the log cannot be created the
+# subshell exits without running kubectl and the forward is reported failed.
 _spawn_forward() {
   local i="$1" log pid
   log="$(_pf_log "$i")"
-  if [[ -f "$log" ]]; then mv -f "$log" "${log}.prev" 2>/dev/null || true; fi
+  if [[ -e "$log" || -L "$log" ]]; then
+    mv -f "$log" "${log}.prev" 2>/dev/null || rm -f "$log" 2>/dev/null || true
+  fi
+  rm -f "$log" 2>/dev/null || true
   ( umask 077
+    set -o noclobber
     exec kubectl port-forward -n "${PF_NS[$i]}" "svc/${PF_SVC[$i]}" \
       "${PF_LPORT[$i]}:${PF_REMOTE[$i]}" --address 127.0.0.1 >"$log" 2>&1 ) &
   pid=$!
   PF_PID[$i]="$pid"
+  PF_VIA[$i]="log"
   PF_STATE[$i]="starting"
   PF_SPAWNED[$i]="$SECONDS"
 }
@@ -215,8 +264,11 @@ _spawn_forward() {
 # already holding the port accepts it while our kubectl has exited with
 # "address already in use". The trailing space keeps :9201 from matching :92010.
 _forward_ready() {
-  local i="$1"
-  kill -0 "${PF_PID[$i]:-0}" 2>/dev/null || return 1
+  local i="$1" pid="${PF_PID[$1]:-}"
+  # An empty pid must fail here: `kill -0 ""`-style defaults such as `kill -0 0`
+  # signal our own process group and always succeed.
+  if [[ -z "$pid" ]]; then return 1; fi
+  kill -0 "$pid" 2>/dev/null || return 1
   grep -Fq "Forwarding from 127.0.0.1:${PF_LPORT[$i]} " "$(_pf_log "$i")" 2>/dev/null
 }
 
@@ -245,7 +297,7 @@ _forward_kill() {
 # _forward_check <i> — advance a starting/up forward's state from what the
 # process and its log show now. Prints nothing; callers decide what to report.
 _forward_check() {
-  local i="$1" pid log line
+  local i="$1" pid log line owner_rc
   pid="${PF_PID[$i]:-}"
   log="$(_pf_log "$i")"
 
@@ -256,8 +308,9 @@ _forward_check() {
     return 0
   fi
 
-  # Stale: alive, but the log says connections are failing (older kubectl, or a
-  # svc/ forward pinned to a replaced pod). Kill it so it is respawned.
+  # Stale: still alive but kubectl logged that it lost its stream to the pod (the
+  # window before it exits). Kill it so it is respawned. Only this forward-level
+  # signature counts; see PF_STALE_RE for why per-connection errors do not.
   if grep -Eq "$PF_STALE_RE" "$log" 2>/dev/null; then
     line="$(grep -E "$PF_STALE_RE" "$log" 2>/dev/null | tail -n 1 || true)"
     line="$(sanitize_remote_text "$line")"
@@ -283,11 +336,28 @@ _forward_check() {
   if [[ $(( SECONDS - ${PF_SPAWNED[$i]} )) -ge "$START_TIMEOUT_SECS" ]]; then
     # No readiness line within the budget and no bind error in the log. A kubectl
     # that words its output differently would otherwise be flagged failed while
-    # working, so accept a live process whose port answers. Applies to every
+    # working, so accept a live process whose port answers, but only if that
+    # listener is provably OUR kubectl: a bare connect succeeds against a leftover
+    # or foreign process on the port (kubectl may just be slow to reach its bind),
+    # and the callers would then offer env-file credentials to it. When ownership
+    # cannot be confirmed the forward is failed, not guessed at. Applies to every
     # spawn, respawns included, so such a kubectl does not loop through backoff.
     if _tcp_open "${PF_LPORT[$i]}"; then
-      PF_STATE[$i]="up"
-      PF_FAILS[$i]=0
+      owner_rc=0
+      _listener_owned_by "${PF_LPORT[$i]}" "$pid" || owner_rc=$?
+      if [[ "$owner_rc" -eq 0 ]]; then
+        PF_STATE[$i]="up"
+        PF_VIA[$i]="owner"
+        PF_FAILS[$i]=0
+      else
+        if [[ "$owner_rc" -eq 1 ]]; then
+          line="port ${PF_LPORT[$i]} answers but is not held by this forward's kubectl (another process owns it)"
+        else
+          line="no bind confirmation from kubectl and the listener's owner cannot be verified (lsof not installed)"
+        fi
+        _forward_kill "$i"
+        _forward_fail "$i" "not ready after ${START_TIMEOUT_SECS}s: ${line}"
+      fi
     else
       line="$(_pf_last_line "$i")"
       _forward_kill "$i"
@@ -326,7 +396,12 @@ _report_startup() {
   while [[ "$i" -lt "$total" ]]; do
     if [[ "${PF_STATE[$i]}" == "up" ]]; then
       PF_ACTIVE=$(( PF_ACTIVE + 1 ))
-      info "  127.0.0.1:${PF_LPORT[$i]} -> ${PF_NS[$i]}/${PF_SVC[$i]}:${PF_REMOTE[$i]} active (pid ${PF_PID[$i]})"
+      if [[ "${PF_VIA[$i]}" == "owner" ]]; then
+        # kubectl never printed its bind line: say the confirmation was weaker.
+        info "  127.0.0.1:${PF_LPORT[$i]} -> ${PF_NS[$i]}/${PF_SVC[$i]}:${PF_REMOTE[$i]} active (pid ${PF_PID[$i]}; confirmed via listener ownership, kubectl printed no bind line)"
+      else
+        info "  127.0.0.1:${PF_LPORT[$i]} -> ${PF_NS[$i]}/${PF_SVC[$i]}:${PF_REMOTE[$i]} active (pid ${PF_PID[$i]})"
+      fi
     else
       PF_QUIET[$i]=1
       warn "  127.0.0.1:${PF_LPORT[$i]} -> ${PF_NS[$i]}/${PF_SVC[$i]} FAILED: ${PF_REASON[$i]} (log: $(_pf_log "$i"))"
@@ -426,9 +501,28 @@ cleanup() {
 LOG_DIR=""
 LOG_DIR_OWNED=0
 if [[ -n "$LOG_DIR_ARG" ]]; then
-  mkdir -p "$LOG_DIR_ARG" 2>/dev/null && [[ -w "$LOG_DIR_ARG" ]] \
+  # The logs decide what counts as active (the readiness line) and are written
+  # through whatever path they sit at, so a directory another user can write to
+  # would let them plant a symlink (overwriting one of our files) or forge a
+  # "Forwarding from" line over a port they hold. Accept only a real directory
+  # that is ours and closed to group and world; a directory we create is 0700.
+  _ld="${LOG_DIR_ARG%/}"
+  if [[ -z "$_ld" ]]; then _ld="/"; fi
+  if [[ -L "$_ld" ]]; then
+    error "--log-dir ${LOG_DIR_ARG} is a symlink; give the real directory."
+  fi
+  # shellcheck disable=SC2174 # -m on the deepest dir is intended; parents are the caller's
+  mkdir -p -m 700 "$_ld" 2>/dev/null || true
+  [[ -d "$_ld" && -w "$_ld" ]] \
     || error "Cannot create or write the log directory ${LOG_DIR_ARG}."
-  LOG_DIR="$(cd "$LOG_DIR_ARG" && pwd)"
+  [[ -O "$_ld" ]] \
+    || error "--log-dir ${LOG_DIR_ARG} is not owned by the current user."
+  _ld_mode="$(ls -ld "$_ld" | cut -c1-10)"
+  if [[ "${_ld_mode:5:1}" == "w" || "${_ld_mode:8:1}" == "w" ]]; then
+    error "--log-dir ${LOG_DIR_ARG} is group- or world-writable; use a private directory (chmod go-w)."
+  fi
+  LOG_DIR="$(cd -P "$_ld" && pwd -P)"
+  unset _ld _ld_mode
 else
   LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dataspoke-port-forward.XXXXXX")" \
     || error "Could not create a log directory under ${TMPDIR:-/tmp}."
