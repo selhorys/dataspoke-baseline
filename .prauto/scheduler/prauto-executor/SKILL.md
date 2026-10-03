@@ -344,8 +344,15 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   reuses the existing `prauto/I-<n>` branch at its own head, and only PR finalize rebases onto
   `origin/$PRAUTO_BASE_BRANCH` — a commit landed on the base branch after the branch forked stays
   invisible to the resumed worktree. Rebase the branch and push it
-  (`git worktree add /tmp/<n> prauto/I-<n> && git rebase origin/dev && git push --force-with-lease`)
-  so the resumed stages actually run against the fix.
+  (`git worktree add /tmp/<n> prauto/I-<n> && git rebase origin/dev && git push --force-with-lease`,
+  then `git worktree remove /tmp/<n>` — a branch still checked out there blocks the reuse) so the
+  resumed stages actually run against the fix. On reuse, `create_branch` (and
+  `checkout_branch_worktree`, used by the PR squash and feedback paths) reconciles the local
+  `prauto/I-<n>` ref with `origin/prauto/I-<n>` before `worktree add`: a local ref holding no
+  commit origin never had (per origin's current head and its remote-tracking reflog) moves to
+  origin, so a rebase + force-push is picked up; a local ref ahead of origin (an unpushed checkpoint)
+  is kept with a `[WARN]`; a diverged pair (origin rewritten AND never-pushed local commits) fails
+  the run with `Cannot safely reuse` — reconcile by hand (`git branch -f` to the side to keep).
 - **Resuming an escalated issue reuses its approved plan.** Escalation leaves the plan comment and its
   `go ahead` reply inside the current ready-label lifecycle, so
   `gh issue edit <N> --remove-label prauto:failed --add-label prauto:wip` (keeping the assignee) makes

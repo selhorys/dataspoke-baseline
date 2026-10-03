@@ -326,6 +326,17 @@ rebase_pr_branch_if_needed() {
   }
 }
 
+# restore_squash_head <sha>
+# Undo a partial squash (rebase, reset --soft, squash commit) after a failure,
+# so the local branch keeps its pre-squash head. The squash is regenerated on the
+# next wake; a rewritten local ref left behind would read as diverged from origin
+# and make reconcile_branch_with_origin fail every later wake instead of retrying.
+restore_squash_head() {
+  local sha="$1"
+  git rebase --abort 2>/dev/null || true
+  git reset --hard "$sha" >/dev/null 2>&1 || warn "Could not restore the pre-squash head ${sha:0:12}."
+}
+
 # squash_and_finalize_pr <pr_number> <pr_branch> <pr_title> <pr_body> <issue_number>
 # Squash the PR branch into one commit, force-push, mark prauto:done. Does NOT
 # merge or close — left to the human. Must be called from inside the worktree.
@@ -335,11 +346,14 @@ squash_and_finalize_pr() {
   export GIT_AUTHOR_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_AUTHOR_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
   export GIT_COMMITTER_NAME="$PRAUTO_GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$PRAUTO_GIT_AUTHOR_EMAIL"
 
-  rebase_pr_branch_if_needed "$pr_number" || return 1
+  local orig_head
+  orig_head=$(git rev-parse --verify HEAD 2>/dev/null) || { warn "PR #${pr_number}: could not read HEAD."; return 1; }
+  rebase_pr_branch_if_needed "$pr_number" || { restore_squash_head "$orig_head"; return 1; }
 
   local merge_base
   merge_base=$(git merge-base HEAD "origin/${PRAUTO_BASE_BRANCH}" 2>/dev/null) || {
     warn "PR #${pr_number}: could not find merge base."
+    restore_squash_head "$orig_head"
     return 1
   }
 
@@ -374,9 +388,11 @@ ${co_authored_by%$'\n'}"
   printf '%s\n' "$SQUASH_COMMIT_MESSAGE" > "$msg_file"
 
   local author_arg="${PRAUTO_GIT_AUTHOR_NAME} <${PRAUTO_GIT_AUTHOR_EMAIL}>"
-  git reset --soft "$merge_base" 2>/dev/null || { warn "PR #${pr_number}: git reset --soft failed."; rm -f "$msg_file"; return 1; }
+  git reset --soft "$merge_base" 2>/dev/null || {
+    warn "PR #${pr_number}: git reset --soft failed."; rm -f "$msg_file"; restore_squash_head "$orig_head"; return 1
+  }
   git commit --author="$author_arg" --file="$msg_file" 2>/dev/null || {
-    warn "PR #${pr_number}: git commit (squash) failed."; rm -f "$msg_file"; return 1
+    warn "PR #${pr_number}: git commit (squash) failed."; rm -f "$msg_file"; restore_squash_head "$orig_head"; return 1
   }
   rm -f "$msg_file"
 
@@ -388,6 +404,7 @@ ${co_authored_by%$'\n'}"
 
   git push "$lease_flag" origin "HEAD:refs/heads/${pr_branch}" 2>/dev/null || {
     warn "PR #${pr_number}: force-push failed. Skipping."
+    restore_squash_head "$orig_head"
     return 1
   }
   info "PR #${pr_number}: force-pushed squashed commit."

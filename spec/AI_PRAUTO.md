@@ -490,6 +490,22 @@ flags bind the parent session only; Codex has no equivalent per-session tool-den
 **Branch-based continuity**: On restart, the prompt instructs the agent to check for existing
 commits on the branch and continue from there.
 
+**Branch-reuse reconciliation**: When the executor reuses an existing `prauto/I-<n>` branch for a
+new worktree, or checks out an existing PR branch for the review-stage squash and feedback paths,
+it first reconciles the local branch ref with `origin/<branch>`, because `git worktree add <branch>`
+would otherwise pick a local ref that is stale after a human rebases and force-pushes the remote,
+and the later lease-guarded force-push would silently overwrite human commits. The executor fetches
+first; a failed fetch only warns and the rule runs against the last-known origin ref. A missing
+local ref is created at origin; a missing origin keeps the local branch. If every local commit is
+reachable from origin's current head or from an earlier value recorded in the remote-tracking ref's
+reflog (fetches and the executor's own pushes record those), the local ref moves to origin —
+covering both a fast-forward and a rebase + force-push. If origin is an ancestor of local (an
+unpushed checkpoint), local is kept with a warning. Otherwise (never-pushed local commits and a
+rewritten origin) the branch has diverged and the executor fails closed with an error for a human to
+reconcile; the same applies when the move is refused because the branch is still checked out in
+another worktree. Without a reflog the rule degrades to a strict ancestor check, which also fails
+closed.
+
 ### The implementation phase runs the AGENTS.md workflow
 
 Prauto's implementation phase is the unattended form of `AGENTS.md §Implementation Workflow`

@@ -40,10 +40,67 @@ create_linked_branch_for_issue() {
   return 1
 }
 
+# reconcile_branch_with_origin <branch>
+# Point the local branch at the head a reused worktree should run. `worktree add`
+# prefers refs/heads/<branch> over origin/<branch>, and the local ref is stale
+# after a human rebases and force-pushes the remote. "Unpushed" means a local
+# commit that origin never had: one unreachable from origin's current head and
+# from every earlier value in its remote-tracking reflog (fetches and the
+# executor's own pushes record those). Without that reflog this degrades to a
+# strict ancestor check, which fails closed. If the fetch failed, this runs
+# against the last-known origin ref.
+#   local missing                  -> created at origin
+#   origin missing                 -> local kept (local-only branch)
+#   no unpushed commits            -> local moved to origin (fast-forward or rewrite)
+#   origin is an ancestor of local -> local kept, warning (unpushed checkpoint)
+#   otherwise (diverged)           -> returns 1; a human must reconcile
+# Must run after the stale prauto worktree is removed: `git branch -f` refuses a
+# branch checked out in any worktree, and that refusal also returns 1.
+reconcile_branch_with_origin() {
+  local branch="$1" local_sha origin_sha unpushed
+  local_sha=$(git -C "$REPO_DIR" rev-parse --verify --quiet "refs/heads/${branch}^{commit}" 2>/dev/null || printf '')
+  origin_sha=$(git -C "$REPO_DIR" rev-parse --verify --quiet "refs/remotes/origin/${branch}^{commit}" 2>/dev/null || printf '')
+
+  if [[ -z "$origin_sha" ]]; then
+    [[ -n "$local_sha" ]] && info "Branch ${branch} has no origin counterpart; reusing the local branch."
+    return 0
+  fi
+  [[ "$local_sha" == "$origin_sha" ]] && return 0
+
+  if [[ -n "$local_sha" ]]; then
+    unpushed=$( { printf '^%s\n' "$origin_sha"
+                  git -C "$REPO_DIR" reflog show --format='^%H' "refs/remotes/origin/${branch}" -- 2>/dev/null || true
+                } | git -C "$REPO_DIR" rev-list --count --stdin "$local_sha" 2>/dev/null ) || unpushed=""
+    if [[ ! "$unpushed" =~ ^[0-9]+$ ]]; then
+      warn "Could not compare ${branch} with origin/${branch}."
+      return 1
+    fi
+    if [[ "$unpushed" -gt 0 ]]; then
+      if git -C "$REPO_DIR" merge-base --is-ancestor "$origin_sha" "$local_sha" 2>/dev/null; then
+        warn "Branch ${branch} has ${unpushed} unpushed commit(s) on top of origin/${branch}; reusing the local branch."
+        return 0
+      fi
+      warn "Branch ${branch} has diverged: local ${local_sha:0:12} has ${unpushed} commit(s) origin never had, and origin/${branch} (${origin_sha:0:12}) does not contain it."
+      return 1
+    fi
+  fi
+
+  if ! git -C "$REPO_DIR" branch --no-track -f "$branch" "$origin_sha" >/dev/null 2>&1; then
+    warn "Could not move ${branch} to origin/${branch} (${origin_sha:0:12}); is it checked out in another worktree?"
+    return 1
+  fi
+  if [[ -z "$local_sha" ]]; then
+    info "Created ${branch} at origin/${branch} (${origin_sha:0:12})."
+  else
+    info "Moved ${branch} from ${local_sha:0:12} to origin/${branch} (${origin_sha:0:12})."
+  fi
+}
+
 # create_branch <issue_number>
 # Create a worktree on the prauto/I-<n> branch from the base. New remote
 # branches are created through GitHub's linked-branch mutation; an existing
-# branch (retry scenario) is reused in a fresh worktree.
+# branch (retry scenario) is reconciled with origin (reconcile_branch_with_origin)
+# and then reused in a fresh worktree.
 # Sets: BRANCH_NAME, WORKTREE_DIR.
 create_branch() {
   local issue_number="$1"
@@ -62,6 +119,8 @@ create_branch() {
   if git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/${BRANCH_NAME}" ||
      git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
     info "Branch ${BRANCH_NAME} already exists. Reusing in a new worktree."
+    reconcile_branch_with_origin "$BRANCH_NAME" \
+      || error "Cannot safely reuse ${BRANCH_NAME}; reconcile it with origin by hand before resuming."
     git -C "$REPO_DIR" worktree add "$WORKTREE_DIR" "$BRANCH_NAME" 2>/dev/null \
       || error "Failed to create worktree for ${BRANCH_NAME}."
   else
@@ -80,7 +139,10 @@ create_branch() {
 }
 
 # checkout_branch_worktree <branch>
-# Create a worktree for an existing remote branch (resume or PR review).
+# Create a worktree for an existing remote branch (resume or PR review). The
+# local ref is reconciled with origin first (reconcile_branch_with_origin): the
+# squash and feedback paths later force-push with a lease on the freshly fetched
+# origin ref, so a stale local head would silently overwrite human commits.
 # Sets: WORKTREE_DIR.
 checkout_branch_worktree() {
   local branch="$1"
@@ -95,6 +157,8 @@ checkout_branch_worktree() {
     git -C "$REPO_DIR" worktree prune 2>/dev/null || true
   fi
 
+  reconcile_branch_with_origin "$branch" \
+    || error "Cannot safely reuse ${branch}; reconcile it with origin by hand before resuming."
   git -C "$REPO_DIR" worktree add "$WORKTREE_DIR" "$branch" 2>/dev/null \
     || error "Failed to create worktree for branch ${branch}."
   info "Worktree ready at ${WORKTREE_DIR} (branch: ${branch})."
