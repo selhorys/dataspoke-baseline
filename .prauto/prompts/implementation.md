@@ -20,11 +20,16 @@ are:
   a finding `WFAUTH_OUT_OF_SCOPE: <owning-role> <path>` and that role is an earlier stage of this
   run, run the owner's fix pass on just those findings, review its commit with the owner's full
   reviewer set, and merge that verdict worst-of into the current stage's re-review (at most two
-  such reroutes per stage). Each reviewer's per-pass evidence is the cumulative branch diff since
-  the base branch — `git log --oneline origin/{base_branch}..HEAD`, `git diff
-  origin/{base_branch}...HEAD`, and `git diff HEAD` — never only the latest commit, so a pass that
-  finds its work already committed is still reviewable. A generator commits every untracked file
-  its stage owns and reports any other, and a reviewer escalates on any untracked (`??`) entry.
+  such reroutes per stage). Drive an owner review that returns REVISE to convergence too: run the
+  owner's own bounded fix-pass loop (up to three passes) before merging its verdict, so re-invoking
+  an earlier stage is a normal part of the loop rather than an escalation. Every owner pass writes
+  the ORIGINATING stage's evidence file as well as its own, because that stage's reviewers re-run
+  against the current head and escalate on a diff that stops short of it. Each reviewer's per-pass
+  evidence is the cumulative branch diff since the base branch — `git log --oneline
+  origin/{base_branch}..HEAD`, `git diff origin/{base_branch}...HEAD`, and `git diff HEAD` — never
+  only the latest commit, so a pass that finds its work already committed is still reviewable. A
+  generator commits every untracked file its stage owns and reports any other, and a reviewer
+  escalates on any untracked (`??`) entry.
 
 Either way, **each generator commits its own stage** before returning its report (see
 [Commit-per-stage](#commit-per-stage)). Reviewers stay read-only.

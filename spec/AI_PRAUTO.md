@@ -530,8 +530,14 @@ not edit or dispute it; it marks the finding out of scope with a `WFAUTH_OUT_OF_
 <owning-role> <path>` line. The workflow then runs that owner's fix pass on just those findings and
 reviews the owner's commit with the owner's full reviewer set (including `security-reviewer` when
 the owner is security-flagged), merging that verdict worst-of into the current stage's re-review.
-Rerouting is bounded per stage; a finding owned by a role that is not an earlier stage of the run
-still escalates.
+An owner review that returns REVISE is driven to convergence with the same bounded fix-pass loop
+(up to three passes) rather than folded into the originating stage's verdict after a single pass, so
+re-invoking an earlier stage is a normal part of the loop and not itself an escalation. Every owner
+commit also refreshes the **originating** stage's evidence file, so that stage's re-review sees a
+diff reaching the current head; without the refresh the reviewer role's "a diff you cannot see
+cannot be approved" rule would escalate a correct reroute the moment the owner commits. Rerouting
+stays bounded per stage; a finding owned by a role that is not an earlier stage of the run still
+escalates.
 
 Each generator commits its own stage to the branch as its final action — the workflow's
 commit-per-stage contract — and a REVISE fix pass produces a follow-up commit. Generator stages

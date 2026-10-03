@@ -303,8 +303,12 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   completed stage of the run — the generator emits one `WFAUTH_OUT_OF_SCOPE: <owning-role> <path>`
   line per such finding, the harness runs the owner's fix pass and reviews that commit with the
   owner's full reviewer set (including `security-reviewer` when the owner is security-flagged),
-  bounded by `MAX_CROSS_STAGE_REROUTES`. The deadlock below therefore survives only when the owning
-  role is not an earlier stage of the run, or the reroute budget is spent. When a later
+  bounded by `MAX_CROSS_STAGE_REROUTES`. The owner's reroute is itself a loop: an owner review that
+  returns REVISE gets up to `MAX_FIX_PASSES` more owner fix passes, and every owner commit refreshes
+  the ORIGINATING stage's evidence file — without that refresh the originating stage's reviewers
+  re-run against a diff that stops short of HEAD and escalate a correct reroute as "incomplete
+  evidence" (issue #157). The deadlock below therefore survives only when the owning role is not an
+  earlier stage of the run, or the reroute budget is spent.
   stage's reviewer blocks on drift in a file owned by an *earlier* stage's role — e.g. the `spec`
   stage's `spec/*.md` surfacing a stale row while `airflow-dag` runs — the current generator correctly
   declines (out of its file scope), the reviewer correctly refuses to APPROVE, and three fix passes

@@ -924,7 +924,7 @@ abandon_workflow_escalation() {
   details=$(tail_chars "$details" 12000)
 
   prauto_issue_comment "$issue_number" \
-    "Abandoning — implementation workflow escalated. Either a per-stage reviewer's findings persisted after a fix pass, or the worker could not run the required workflow loop (for example the Workflow tool was absent from its session's tool list). The report below says which. Manual intervention needed.
+    "Abandoning — implementation workflow escalated. A reviewer's findings persisted after its fix-pass budget, or the worker could not run the required workflow loop (for example the Workflow tool was absent from its session's tool list). Findings owned by an earlier stage are routed back to that stage automatically, so this means no further pass converged — not that the plan was unchangeable. The report below names the escalating stage and its findings. Manual intervention needed.
 
 ${details}" \
     "Failed to post workflow-escalation comment on issue #${issue_number}."
