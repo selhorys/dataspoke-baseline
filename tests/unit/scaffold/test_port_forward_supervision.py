@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import signal
 import socket
 import stat
@@ -97,7 +98,7 @@ def say(text):
     print(text, flush=True)
 
 if mode == "delayline":
-    time.sleep(1.5)
+    time.sleep(3.0)
 if mode != "noline":
     say(f"Forwarding from 127.0.0.1:{{lport}} -> {{rport}}")
 
@@ -170,6 +171,14 @@ def _startup_tail_slice() -> str:
 def _logdir_slice() -> str:
     block = _between("# Log directory: a fresh 0700", "# Signals: the loop")
     assert "LOG_DIR_ARG" in block
+    return block
+
+
+def _signals_slice() -> str:
+    """The script's own EXIT/INT/TERM trap block (what turns a signal into an exit + cleanup)."""
+    block = _between("# Signals: the loop", 'echo ""')
+    for needle in ("trap cleanup EXIT", " INT", " TERM"):
+        assert needle in block, f"signals slice is missing {needle!r}"
     return block
 
 
@@ -357,7 +366,7 @@ class _PfEnv:
         return rc, proc.output()
 
     def startup_body(self, specs: list[str], *, loop: bool = False) -> str:
-        """Spec loop + startup tail (as in the script), optionally followed by the supervisor."""
+        """Spec loop + startup tail (as in the script), optionally the real traps and supervisor."""
         lines = [
             "PF_SPECS=(" + " ".join(shlex.quote(s) for s in specs) + ")",
             _spec_loop_slice(),
@@ -365,12 +374,9 @@ class _PfEnv:
             'echo "STARTUP_DONE active=$PF_ACTIVE"',
         ]
         if loop:
-            lines += [
-                "trap cleanup EXIT",
-                "trap 'exit 130' INT",
-                "trap 'exit 143' TERM",
-                "_supervise",
-            ]
+            # The script's own trap block, not a copy: the signal tests must fail if the
+            # script drops a trap, lets INT/TERM return into the loop, or changes the codes.
+            lines += [_signals_slice(), "_supervise"]
         return "\n".join(lines)
 
     def teardown(self) -> None:
@@ -448,6 +454,16 @@ def test_unknown_flag_and_bare_log_dir_are_rejected() -> None:
     )
     assert bare.returncode != 0
     assert "--log-dir" in bare.stdout + bare.stderr
+
+
+def test_signal_traps_exit_with_conventional_codes_not_return() -> None:
+    """spec Signals: INT/TERM must end the script (the loop never ends on its own), so the traps
+    `exit`; merely running cleanup would return into the loop. Pins the real trap block."""
+    block = _signals_slice()
+    assert re.search(r"^trap cleanup EXIT$", block, re.M)
+    assert re.search(r"^trap 'exit 130' INT$", block, re.M)
+    assert re.search(r"^trap 'exit 143' TERM$", block, re.M)
+    assert not re.search(r"^trap cleanup\b.*\b(INT|TERM)\b", block, re.M)
 
 
 # --------------------------------------------------------------------------------------
@@ -602,8 +618,9 @@ def test_healthy_forwards_are_all_active_with_logs_per_port(pf: _PfEnv) -> None:
 def test_port_answering_without_readiness_line_is_not_active(pf: _PfEnv) -> None:
     """spec Readiness: a forward counts only on kubectl's bind line, never on a TCP connect.
 
-    `delayline` binds at once but prints the line 1.5s later, so for that window the port
-    answers while the forward must still be `starting`.
+    `delayline` binds at once but prints the line 3s later, so for that window the port
+    answers while the forward must still be `starting`. The test polls until the port answers
+    (bounded) instead of sleeping a fixed time, so a slow machine cannot miss the window start.
     """
     port = _free_port()
     pf.mode(port, "delayline")
@@ -611,7 +628,12 @@ def test_port_answering_without_readiness_line_is_not_active(pf: _PfEnv) -> None
         [
             f"_pf_register {port} ns svc 5432",
             "_spawn_forward 0",
-            "command sleep 0.6",
+            "n=0",
+            f"while ! _tcp_open {port}; do",
+            "  n=$(( n + 1 ))",
+            '  if [[ "$n" -gt 150 ]]; then echo NEVER_BOUND; break; fi',
+            "  command sleep 0.1",
+            "done",
             "_forward_check 0",
             f"if _tcp_open {port}; then echo PORT_ANSWERS; else echo PORT_SILENT; fi",
             'echo "EARLY_STATE=${PF_STATE[0]}"',
@@ -621,6 +643,7 @@ def test_port_answering_without_readiness_line_is_not_active(pf: _PfEnv) -> None
     )
     rc, out = pf.run(body)
     assert rc == 0, out
+    assert "NEVER_BOUND" not in out
     assert "PORT_ANSWERS" in out  # backstop: the connect probe would have said "ready"
     assert "EARLY_STATE=starting" in out
     assert "FINAL_STATE=up" in out
@@ -714,6 +737,65 @@ def test_foreign_listener_does_not_satisfy_the_no_bind_line_fallback(pf: _PfEnv)
     assert "active (pid" not in out
 
 
+def test_alive_but_silent_forward_fails_after_the_start_timeout(pf: _PfEnv) -> None:
+    """spec Readiness: alive, no bind line, nothing answering on the port -> FAILED after the
+    start budget with the reason, not counted and not left `starting` forever.
+
+    The stub stays alive, binds nothing and prints nothing; there is no squatter.
+    """
+    port = _free_port()
+    pf.mode(port, "idle")
+    assert not _port_answers(port)  # backstop: nothing answers, so only the timeout can decide
+    rc, out = pf.run(
+        pf.startup_body([_spec(port)]),
+        PF_STUB_SERVICES=SERVICES,
+        PORT_FORWARD_START_TIMEOUT_SECS="2",
+    )
+    assert rc != 0, out
+    assert "0 of 1 port-forward(s) active" in out
+    assert re.search(rf"127\.0\.0\.1:{port} -> ns/svc FAILED: not ready after 2s", out), out
+    assert "active (pid" not in out
+
+
+def _no_lsof_path(pf: _PfEnv) -> str:
+    """A PATH holding the stub kubectl and the core utilities the script needs, but not lsof."""
+    tools = pf.tmp / "nolsof-bin"
+    tools.mkdir()
+    (tools / "kubectl").symlink_to(pf.bin / "kubectl")
+    for name in (
+        "grep", "tail", "head", "sed", "tr", "cut", "sleep", "mv", "rm", "date", "mkdir",
+        "cat", "ls", "mktemp", "dirname", "basename", "awk", "uname", "wc", "sort", "env",
+    ):  # fmt: skip
+        found = shutil.which(name)
+        if found:
+            (tools / name).symlink_to(found)
+    assert not (tools / "lsof").exists()
+    return str(tools)
+
+
+def test_unverifiable_listener_owner_is_failed_not_guessed(pf: _PfEnv) -> None:
+    """spec Readiness: with no bind line and no way to verify who owns the port (lsof missing),
+    the forward is reported failed rather than guessed at, and is not counted.
+
+    The stub owns the port and answers on it, so only the unverifiable-owner branch can fail it.
+    """
+    port = _free_port()
+    pf.mode(port, "noline")
+    rc, out = pf.run(
+        'if command -v lsof >/dev/null 2>&1; then echo HAVE_LSOF; else echo NO_LSOF; fi\n'
+        + pf.startup_body([_spec(port)]),
+        PF_STUB_SERVICES=SERVICES,
+        PORT_FORWARD_START_TIMEOUT_SECS="2",
+        PATH=_no_lsof_path(pf),
+    )
+    assert "NO_LSOF" in out and "HAVE_LSOF" not in out, out  # backstop: lsof really is absent
+    assert rc != 0, out
+    assert "0 of 1 port-forward(s) active" in out
+    assert re.search(rf"127\.0\.0\.1:{port} -> ns/svc FAILED: not ready after 2s", out), out
+    assert "lsof not installed" in out
+    assert "active (pid" not in out
+
+
 @pytest.mark.skipif(not HAVE_LSOF, reason="listener-ownership fallback needs lsof")
 def test_own_listener_without_bind_line_is_accepted_and_labelled(pf: _PfEnv) -> None:
     """spec Readiness fallback: a kubectl that prints no line is accepted after the start timeout
@@ -729,6 +811,45 @@ def test_own_listener_without_bind_line_is_accepted_and_labelled(pf: _PfEnv) -> 
     assert "1 of 1 port-forward(s) active" in out
     assert "listener ownership" in out
     assert "FAILED" not in out
+
+
+# --------------------------------------------------------------------------------------
+# Log retention on exit
+# --------------------------------------------------------------------------------------
+
+
+def test_cleanup_removes_an_empty_default_log_dir_and_keeps_one_with_logs(pf: _PfEnv) -> None:
+    """spec Logs: the directory is retained on exit for post-mortem; a default (mktemp) directory
+    left empty is removed."""
+    empty = pf.tmp / "owned-empty"
+    empty.mkdir(mode=0o700)
+    full = pf.tmp / "owned-full"
+    full.mkdir(mode=0o700)
+    (full / "pf-9201.log").write_text("Forwarding from 127.0.0.1:9201 -> 5432\n")
+    body = "\n".join(
+        [
+            f"LOG_DIR={shlex.quote(str(empty))}; LOG_DIR_OWNED=1; cleanup",
+            "echo ---",
+            f"LOG_DIR={shlex.quote(str(full))}; LOG_DIR_OWNED=1; cleanup",
+        ]
+    )
+    rc, out = pf.run(body)
+    assert rc == 0, out
+    first, second = out.split("---")
+    assert not empty.exists()
+    assert str(empty) not in first  # an empty directory is gone, so there is nothing to name
+    assert (full / "pf-9201.log").exists()  # backstop for the removal path: non-empty survives
+    assert f"Port-forward logs kept in {full}" in second
+
+
+def test_cleanup_keeps_a_caller_supplied_log_dir_even_when_empty(pf: _PfEnv) -> None:
+    """spec Logs: only a default directory is removed; a --log-dir the caller named is theirs."""
+    mine = pf.tmp / "caller-dir"
+    mine.mkdir(mode=0o700)
+    rc, out = pf.run(f"LOG_DIR={shlex.quote(str(mine))}; LOG_DIR_OWNED=0; cleanup")
+    assert rc == 0, out
+    assert mine.is_dir()
+    assert f"Port-forward logs kept in {mine}" in out
 
 
 # --------------------------------------------------------------------------------------
@@ -798,6 +919,10 @@ def test_killed_child_is_logged_and_respawned(pf: _PfEnv) -> None:
     assert len(re.findall(r"recovered", proc.output())) == 1
     # timestamped (HH:MM:SS) per spec
     assert re.search(r"WARN: \d\d:\d\d:\d\d 127\.0\.0\.1:", proc.output())
+    assert re.search(
+        rf"INFO: \d\d:\d\d:\d\d 127\.0\.0\.1:{port} -> ns/svc recovered \(pid \d+\)",
+        proc.output(),
+    ), proc.output()
 
 
 def test_stale_but_alive_forward_is_killed_and_respawned(pf: _PfEnv) -> None:
