@@ -2279,8 +2279,7 @@ of the virtual-host scheme.
 #### Port-forward supervision
 
 A `kubectl port-forward` is not durable: it exits when its pod is replaced or
-the connection drops, and a `svc/` forward can stay up while pinned to a pod
-that no longer exists. `bin/port-forward.sh` therefore treats "leave this
+the connection drops. `bin/port-forward.sh` therefore treats "leave this
 running while you test" as a contract it enforces, not a hope.
 
 - **Readiness is kubectl's own bind confirmation.** A forward counts as active
@@ -2309,24 +2308,34 @@ running while you test" as a contract it enforces, not a hope.
   run is reported once and the forward comes up by itself when the port frees.
 - **Supervision loop.** The script polls every `PORT_FORWARD_POLL_SECS`
   (default 3). A forward is dead when its process has exited, and stale when
-  its log gains a connection-loss line (`lost connection to pod`,
-  `error forwarding port`, `an error occurred forwarding`) while the process is
-  still alive; a stale forward is killed. Either is logged once with a
-  timestamp and its reason, then respawned with capped exponential backoff
-  (3s doubling to a 30s ceiling). Repeated failed retries are silent; a
-  recovery logs one timestamped line. Per-connection chatter such as
-  `Handling connection for <port>` is not a trigger. The startup wait is bounded
-  by `PORT_FORWARD_START_TIMEOUT_SECS` (default 15). Both are script-local
+  its log gains kubectl's forward-level loss line, `lost connection to pod`,
+  while the process is still alive (the window before it exits); a stale
+  forward is killed. Either is logged once with a timestamp and its reason,
+  then respawned with capped exponential backoff (3s doubling to a 30s
+  ceiling). Repeated failed retries are silent; a recovery logs one timestamped
+  line. That single signature is deliberately the only stale trigger: kubectl
+  logs `Handling connection for <port>`, `error forwarding port` and
+  `an error occurred forwarding` per client connection, so a backend that
+  refuses or resets one connection would otherwise sever every other
+  connection open through the forward. A forward that stays alive on an old
+  kubectl without ever logging the loss line is therefore not detected; current
+  kubectl exits. The startup wait is bounded by
+  `PORT_FORWARD_START_TIMEOUT_SECS` (default 15). Both are script-local
   environment knobs, not `.env` keys.
 - **Logs.** One file per forward, `pf-<local-port>.log`, under a fresh mode-0700
   directory from `mktemp -d` (honouring `TMPDIR`), or under `--log-dir <dir>`
-  for a stable path. Each spawn rotates the previous file to
+  for a stable path. The logs decide what counts as active, so `--log-dir` must
+  be a real directory (not a symlink) owned by the caller and not group- or
+  world-writable; anything else is refused, since another user able to write
+  there could plant or forge the readiness line. Each log is created fresh and
+  private (mode 0600), never following a pre-existing file or link. Each spawn
+  rotates the previous file to
   `pf-<local-port>.log.prev`, so a stale readiness line cannot satisfy a new
   spawn. Rotation bounds the number of log files (two per forward), not their
   size: kubectl logs a line per client connection, so the log of a forward that
   is never respawned keeps growing, and each poll re-reads it for the
   connection-loss signature. The directory is named in the banner and retained
-  on exit for post-mortem.
+  on exit for post-mortem (a default directory left empty is removed).
 - **Signals and portability.** SIGINT and SIGTERM exit promptly and kill the
   forwards that are running at that moment (including respawned ones), leaving
   no `kubectl` child behind. The script runs on the bash 3.2 that ships with
