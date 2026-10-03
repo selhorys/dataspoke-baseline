@@ -234,7 +234,8 @@ and Steps 3/6 (dummy-data reset) at module scope. It also loads `helm-charts/.en
    the lock; that process then owns both the lock and its renewal for the duration.
    `DATASPOKE_DEV_LOCK_URL` is auto-populated in `helm-charts/.env.dev` by `install.sh`
    (`http://<INGRESS_IP>:9221` in managed ingress mode; `http://127.0.0.1:9221`
-   via `bin/port-forward.sh` in shared ingress mode).
+   via `bin/port-forward.sh` in shared ingress mode, whose forwards self-heal; on an unexplained
+   setup failure read its per-forward logs, named in its banner).
 3. **Reset dummy data** -- always reset before running, even if data appears clean.
    `conftest.py` resets via `tests/integration/util/`. Manual:
    `uv run python -m tests.integration.util --reset-seed`.
