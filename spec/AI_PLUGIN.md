@@ -138,6 +138,7 @@ A user installs from the hosting repository:
 ```
 /plugin marketplace add <org>/<repo>
 /plugin install dataspoke@dataspoke      # <plugin>@<marketplace>
+/reload-plugins                          # load the skills in the current session
 ```
 
 Skills then appear as `/dataspoke:dataspoke-access`, `/dataspoke:dataspoke-validation`,
@@ -170,14 +171,19 @@ Resolved configuration lives in `~/.dataspoke/config.json`, written `chmod 600`:
 
 ```json
 {
-  "api_base_url": "https://dataspoke.example.com/api/v1",
+  "api_base_url": "https://api.dataspoke.example.com/api/v1",
   "token": "dsk_…",
-  "redoc_url": "https://dataspoke.example.com/redoc",
-  "ui_url": "https://dataspoke.example.com",
+  "redoc_url": "https://api.dataspoke.example.com/redoc",
+  "ui_url": "https://app.dataspoke.example.com",
   "datahub_gms_url": "https://datahub.example.com/api/gms",
   "datahub_token": "<DataHub PAT>"
 }
 ```
+
+`api_base_url` and `redoc_url` address the **API ingress**; `ui_url` addresses the **frontend
+ingress**. They share an origin only when one host serves both, and differ in most prod
+deployments (the `app.`/`api.` split in `helm-charts/values-prod.example.yaml`). Every DataSpoke
+call the plugin makes (`/ready`, `/api/v1/...`) goes to the API origin.
 
 Environment variables override the file when present, for CI and ephemeral shells:
 `DATASPOKE_API_URL`, `DATASPOKE_API_TOKEN`, `DATAHUB_GMS_URL`, `DATAHUB_TOKEN`.
