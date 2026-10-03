@@ -2292,6 +2292,9 @@ running while you test" as a contract it enforces, not a hope.
   that sends no bytes, since these ports front Postgres, Redis and Kafka. If a
   kubectl version never prints the line, a live process whose port answers and
   whose log shows no bind error is accepted once the start timeout elapses.
+  The same rule, fallback included, applies to every spawn, respawns
+  included: a respawned forward gets a fresh log and `PORT_FORWARD_START_TIMEOUT_SECS`
+  from its own spawn, so such a kubectl does not loop through backoff forever.
 - **Failures are reported, not counted.** The startup report reads
   `N of M port-forward(s) active` and lists each failed forward with its local
   port, target service, the last log line (sanitized, since it is kubectl
