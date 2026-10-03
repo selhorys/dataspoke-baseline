@@ -19,7 +19,7 @@ Access lives in `~/.dataspoke/config.json` (`chmod 600`):
   "token": "dsk_…",
   "redoc_url": "https://api.dataspoke.example.com/redoc",
   "ui_url": "https://app.dataspoke.example.com",
-  "datahub_gms_url": "https://datahub.example.com/gms",
+  "datahub_gms_url": "https://datahub-gms.example.com",
   "datahub_token": "…"
 }
 ```
@@ -29,6 +29,8 @@ DataSpoke call the plugin makes goes there), `ui_url` is the browsable **Web UI*
 
 `datahub_gms_url` and `datahub_token` are **optional** — they are only needed for the validation
 skill's DataHub URN search (the `datahub-graphql` helper), not for basic DataSpoke access.
+`datahub_gms_url` is the GMS **origin only** (scheme + host[:port], no path) — the helper appends
+`/api/graphql` itself.
 
 Environment variables override the file when present: `DATASPOKE_API_URL`, `DATASPOKE_API_TOKEN`
 (and, for the DataHub URN search, `DATAHUB_GMS_URL`, `DATAHUB_TOKEN`).
@@ -162,8 +164,8 @@ handed back to the agent.
      the token itself is stale, and retrying will not help; mint a fresh one.
 
 3. **Optionally collect DataHub access.** Ask whether the user wants to enable the validation
-   skill's DataHub URN search. If yes, collect the DataHub GMS origin (e.g.
-   `https://datahub.example.com/gms`) and a DataHub personal access token, to be written as
+   skill's DataHub URN search. If yes, collect the DataHub GMS origin (no path;
+   e.g. `https://datahub-gms.example.com`) and a DataHub personal access token, to be written as
    `datahub_gms_url` and `datahub_token`. These are optional — skip them for basic DataSpoke
    access. Treat the DataHub token exactly like the `dsk_` token: never echo it back, never store
    it anywhere but the mode-600 config (or the env override).
