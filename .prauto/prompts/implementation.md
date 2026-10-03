@@ -20,7 +20,11 @@ are:
   a finding `WFAUTH_OUT_OF_SCOPE: <owning-role> <path>` and that role is an earlier stage of this
   run, run the owner's fix pass on just those findings, review its commit with the owner's full
   reviewer set, and merge that verdict worst-of into the current stage's re-review (at most two
-  such reroutes per stage).
+  such reroutes per stage). Each reviewer's per-pass evidence is the cumulative branch diff since
+  the base branch — `git log --oneline origin/{base_branch}..HEAD`, `git diff
+  origin/{base_branch}...HEAD`, and `git diff HEAD` — never only the latest commit, so a pass that
+  finds its work already committed is still reviewable. A generator commits every untracked file
+  its stage owns and reports any other, and a reviewer escalates on any untracked (`??`) entry.
 
 Either way, **each generator commits its own stage** before returning its report (see
 [Commit-per-stage](#commit-per-stage)). Reviewers stay read-only.
@@ -69,7 +73,8 @@ Either way, **each generator commits its own stage** before returning its report
      "security":      <the Security array from the metadata block>,
      "authority":     <the map of reviewer type to authority file path from step 2>,
      "authorityRoot": "{authority_dir}",
-     "author":        "{author_name} <{author_email}>"
+     "author":        "{author_name} <{author_email}>",
+     "base":          "origin/{base_branch}"
    }
    ```
 
@@ -78,7 +83,10 @@ Either way, **each generator commits its own stage** before returning its report
    to every generator's commit.
 
    Prior committed work may exist on the branch from an earlier heartbeat. A fresh workflow run
-   begins from the branch's current committed state and continues from there. The parent verifies
+   begins from the branch's current committed state and continues from there. The `base` argument
+   makes every review cover the branch's whole diff since `origin/{base_branch}`, so a stage whose
+   work an earlier attempt already committed is reviewed on those commits rather than escalated
+   for an empty diff. The parent verifies
    that a COMPLETE workflow leaves no uncommitted changes before any integration or PR step.
 
 4. When the loop returns, read its `outcome`:

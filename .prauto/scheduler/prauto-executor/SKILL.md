@@ -326,11 +326,18 @@ spamming Slack, run the monitor in the foreground with `PRAUTO_MONITOR_DRY_RUN=1
   subagents run with `Read, Glob, Grep` and no shell, and their roles require the parent-supplied
   `Untrusted per-pass evidence` to carry the complete diff — status, staged/unstaged diffs,
   untracked inventory, `git diff --check` (`spec/AI_SCAFFOLD.md`). `wf-minimal` has each generator
-  redirect the full `git show HEAD` diff to `.prauto/evidence/<stage>.diff` (gitignored) and end its
-  report with a fenced evidence block (`git status --porcelain`, `git show --stat --oneline HEAD`,
-  `git diff --check`); the review prompt points the reviewer at that file. Before the file, the diff
-  was echoed through the report and a large one could be dropped on the way out, leaving the
-  reviewer no diff and halting the run (issue #182 attempt 2; issue #116 test stage).
+  write the cumulative branch diff (`git log --oneline <base>..HEAD`, `git diff <base>...HEAD`,
+  `git diff HEAD`, with `base` = `origin/$PRAUTO_BASE_BRANCH` from the implementation prompt; the
+  generator must leave no untracked files, and a reviewer escalates on any `??` entry) to
+  `.prauto/evidence/<stage>.diff` (gitignored) and end its report with a fenced evidence block
+  (`git status --porcelain`, `git diff --stat <base>...HEAD`, `git diff --check`); the review prompt
+  points the reviewer at that file. Before the file, the diff was echoed through the report and a
+  large one could be dropped on the way out (issue #182 attempt 2; issue #116 test stage). Before
+  the cumulative diff, evidence was `git show HEAD` only, so a re-run whose generator found its work
+  already committed by an earlier attempt handed reviewers an empty or last-commit diff and
+  escalated a correct stage (issue #149 quota resume; issue #152 relabel resume). A branch created
+  before that fix needs the rebase below before a resume, or its worktree still runs the old
+  workflow.
   Read the finding text: "no diff supplied" is a harness fault — fix the workflow; a named
   spec↔impl contradiction is real and needs a code fix or a spec narrowing before a resume.
 - **Resuming an escalated issue does not pick up base-branch fixes by itself.** `create_branch`

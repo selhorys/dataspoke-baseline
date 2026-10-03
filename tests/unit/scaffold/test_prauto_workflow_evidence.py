@@ -12,12 +12,18 @@ repository evidence"; the reviewer subagents run with Read/Glob/Grep and no shel
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[3]
 WORKFLOW = ROOT / ".claude/workflows/wf-minimal.js"
 AGENT_LIB = ROOT / ".prauto/lib/agent.sh"
+IMPL_PROMPT = ROOT / ".prauto/prompts/implementation.md"
 
 
 def test_generator_writes_the_diff_to_a_file_instead_of_echoing_it() -> None:
@@ -37,8 +43,10 @@ def test_generator_writes_the_diff_to_a_file_instead_of_echoing_it() -> None:
     assert ".prauto/state/" not in source.split("function evidencePath")[1].split("}")[0], (
         "the evidence path was moved under .prauto/state/, which DENY_TOOLS denies to the reviewer"
     )
-    # The generator clause redirects `git show` into that file.
-    assert "git show HEAD > " in source, "the generator no longer redirects the diff to a file"
+    # The generator clause redirects the diff into that file: the cumulative branch diff when a
+    # base ref is known, `git show HEAD` as the no-base fallback.
+    assert "...HEAD >> " in source, "the generator no longer redirects the branch diff to a file"
+    assert "git show HEAD > " in source, "the no-base fallback no longer redirects to a file"
     # And it must say NOT to paste the diff into the report.
     assert "Do NOT paste the full diff" in source, (
         "the generator clause no longer forbids pasting the full diff into the report"
@@ -59,10 +67,12 @@ def test_reviewer_is_pointed_at_the_evidence_file_and_fails_closed_without_it() 
 
 
 def test_implementation_allowlist_permits_the_commands_the_evidence_clause_names() -> None:
-    """`git show` and `mkdir` are instructed, so they belong in the phase's allowlist.
+    """Every evidence command the clause instructs belongs in the phase's allowlist.
 
-    The evidence clause tells the generator to run `mkdir -p .prauto/evidence` and
-    `git show HEAD`; an allowlist that omits either contradicts the prompt the generator is given.
+    The evidence clause tells the generator to run `mkdir -p .prauto/evidence`, then the
+    cumulative `git log` / `git diff` capture (or the `git show HEAD` no-base fallback). A denied
+    command surfaces as a missing-evidence ESCALATE that looks like a reviewer verdict, so an
+    allowlist that omits any of them must fail here instead.
     """
     lib = AGENT_LIB.read_text()
     line = next(
@@ -73,3 +83,91 @@ def test_implementation_allowlist_permits_the_commands_the_evidence_clause_names
 
     assert "Bash(git show *)" in line, "the implementation allowlist omits `git show`"
     assert "Bash(mkdir *)" in line, "the implementation allowlist omits `mkdir`"
+    assert "Bash(git log *)" in line, "the implementation allowlist omits `git log`"
+    assert "Bash(git diff *)" in line, "the implementation allowlist omits `git diff`"
+
+
+def test_implementation_prompt_passes_the_base_ref_to_the_workflow() -> None:
+    """The executor-rendered prompt hands wf-minimal the base ref the branch forked from.
+
+    Without it the workflow falls back to last-commit evidence, which is what escalated the
+    resumed runs of issues #149 and #152.
+    """
+    prompt = IMPL_PROMPT.read_text()
+    assert '"base":' in prompt and "origin/{base_branch}" in prompt, (
+        "implementation.md no longer passes wf-minimal a base ref built from {base_branch}"
+    )
+    # The executor must actually render that placeholder.
+    assert "base_branch=${PRAUTO_BASE_BRANCH}" in AGENT_LIB.read_text(), (
+        "run_implementation no longer renders {base_branch} into the implementation prompt"
+    )
+
+
+def _run_workflow(args: dict) -> dict:
+    """Execute wf-minimal under node with stubbed harness globals; return captured prompts."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    harness = """
+const fs = require('fs')
+const src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta')
+const prompts = []
+const agent = async (prompt, opts) => {
+  prompts.push({ type: opts.agentType, prompt })
+  return opts.schema ? { verdict: 'APPROVE', summary: 'ok', findings: [] } : 'report'
+}
+const parallel = async (fns) => Promise.all(fns.map(f => f()))
+const log = () => {}
+const run = new (Object.getPrototypeOf(async function () {}).constructor)(
+  'args', 'agent', 'parallel', 'log', src)
+run(JSON.parse(process.argv[2]), agent, parallel, log)
+  .then(result => console.log(JSON.stringify({ result, prompts })))
+  .catch(err => console.log(JSON.stringify({ error: String(err.message) })))
+"""
+    proc = subprocess.run(
+        [node, "-e", harness, str(WORKFLOW), json.dumps(args)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    return json.loads(proc.stdout)
+
+
+_BASE_ARGS = {"plan": "p", "stages": ["spec"], "security": ["spec"]}
+
+
+def test_evidence_is_the_cumulative_branch_diff_when_a_base_is_given() -> None:
+    """Generator and reviewers both see the merge-base diff, not just the latest commit."""
+    out = _run_workflow({**_BASE_ARGS, "base": "origin/dev"})
+    assert out["result"]["outcome"] == "COMPLETE"
+    gen = next(p["prompt"] for p in out["prompts"] if p["type"] == "spec")
+    assert "git diff origin/dev...HEAD >> .prauto/evidence/spec.diff" in gen
+    assert "git log --oneline origin/dev..HEAD > .prauto/evidence/spec.diff" in gen
+    assert "whether or not you committed" in gen
+    assert "Leave no untracked files behind" in gen, "generators may leave uncaptured files"
+    # No file name from the worktree is ever spliced into a shell command.
+    assert "--no-index" not in gen and "<that-file>" not in gen
+    assert "git show HEAD" not in gen
+
+    reviews = [p["prompt"] for p in out["prompts"] if p["type"] != "spec"]
+    assert {p["type"] for p in out["prompts"]} == {"spec", "spec-reviewer", "security-reviewer"}
+    for review in reviews:
+        assert "CUMULATIVE branch diff since the merge-base with origin/dev" in review
+        assert ".prauto/evidence/spec.diff" in review
+        assert "untracked" in review, "reviewers are not told to escalate on uncaptured files"
+
+
+def test_evidence_falls_back_to_the_last_commit_without_a_base() -> None:
+    out = _run_workflow(_BASE_ARGS)
+    gen = next(p["prompt"] for p in out["prompts"] if p["type"] == "spec")
+    assert "git show HEAD > .prauto/evidence/spec.diff" in gen
+
+
+@pytest.mark.parametrize(
+    "bad", ["origin/dev; rm -rf /", "-p", "origin/dev..HEAD", "origin dev", "a$(x)", 7]
+)
+def test_malformed_base_ref_is_rejected(bad: object) -> None:
+    """The ref is interpolated into shell commands, so anything but a plain ref name throws."""
+    out = _run_workflow({**_BASE_ARGS, "base": bad})
+    assert "malformed base ref" in out.get("error", ""), out

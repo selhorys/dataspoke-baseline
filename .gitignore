@@ -32,8 +32,9 @@ memory/
 .prauto/*.local.*
 .prauto/state/
 .prauto/worktrees/
-# Per-stage review evidence written by wf-minimal generators (`git show` diff) — derived
-# from the stage commit, read back by the reviewers, and reproducible from the branch.
+# Per-stage review evidence written by wf-minimal generators (the cumulative branch diff from
+# the merge-base with the base ref; `git show HEAD` when no base is given) — read back by the
+# reviewers, and reproducible from the branch.
 .prauto/evidence/
 # Per-attempt evaluator authority snapshots — derived from scaffold/ at the commit
 # each snapshot's header records, so they are reproducible rather than sources.

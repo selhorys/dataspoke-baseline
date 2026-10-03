@@ -515,7 +515,11 @@ still escalates.
 Each generator commits its own stage to the branch as its final action — the workflow's
 commit-per-stage contract — and a REVISE fix pass produces a follow-up commit. Generator stages
 execute serially because they share one worktree and Git index; reviewer passes within a stage may
-still run concurrently. Reviewers stay read-only and evaluate the committed changes. Commits land
+still run concurrently. Reviewers stay read-only and evaluate the committed changes. Their per-pass
+diff evidence is cumulative from the branch's merge-base with the base branch, never only the
+latest commit: a pass that finds its work already committed by an earlier attempt, a resume, or an
+earlier pass makes no new commit, and last-commit evidence would leave its reviewers nothing to
+approve. Commits land
 on the private `prauto/I-*` worktree branch only, never `master`, and are attributed to the worker
 via `--author`. Before integration or PR finalization, the parent requires the exact
 `PRAUTO_WORKFLOW_OUTCOME: COMPLETE` sentinel and a clean worktree. Progress is therefore durable
