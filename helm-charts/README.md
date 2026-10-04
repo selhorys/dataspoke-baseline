@@ -73,7 +73,7 @@ probes go to `127.0.0.1` and therefore depend on
 lines report unreachable and the credentials in the env file are offered to
 whatever local process holds those ports.
 
-**Exit codes.** `0` = healthy. `1` = the probes ran and something is unhealthy.
+**`health-check.sh` exit codes.** `0` = healthy. `1` = the probes ran and something is unhealthy.
 `2` = the run could not be set up and **nothing was probed** — a missing
 `kubectl`, an unset `DATASPOKE_KUBE_CLUSTER`, a context that is not in your
 kubeconfig, a missing env file, an invalid flag. A `2` is a fault on your
@@ -1083,6 +1083,15 @@ depends on `DATASPOKE_KUBE_INGRESS_MODE` in `helm-charts/.env.dev`:
   additionally puts a `tls:` block on the three dev ingresses DataSpoke owns
   (API, frontend, Airflow) — leave it empty when the controller terminates TLS
   with a controller-level or wildcard cert.
+
+`port-forward.sh` supervises its forwards. A forward is counted active only
+once `kubectl` itself confirms the bind, so a port already held by another
+process is reported as `FAILED` (with the last log line) rather than counted;
+a forward whose pod is replaced or whose connection drops is logged and
+respawned with backoff. If no forward comes up the script exits non-zero
+instead of idling. Each forward logs to `pf-<port>.log` in a private temp
+directory named in the banner (`--log-dir <dir>` picks a stable one).
+`PORT_FORWARD_POLL_SECS` (3) and `PORT_FORWARD_START_TIMEOUT_SECS` (15) tune it.
 
 | Service | Address | Credentials |
 |---------|---------|-------------|
