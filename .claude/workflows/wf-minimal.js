@@ -145,8 +145,8 @@ function evidenceFilesClause(stages) {
     'FULL diff to ' + paths + ' first (' + cmds + ') — ' + persist + '. Leave no untracked files ' +
     'behind: commit every untracked file that belongs to your stage before capturing, and name any ' +
     'other untracked file in your report rather than deleting it — the capture holds no untracked ' +
-    'contents, so a reviewer escalates on any `??` entry. Name every path above in your report. Do ' +
-    'NOT paste the full diff into the report: a large diff can be truncated on the way out, and a ' +
+    'contents, so a reviewer escalates on any `??` entry. Name every path above in your report. ' +
+    'Do NOT paste the full diff into the report: a large diff can be truncated on the way out, and a ' +
     'report that drops it leaves the reviewers — who cannot run git themselves — with no diff to ' +
     'check and forces an ESCALATE.'
   )

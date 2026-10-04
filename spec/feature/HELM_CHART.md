@@ -77,7 +77,7 @@ helm-charts/
 │   ├── uninstall.sh                     # main uninstaller
 │   ├── health-check.sh                  # service-by-service probe (--profile {dev|prod})
 │   ├── build-image.sh                   # api | airflow | postgres | frontend (Cloud Build / ECR / local)
-│   ├── port-forward.sh                  # forward TCP services to 127.0.0.1 (shared ingress mode)
+│   ├── port-forward.sh                  # supervised forwards of TCP services to 127.0.0.1 (shared ingress mode)
 │   ├── lib/helpers.sh                   # logging + kubectl/helm wrappers + ingress-mode helpers + in-pod admin-API caller
 │   ├── dev-peripherals/                 # dev-only orchestrators
 │   │   ├── nginx-ingress.sh
@@ -2265,7 +2265,8 @@ In **shared** mode the operator's controller serves the virtual hosts over
 controller (emitting HSTS) requires `https` so browser login is not broken by
 mixed-content or auto-upgrade. The TCP datastores are independent of the scheme:
 they are never on the ingress. `bin/port-forward.sh` runs in the foreground and
-`kubectl port-forward`s them to their canonical ports on `127.0.0.1`. Which of
+`kubectl port-forward`s them to their canonical ports on `127.0.0.1`, and
+supervises what it spawns (§Port-forward supervision). Which of
 the six it opens follows the env file it resolves: all six under a dev env file,
 and under a prod one only those in `DATASPOKE_KUBE_DATASPOKE_NAMESPACE`, since a
 prod env file carries no `DATASPOKE_DEV_*` namespace for the DataHub and
@@ -2274,6 +2275,71 @@ listeners advertise `127.0.0.1:<port>`. Integration
 tests, `health-check.sh`, and `helm-charts/.env.dev`'s TCP `DATASPOKE_DEV_*`
 host values all resolve to `127.0.0.1` while the port-forward holds, regardless
 of the virtual-host scheme.
+
+#### Port-forward supervision
+
+A `kubectl port-forward` is not durable: it exits when its pod is replaced or
+the connection drops. `bin/port-forward.sh` therefore treats "leave this
+running while you test" as a contract it enforces, not a hope.
+
+- **Readiness is kubectl's own bind confirmation.** A forward counts as active
+  only when its process is alive and its fresh log carries kubectl's
+  `Forwarding from 127.0.0.1:<port>` line. A TCP connect to the local port is
+  never sufficient on its own, because a leftover process already holding the
+  port accepts the connect while the new `kubectl` has exited with
+  `address already in use`. The connect probe is used only by the fallback
+  below, never as liveness polling, and sends no bytes, since these ports front
+  Postgres, Redis and Kafka. If a kubectl version never prints the line, a live
+  process whose log shows no bind error is accepted once the start timeout
+  elapses, but only when its port answers and the listener is confirmed to be
+  that process's own socket; a foreign listener, or ownership that cannot be
+  verified, is reported failed rather than guessed at.
+  The same rule, fallback included, applies to every spawn, respawns
+  included: a respawned forward gets a fresh log and `PORT_FORWARD_START_TIMEOUT_SECS`
+  from its own spawn, so such a kubectl does not loop through backoff forever.
+- **Failures are reported, not counted.** The startup report reads
+  `N of M port-forward(s) active` and lists each failed forward with its local
+  port, target service, the last log line (sanitized, since it is kubectl
+  output) and the log path. Specs skipped for an empty namespace or a missing
+  Service are not failures; they keep their own skip warning.
+- **Zero active at startup is fatal.** The script exits non-zero and names the
+  log directory instead of holding open with nothing forwarded. A partial
+  failure keeps running and keeps retrying, so a squatter left by an earlier
+  run is reported once and the forward comes up by itself when the port frees.
+- **Supervision loop.** The script polls every `PORT_FORWARD_POLL_SECS`
+  (default 3). A forward is dead when its process has exited, and stale when
+  its log gains kubectl's forward-level loss line, `lost connection to pod`,
+  while the process is still alive (the window before it exits); a stale
+  forward is killed. Either is logged once with a timestamp and its reason,
+  then respawned with capped exponential backoff (3s doubling to a 30s
+  ceiling). Repeated failed retries are silent; a recovery logs one timestamped
+  line. That single signature is deliberately the only stale trigger: kubectl
+  logs `Handling connection for <port>`, `error forwarding port` and
+  `an error occurred forwarding` per client connection, so a backend that
+  refuses or resets one connection would otherwise sever every other
+  connection open through the forward. A forward that stays alive on an old
+  kubectl without ever logging the loss line is therefore not detected; current
+  kubectl exits. The startup wait is bounded by
+  `PORT_FORWARD_START_TIMEOUT_SECS` (default 15). Both are script-local
+  environment knobs, not `.env` keys.
+- **Logs.** One file per forward, `pf-<local-port>.log`, under a fresh mode-0700
+  directory from `mktemp -d` (honouring `TMPDIR`), or under `--log-dir <dir>`
+  for a stable path. The logs decide what counts as active, so `--log-dir` must
+  be a real directory (not a symlink) owned by the caller and not group- or
+  world-writable; anything else is refused, since another user able to write
+  there could plant or forge the readiness line. Each log is created fresh and
+  private (mode 0600), never following a pre-existing file or link. Each spawn
+  rotates the previous file to
+  `pf-<local-port>.log.prev`, so a stale readiness line cannot satisfy a new
+  spawn. Rotation bounds the number of log files (two per forward), not their
+  size: kubectl logs a line per client connection, so the log of a forward that
+  is never respawned keeps growing, and each poll re-reads it for the
+  connection-loss signature. The directory is named in the banner and retained
+  on exit for post-mortem (a default directory left empty is removed).
+- **Signals and portability.** SIGINT and SIGTERM exit promptly and kill the
+  forwards that are running at that moment (including respawned ones), leaving
+  no `kubectl` child behind. The script runs on the bash 3.2 that ships with
+  macOS: no associative arrays and no `wait -n`.
 
 ### Network Policy
 
