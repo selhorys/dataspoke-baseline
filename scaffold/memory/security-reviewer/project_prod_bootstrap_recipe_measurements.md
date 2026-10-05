@@ -22,7 +22,7 @@ do not re-derive them, but do re-check if the block's shape changes.
   `#` is a comment **only at line start**; leading whitespace is stripped from the
   *line*, not the value; trailing whitespace is preserved (except `\r`); **quotes are
   NOT stripped** — a hand-edited `KEY='v'` stores the quotes; an empty value creates
-  the key with `""`, which `_check_airflow_credentials_prod`'s `[[ -z ]]` then rejects.
+  the key with `""`, which `verify_credential_secret`'s `[[ -z ]]` then rejects.
 - `cat > file` under the default umask 0022 creates **0644**; `mktemp` creates 0600.
   A post-hoc `chmod 600` therefore leaves a world-readable window, and the fixed path
   `/tmp/dataspoke-secrets.env` is also pre-creatable by a co-tenant — the exact actor
@@ -48,7 +48,7 @@ NOTE: the 3.2.0 `SimpleAllAdminMiddleware` referenced in the old text does not
 exist at the pinned 3.1.8 — read the 3.1.8 wheel, not the uv cache.
 
 **The Fernet scenario with no code gate:** fresh credentials Secret + retained Postgres
-PVC. `_check_airflow_credentials_prod`'s retained-PVC WARNING lives only in the
+PVC. `verify_credential_secret`'s retained-PVC WARNING lives only in the
 *missing-key* branch, so a present, well-shaped key skips it; `_ensure_airflow_fernet_
 secret`'s abort-on-mismatch needs a live comparison source, and prod `uninstall.sh`
 deletes `dataspoke-airflow-metadata-encryption-key` unconditionally. README prose is

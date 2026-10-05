@@ -35,7 +35,7 @@ ingress-nginx routes by Host header, so the untouched
 `api.dataspoke.example.com` rule is hittable at the controller IP with a forged
 Host; (c) dev pins `path=/` at `install.sh:1859`, which is internet-facing in
 `shared` ingress mode. There is no pre-flight gate on the rendered Ingress even
-though `_check_airflow_credentials_prod` is the established precedent for
+though `verify_credential_secret` is the established precedent for
 exactly that kind of prod refusal.
 
 **Why it matters:** `/internal/admin/bootstrap` seeds
