@@ -16,8 +16,8 @@ full chart context before YAML parsing.
 **Measured (helm v3.18.4, offline `helm template`), issue #138 review:**
 
 - `{{ printf "%c" 58 }}` → `:` and `{{ printf "%c" 44 }}` → `,`. A username
-  carrying neither literal character passes
-  `_check_airflow_credentials_prod`'s `*","*|*":"*` guard and still injects
+  carrying neither literal character passes a `*","*|*":"*`-style delimiter
+  denylist and still injects
   extra `username:role` entries.
 - Full structural YAML injection works: a charset-clean username rendered
   `- name: AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS` / `value: "True"` as

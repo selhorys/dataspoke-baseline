@@ -84,7 +84,7 @@ with `helm template` and diffing what the gate printed against what rendered.
 credentials Secret still carrying `DATASPOKE_POSTGRES_USER`/`_DB`
 (see [[postgres-identity-configmap-relocation]]) — gated on a **non-empty**
 decoded value, so an empty-valued key passes. Ordering in the prod branch is
-`_ensure_dataspoke_secrets` (read-or-error) -> `_check_airflow_credentials_prod`
+`_ensure_dataspoke_secrets` (read-or-error) -> `verify_credential_secret`
 -> `_ensure_airflow_fernet_secret`, and `_derive_airflow_metadata_secret` moved
 out of Phase 1 into Phase 3. Phase 1's only remaining mutation is the Fernet
 projection's idempotent create.

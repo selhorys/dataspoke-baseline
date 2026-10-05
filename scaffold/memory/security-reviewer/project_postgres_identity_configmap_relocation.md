@@ -20,7 +20,7 @@ the removal is not cosmetic:
 - **dev** self-heals — `_ensure_postgres_identity_leaves_credentials_secret`
   strategic-merge-patches both keys to `null` (`--patch-file /dev/stdin`,
   single-quoted heredoc, fixed literal — nothing lands in argv).
-- **prod** rejects — `_check_airflow_credentials_prod` hard-errors if either
+- **prod** rejects — `verify_credential_secret` hard-errors if either
   key is still present. `install.sh` never mutates an operator-owned Secret;
   `_ensure_dataspoke_secrets` prod branch is read-or-error only. Verified.
 
