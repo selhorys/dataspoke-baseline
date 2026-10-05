@@ -19,6 +19,25 @@
 #
 # Default behaviour: uninstalls Helm releases and chart-derived Secrets.
 # PVCs and namespaces are preserved unless explicitly opted in.
+#
+# Bounded teardown (spec/feature/HELM_CHART.md §Bounded teardown): release
+# removal, the controller sweep + pod wait, PVC/namespace deletion and the PV
+# wait are all time-bounded. A deletion that does not complete is named in a
+# closing summary and the script exits non-zero; it never blocks indefinitely.
+#   DATASPOKE_UNINSTALL_RELEASE_TIMEOUT_SECS  helm uninstall --wait per release
+#                                             (default 300; best-effort).
+#   DATASPOKE_UNINSTALL_DELETE_TIMEOUT_SECS   each pod wait, PVC delete, namespace
+#                                             delete, PV wait, namespace presence
+#                                             read and the one namespace re-check
+#                                             (default 120).
+# Invalid values (not a positive integer <= 86400) are warned about and the
+# default is used. Every kubectl read in the wait loops, the controller sweep and
+# the force delete also carries a short --request-timeout, and a read that fails
+# is "unknown", never "gone". The two blocking deletes (PVC, namespace) are the
+# exception: they are bounded by --timeout alone, see _delete_pvc_bounded.
+# A namespace whose bounded deletion timed out may merely still be finalizing
+# (a cloud load balancer being released), so _finish_teardown re-checks it once
+# more, for at most DELETE_TIMEOUT_SECS, before the summary.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -116,6 +135,633 @@ _require_cluster_reachable() {
     error "Cluster '${cluster}' is unreachable — the reachability preflight failed: ${detail}. This is a preflight check only: it proves reachability at this instant, not that the teardown below completed."
   fi
   rm -f "$out"
+}
+
+# ---------------------------------------------------------------------------
+# Bounded teardown helpers (HELM_CHART.md §Bounded teardown)
+#
+# Teardown-only, so they live here and not in lib/helpers.sh (shared by every
+# install script). Bash-3.2-clean: no `wait -n`, no associative arrays, no
+# mapfile, no `${arr[@]}` on a possibly-empty array under `set -u`.
+#
+# Every wait below has a wall-clock deadline and every deletion that does not
+# complete is recorded in UNRESOLVED instead of blocking or being hidden; the
+# script exits non-zero after a closing summary when UNRESOLVED is non-empty.
+# ---------------------------------------------------------------------------
+RELEASE_TIMEOUT_SECS=300   # `helm uninstall --wait`, per release
+DELETE_TIMEOUT_SECS=120    # each pod wait, PVC/namespace delete, namespace presence
+                           # read, namespace re-check, PV wait
+REQUEST_TIMEOUT="15s"      # --request-timeout on every kubectl call in the helpers
+MAX_TIMEOUT_SECS=86400     # upper bound for the two env knobs (keeps $(( )) sane)
+UNRESOLVED=()
+TIMED_OUT_NAMESPACES=()    # namespaces whose bounded deletion did not complete
+PV_WAIT_LIST=""
+# `@deploy:` pod snapshots (see DATASPOKE_SELECTORS): newline-delimited
+# `<namespace>|<deployment>|<pod-uid>` records, each list starting and ending
+# with a newline so membership is a plain `case` pattern.
+DEPLOY_POD_UIDS=$'\n'      # ownership verified at snapshot time (in scope)
+DEPLOY_UNKNOWN_UIDS=$'\n'  # ownership unreadable at snapshot time (never a match)
+DEPLOY_NOT_OWNED_UIDS=$'\n' # verified NOT owned (look-alikes; out of scope)
+WORKLOAD_KINDS="statefulset,deployment,daemonset,job,cronjob"
+# The umbrella release's workloads do not share one label: the DataSpoke-owned
+# subcharts and Bitnami dependencies carry app.kubernetes.io/instance, the
+# Apache Airflow subchart (1.20) labels every scheduler/api-server/triggerer/
+# migration object `release=<release>,tier=airflow` only, and the api
+# Deployment carries app.kubernetes.io/name=dataspoke-api only — an app-identity
+# label, not a release-identity one, so it is NOT used as a delete selector (an
+# operator-owned object in the prod namespace could copy it). The API is
+# instead targeted by its fixed object name via the `@deploy:<name>` token.
+# Space-separated selector list; each label selector is ANDed internally, the
+# list is ORed. Tokens: `@all` (every workload; Langfuse guard only) and
+# `@deploy:<name>` (that one Deployment by exact name; its pods are the ones
+# labelled app.kubernetes.io/name=<name> that are owned by a ReplicaSet named
+# <name>-<hash> that is itself controlled by Deployment/<name>, i.e. by that
+# Deployment and no look-alike). That ReplicaSet chain is resolved ONCE, by
+# _snapshot_deployment_pods before the Helm uninstall / controller sweep, while
+# the ReplicaSets still exist (garbage collection removes them afterwards, which
+# would make every still-terminating pod's ownership unreadable): the matched
+# pods are recorded by UID and a pod is in scope for the token iff its UID is in
+# that snapshot. A pod verified as not owned (a look-alike) is out of scope; any
+# other labelled pod — ownership unreadable at snapshot time, or created after it
+# (e.g. a replacement the ReplicaSet made before the Deployment was deleted) — is
+# "unknown": it keeps the pod listing incomplete, so a survivor is reported as
+# unverified, but it is never a match and never force-deleted.
+DATASPOKE_SELECTORS="app.kubernetes.io/instance=dataspoke release=dataspoke,tier=airflow @deploy:dataspoke-api"
+
+# _resolve_timeout <env-var-name> <default> <result-var-name>
+# Validated like DATASPOKE_UNINSTALL_REACHABILITY_TIMEOUT_SECS: a value that is
+# not a positive integer is warned about and replaced by the default. An upper
+# bound of MAX_TIMEOUT_SECS is enforced with a digit-length test BEFORE any
+# arithmetic: a huge value would overflow `SECONDS + timeout` into a negative
+# deadline (waits return at once) and make kubectl reject `--timeout=<huge>s`.
+_resolve_timeout() {
+  local name="$1" default="$2" result="$3"
+  local value="${!name:-$default}"
+  if [[ ! "$value" =~ ^[1-9][0-9]{0,4}$ ]] || (( value > MAX_TIMEOUT_SECS )); then
+    warn "Invalid ${name}='$(sanitize_remote_text "$value" 40)' (need a positive integer <= ${MAX_TIMEOUT_SECS}); using the default of ${default}."
+    value="$default"
+  fi
+  printf -v "$result" '%s' "$value"
+}
+
+# _resolve_teardown_timeouts — sets RELEASE_TIMEOUT_SECS / DELETE_TIMEOUT_SECS.
+_resolve_teardown_timeouts() {
+  _resolve_timeout DATASPOKE_UNINSTALL_RELEASE_TIMEOUT_SECS 300 RELEASE_TIMEOUT_SECS
+  _resolve_timeout DATASPOKE_UNINSTALL_DELETE_TIMEOUT_SECS 120 DELETE_TIMEOUT_SECS
+}
+
+# _note_unresolved <message> — append a sanitized entry to the unresolved set.
+_note_unresolved() {
+  local entry existing
+  entry="$(sanitize_remote_text "$1" 400)"
+  if [[ "${#UNRESOLVED[@]}" -gt 0 ]]; then
+    for existing in "${UNRESOLVED[@]}"; do
+      [[ "$existing" == "$entry" ]] && return 0   # one entry per surviving object
+    done
+  fi
+  UNRESOLVED+=("$entry")
+}
+
+# _drop_unresolved_in_ns <namespace> — forget entries scoped to a namespace that
+# has since been deleted: the pods, claims and workloads in it went with it, so
+# reporting them as surviving (or as unverifiable) would be a false failure.
+# Every pattern ends the namespace name with a delimiter (`/` or a space) and the
+# name is quoted (literal, never a glob), so `foo` never matches `foo-bar`; an
+# empty name matches nothing. The namespace's own "namespace <ns> not deleted"
+# entry goes too; "namespace <ns> could not be read" is never scoped here (the
+# namespace was not deleted) and is left alone.
+_drop_unresolved_in_ns() {
+  local ns="$1" entry kept=()
+  [[ -n "$ns" ]] || return 0
+  [[ "${#UNRESOLVED[@]}" -gt 0 ]] || return 0
+  for entry in "${UNRESOLVED[@]}"; do
+    case "$entry" in
+      "namespace ${ns} not deleted "*) ;;
+      "pod ${ns}/"*|"PVC ${ns}/"*|"workload ${ns}/"*) ;;
+      # Namespace-scoped "could not be listed" entries: the read failed, but the
+      # namespace (and so everything unverified in it) was then deleted.
+      "pods in ${ns} "*|"PVCs in ${ns} "*|"workloads in ${ns} "*) ;;
+      *) kept+=("$entry") ;;
+    esac
+  done
+  UNRESOLVED=()
+  if [[ "${#kept[@]}" -gt 0 ]]; then
+    UNRESOLVED=("${kept[@]}")
+  fi
+}
+
+# _note_unresolved_lines <prefix> <newline-separated-items> <suffix>
+_note_unresolved_lines() {
+  local prefix="$1" items="$2" suffix="$3" item
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    _note_unresolved "${prefix}${item}${suffix}"
+  done <<< "$items"
+}
+
+# _run_err <result-var> <cmd...>
+# Run <cmd> with stdout discarded and stderr captured into <result-var>;
+# returns the command's own status. Replaces `2>/dev/null`, which hid the real
+# cause of a failure behind a guessed one.
+_run_err() {
+  local __var="$1" __out __rc=0
+  shift
+  __out="$("$@" 2>&1 >/dev/null)" || __rc=$?
+  printf -v "$__var" '%s' "$__out"
+  return "$__rc"
+}
+
+# _owned_by_deployment <deployment> <namespace> <comma-separated Kind/name owners>
+# Ownership of a pod by the named Deployment, decided on kind AND name: an owner
+# must be a ReplicaSet named exactly `<deployment>-<hash>`, and that ReplicaSet
+# is then read (bounded) and must itself be controlled by `Deployment/<deployment>`.
+# A look-alike (a StatefulSet, Job or bare controller named `<deployment>-ext`,
+# or a Deployment `<deployment>-canary` whose ReplicaSets are
+# `<deployment>-canary-<hash>`) therefore never matches. Returns 0 on a match,
+# 1 when the pod is not owned by it, and 2 when ownership could not be read (the
+# ReplicaSet read failed or is gone) — "unknown", which callers must never treat
+# as a match. Called only by _snapshot_deployment_pods, before the controller
+# sweep — never from the wait / force-delete / final passes, by which time the
+# ReplicaSets have been garbage-collected.
+_owned_by_deployment() {
+  local name="$1" ns="$2" owner kind rsname rsowners unknown=1
+  local IFS=,
+  for owner in $3; do
+    kind="${owner%%/*}"
+    rsname="${owner#*/}"
+    [[ "$kind" == "ReplicaSet" ]] || continue
+    [[ "$rsname" =~ ^${name}-[a-z0-9]+$ ]] || continue
+    if ! rsowners="$(kubectl get replicaset "$rsname" -n "$ns" --request-timeout="$REQUEST_TIMEOUT" \
+      -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}{"/"}{.name}{"|"}{.controller}{"\n"}{end}' 2>/dev/null)"; then
+      unknown=2
+      continue
+    fi
+    case $'\n'"${rsowners}"$'\n' in
+      *$'\n'"Deployment/${name}|true"$'\n'*) return 0 ;;
+    esac
+  done
+  return "$unknown"
+}
+
+# _snapshot_deployment_pods <namespace> <deployment>
+# Resolve the `@deploy:<deployment>` pod set once, BEFORE the Helm uninstall and
+# the controller sweep, while the ReplicaSets still exist: list the
+# app.kubernetes.io/name=<deployment> pods, verify each one's ReplicaSet chain
+# (_owned_by_deployment) and record the verified pods by UID in DEPLOY_POD_UIDS
+# the unreadable ones in DEPLOY_UNKNOWN_UIDS and the verified look-alikes in
+# DEPLOY_NOT_OWNED_UIDS. A failed pod list is recorded
+# as unresolved at once — the pods that should have been in scope are not known.
+_snapshot_deployment_pods() {
+  local ns="$1" dep="$2" out line name rest owners uid orc
+  local fmt='{range .items[*]}{.metadata.name}{"|"}{range .metadata.ownerReferences[*]}{.kind}{"/"}{.name}{","}{end}{"|"}{.metadata.uid}{"\n"}{end}'
+  if ! out="$(kubectl get pods -n "$ns" -l "app.kubernetes.io/name=${dep}" \
+    --request-timeout="$REQUEST_TIMEOUT" -o jsonpath="$fmt" 2>/dev/null)"; then
+    _note_unresolved "pods in ${ns} could not be listed before teardown — the removal of Deployment/${dep}'s pods could not be verified"
+    return 0
+  fi
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    name="${line%%|*}"
+    rest="${line#*|}"
+    owners="${rest%%|*}"
+    uid="${rest#*|}"
+    if [[ -z "$uid" ]]; then
+      _note_unresolved "pod ${ns}/${name} has no readable UID before teardown — its removal could not be verified"
+      continue
+    fi
+    orc=0
+    _owned_by_deployment "$dep" "$ns" "$owners" || orc=$?
+    case "$orc" in
+      0) DEPLOY_POD_UIDS="${DEPLOY_POD_UIDS}${ns}|${dep}|${uid}"$'\n' ;;
+      2) DEPLOY_UNKNOWN_UIDS="${DEPLOY_UNKNOWN_UIDS}${ns}|${dep}|${uid}"$'\n' ;;
+      *) DEPLOY_NOT_OWNED_UIDS="${DEPLOY_NOT_OWNED_UIDS}${ns}|${dep}|${uid}"$'\n' ;;
+    esac
+  done <<< "$out"
+}
+
+# _pod_lines <namespace> <selectors-or-empty>
+# One line per pod: `<name>|<claim>,<claim>,...` (empty claim slots for volumes
+# that are not PVC-backed), de-duplicated across selectors. <selectors> is a
+# space-separated list (tokens as documented at DATASPOKE_SELECTORS); empty lists
+# every pod in the namespace. For an `@deploy:` token a pod is listed iff its UID
+# is in the _snapshot_deployment_pods snapshot — no live ReplicaSet read happens
+# here. A snapshot-verified look-alike is skipped; any other still-present
+# labelled pod (unknown at snapshot time, or not seen then) is unverified: never
+# listed, but it makes the result incomplete. Returns non-zero when ANY read failed or the
+# result is incomplete in that way — an empty result must then be read as
+# "unknown", never as "no pods".
+_pod_lines() {
+  local ns="$1" selectors="$2" sel one out="" rc=0 label dep line name rest claims uid
+  local fmt='{range .items[*]}{.metadata.name}{"|"}{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{","}{end}{"|"}{.metadata.uid}{"\n"}{end}'
+  for sel in ${selectors:-@all}; do
+    label="" dep=""
+    case "$sel" in
+      @all) ;;
+      @deploy:*) dep="${sel#@deploy:}"; label="app.kubernetes.io/name=${dep}" ;;
+      *) label="$sel" ;;
+    esac
+    if [[ -z "$label" ]]; then
+      one="$(kubectl get pods -n "$ns" --request-timeout="$REQUEST_TIMEOUT" \
+        -o jsonpath="$fmt" 2>/dev/null)" || rc=1
+    else
+      one="$(kubectl get pods -n "$ns" -l "$label" --request-timeout="$REQUEST_TIMEOUT" \
+        -o jsonpath="$fmt" 2>/dev/null)" || rc=1
+    fi
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      name="${line%%|*}"
+      rest="${line#*|}"
+      claims="${rest%%|*}"
+      uid="${rest#*|}"
+      if [[ -n "$dep" ]]; then
+        if [[ -n "$uid" && "$DEPLOY_POD_UIDS" == *$'\n'"${ns}|${dep}|${uid}"$'\n'* ]]; then
+          :   # in the pre-sweep snapshot: in scope
+        elif [[ -n "$uid" && "$DEPLOY_NOT_OWNED_UIDS" == *$'\n'"${ns}|${dep}|${uid}"$'\n'* ]]; then
+          continue   # verified look-alike at snapshot time: out of scope
+        else
+          rc=1   # unknown / unseen at snapshot: incomplete result, never a match
+          continue
+        fi
+      fi
+      out="${out}${name}|${claims}"$'\n'
+    done <<< "$one"
+  done
+  printf '%s' "$out" | sed '/^$/d' | sort -u
+  return "$rc"
+}
+
+# _workload_names <namespace> <selectors-or-empty> — `kind/name` per line.
+# Non-zero when any read failed (same contract as _pod_lines).
+_workload_names() {
+  local ns="$1" selectors="$2" sel one out="" rc=0
+  for sel in ${selectors:-@all}; do
+    case "$sel" in
+      @all)
+        one="$(kubectl get "$WORKLOAD_KINDS" -n "$ns" --request-timeout="$REQUEST_TIMEOUT" \
+          -o name 2>/dev/null)" || rc=1 ;;
+      @deploy:*)
+        one="$(kubectl get deployment "${sel#@deploy:}" -n "$ns" --ignore-not-found \
+          --request-timeout="$REQUEST_TIMEOUT" -o name 2>/dev/null)" || rc=1 ;;
+      *)
+        one="$(kubectl get "$WORKLOAD_KINDS" -n "$ns" -l "$sel" --request-timeout="$REQUEST_TIMEOUT" \
+          -o name 2>/dev/null)" || rc=1 ;;
+    esac
+    out="${out}${one}"$'\n'
+  done
+  printf '%s' "$out" | sed '/^$/d' | sort -u
+  return "$rc"
+}
+
+# _wait_pods_gone <namespace> <selectors-or-empty>
+# Poll until no pod matches, up to DELETE_TIMEOUT_SECS of wall-clock time in
+# total (a `kubectl wait` over N pods bounds each pod, not the whole step).
+# Returns 0 when verified gone, 1 when pods remain at the deadline, and 2 when
+# the deadline passed with every read failing — "could not verify", which the
+# caller records rather than assuming success. Listing is the source of truth.
+_wait_pods_gone() {
+  local ns="$1" selectors="$2" lines rc
+  local deadline=$(( SECONDS + DELETE_TIMEOUT_SECS ))
+  while :; do
+    rc=0
+    lines="$(_pod_lines "$ns" "$selectors")" || rc=$?
+    if [[ "$rc" -eq 0 && -z "$lines" ]]; then
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      [[ -n "$lines" ]] && return 1
+      return 2
+    fi
+    sleep 1
+  done
+}
+
+# _sweep_controllers <namespace> <selectors-or-empty>
+# Delete the workload CONTROLLERS (never PVCs): deleting only pods cannot work,
+# a surviving StatefulSet/Deployment recreates them. Empty selectors means
+# every workload in the namespace (only used under the Langfuse guard).
+# Idempotent — also recovers workloads orphaned by an earlier timed-out run.
+# <selectors> takes the tokens documented at DATASPOKE_SELECTORS.
+_sweep_controllers() {
+  local ns="$1" selectors="$2" sel err rc
+  for sel in ${selectors:-@all}; do
+    rc=0
+    case "$sel" in
+      @all)
+        _run_err err kubectl delete "$WORKLOAD_KINDS" -n "$ns" --all \
+          --ignore-not-found --wait=false --request-timeout="$REQUEST_TIMEOUT" || rc=$? ;;
+      @deploy:*)
+        # By exact object name, never by label (see DATASPOKE_SELECTORS).
+        _run_err err kubectl delete deployment "${sel#@deploy:}" -n "$ns" \
+          --ignore-not-found --wait=false --request-timeout="$REQUEST_TIMEOUT" || rc=$? ;;
+      *)
+        _run_err err kubectl delete "$WORKLOAD_KINDS" -n "$ns" -l "$sel" \
+          --ignore-not-found --wait=false --request-timeout="$REQUEST_TIMEOUT" || rc=$? ;;
+    esac
+    if [[ "$rc" -ne 0 ]]; then
+      warn "Controller sweep in '${ns}' (${sel//@all/all workloads}) failed (status ${rc}): $(sanitize_remote_text "$err" 300)"
+    fi
+  done
+}
+
+# _record_unverified <namespace> — a pod list that could not be read before the
+# deadline is "unknown": record it instead of assuming the pods are gone.
+_record_unverified() {
+  local ns="$1"
+  _note_unresolved "pods in ${ns} could not be listed within ${DELETE_TIMEOUT_SECS}s — their removal could not be verified"
+}
+
+# _reap_pods <namespace> <selectors-or-empty> <force-pvc-pods: true|false>
+# Wait (bounded) for pods to terminate. Only the pods that outlive the wait are
+# force-deleted by name — effective now, because their controllers are gone.
+# With force-pvc-pods=false (prod) a pod that mounts a PVC is NEVER force-
+# deleted: the API object going away does not stop the container writing to the
+# retained claim, and a prompt reinstall could attach a second writer. It, and
+# any pod that survives a force delete, is recorded as unresolved. A pod list
+# that cannot be read is "unknown" and is recorded, never assumed gone.
+_reap_pods() {
+  local ns="$1" selectors="$2" force_pvc_pods="$3"
+  local lines line name claims shown force_list="" held_list=" " err rc=0 wrc=0
+
+  _wait_pods_gone "$ns" "$selectors" || wrc=$?
+  [[ "$wrc" -eq 0 ]] && return 0
+  if [[ "$wrc" -eq 2 ]]; then
+    _record_unverified "$ns"
+    return 0
+  fi
+
+  lines="$(_pod_lines "$ns" "$selectors")" || true
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    name="${line%%|*}"
+    claims="${line#*|}"
+    if [[ "$force_pvc_pods" != true && -n "${claims//,/}" ]]; then
+      shown="$(printf '%s' "$claims" | tr -s ',' | sed 's/^,//;s/,$//')"
+      held_list="${held_list}${name} "
+      _note_unresolved "pod ${ns}/${name} still running after ${DELETE_TIMEOUT_SECS}s and mounts PVC ${shown} — not force-deleted in prod (a retained claim must not gain a second writer)"
+    else
+      force_list="${force_list} ${name}"
+    fi
+  done <<< "$lines"
+
+  if [[ -n "$force_list" ]]; then
+    warn "Pods outlived the ${DELETE_TIMEOUT_SECS}s wait in '${ns}' — force-deleting (controllers are already gone):$(sanitize_remote_text "$force_list" 300)"
+    # shellcheck disable=SC2086  # pod names carry no whitespace
+    _run_err err kubectl delete pod $force_list -n "$ns" \
+      --force --grace-period=0 --wait=false --ignore-not-found \
+      --request-timeout="$REQUEST_TIMEOUT" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      warn "Force delete in '${ns}' failed (status ${rc}): $(sanitize_remote_text "$err" 300)"
+    fi
+    wrc=0
+    _wait_pods_gone "$ns" "$selectors" || wrc=$?
+    if [[ "$wrc" -eq 2 ]]; then
+      _record_unverified "$ns"
+      return 0
+    fi
+  fi
+
+  # Whatever is still listed now (other than prod pods already recorded above)
+  # could not be removed.
+  rc=0
+  lines="$(_pod_lines "$ns" "$selectors")" || rc=$?
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    name="${line%%|*}"
+    if [[ "$held_list" != *" ${name} "* ]]; then
+      _note_unresolved "pod ${ns}/${name} still present after the bounded wait and force delete"
+    fi
+  done <<< "$lines"
+  if [[ "$rc" -ne 0 ]]; then
+    _record_unverified "$ns"
+  fi
+  return 0
+}
+
+# _teardown_release <release> <namespace> <selectors> <force-pvc-pods>
+# First the `@deploy:` pod snapshot (before Helm, while the ReplicaSets exist),
+# then best-effort `helm uninstall --wait` (never aborts, carries Helm's own
+# error), then — whatever Helm's outcome — the controller sweep and bounded pod
+# reap over every selector in <selectors> (space-separated).
+_teardown_release() {
+  local release="$1" ns="$2" selectors="$3" force_pvc_pods="$4"
+  local err detail rc=0 sel
+  for sel in $selectors; do
+    case "$sel" in
+      @deploy:*) _snapshot_deployment_pods "$ns" "${sel#@deploy:}" ;;
+    esac
+  done
+  if helm status "$release" --namespace "$ns" >/dev/null 2>&1; then
+    _run_err err helm uninstall "$release" --namespace "$ns" \
+      --wait --timeout "${RELEASE_TIMEOUT_SECS}s" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      info "Helm release '${release}' uninstalled."
+    else
+      detail="$(sanitize_remote_text "$err" 300)"
+      warn "Helm uninstall of '${release}' did not complete (status ${rc}): ${detail:-no error output} — sweeping its controllers."
+    fi
+  else
+    warn "Helm release '${release}' not found in namespace '${ns}' — skipping the Helm step."
+  fi
+  _sweep_controllers "$ns" "$selectors"
+  _reap_pods "$ns" "$selectors" "$force_pvc_pods"
+}
+
+# _langfuse_wide_sweep_allowed — the guard for sweeping EVERY workload in the
+# Langfuse namespace. The dev teardown treats that namespace as Langfuse-owned
+# and deletes it wholesale, so pointing the variable at a shared namespace is
+# unsupported; the guard keeps a misconfiguration from widening the sweep.
+_langfuse_wide_sweep_allowed() {
+  local ns="${LANGFUSE_NS:-}"
+  [[ -n "$ns" ]] || return 1
+  [[ "$ns" != "${NS:-}" && "$ns" != "${DATAHUB_NS:-}" && "$ns" != "${DUMMY_NS:-}" ]] || return 1
+  case "$ns" in
+    default|kube-system|kube-public|kube-node-lease|ingress-nginx) return 1 ;;
+  esac
+  return 0
+}
+
+# _pods_mounting_claim <namespace> <pvc> — pod names mounting the claim.
+_pods_mounting_claim() {
+  local ns="$1" pvc="$2" line out=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ ",${line#*|}" == *",${pvc},"* ]]; then
+      out="${out}${out:+ }${line%%|*}"
+    fi
+  done <<< "$(_pod_lines "$ns" "")"
+  printf '%s' "$out"
+}
+
+# _delete_pvc_bounded <pvc> <namespace>
+# Returns 1 (and records the claim as unresolved) when the deletion does not
+# complete within DELETE_TIMEOUT_SECS — typically the kubernetes.io/pvc-protection
+# finalizer held by a pod that is still mounting it.
+_delete_pvc_bounded() {
+  local pvc="$1" ns="$2" err rc=0 mounts finalizers
+  # No --request-timeout here, deliberately: kubectl applies it as the HTTP
+  # client's overall timeout, which would also cut the --wait=true watch short at
+  # that value instead of DELETE_TIMEOUT_SECS. The wait is bounded by --timeout;
+  # the initial DELETE request and API dial are not separately bounded (the
+  # cluster-reachability preflight is the only guard against an unreachable API
+  # server before this point).
+  _run_err err kubectl delete pvc "$pvc" -n "$ns" --ignore-not-found \
+    --wait=true --timeout="${DELETE_TIMEOUT_SECS}s" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    info "  Deleted PVC '$(sanitize_remote_text "$pvc" 100)'."
+    return 0
+  fi
+  mounts="$(_pods_mounting_claim "$ns" "$pvc")"
+  finalizers="$(kubectl get pvc "$pvc" -n "$ns" --request-timeout="$REQUEST_TIMEOUT" \
+    -o jsonpath='{.metadata.finalizers}' 2>/dev/null || true)"
+  warn "  Could not delete PVC '$(sanitize_remote_text "$pvc" 100)' in '${ns}' within ${DELETE_TIMEOUT_SECS}s: $(sanitize_remote_text "$err" 200)"
+  warn "    mounted by pod(s): $(sanitize_remote_text "${mounts:-none}" 200); finalizers: $(sanitize_remote_text "${finalizers:-none}" 200)"
+  _note_unresolved "PVC ${ns}/${pvc} not deleted within ${DELETE_TIMEOUT_SECS}s; mounted by: ${mounts:-none}; finalizers: ${finalizers:-none}"
+  return 1
+}
+
+# _read_namespace <namespace> <timeout-secs> <result-var>
+# One bounded `kubectl get namespace --ignore-not-found -o name` read: stdout goes
+# to <result-var>, the return value is kubectl's own status. Exit 0 with an empty
+# result is the only "not found" signal; a non-zero status (error, unauthorized,
+# request timeout) is "unknown", which callers must never read as absent or gone.
+_read_namespace() {
+  local __ns="$1" __secs="$2" __var="$3" __out __rc=0
+  __out="$(kubectl get namespace "$__ns" --ignore-not-found -o name \
+    --request-timeout="${__secs}s" 2>/dev/null)" || __rc=$?
+  printf -v "$__var" '%s' "$__out"
+  return "$__rc"
+}
+
+# _namespace_presence <namespace>
+# The pre-deletion presence check, bounded by DELETE_TIMEOUT_SECS. Returns 0 when
+# the namespace exists (a successful read with output), 1 when it is absent (a
+# successful empty read), and 2 when the read failed — in which case the
+# namespace is recorded as unresolved and warned about here, and the caller must
+# not attempt the deletion.
+_namespace_presence() {
+  local ns="$1" out="" rc=0
+  _read_namespace "$ns" "$DELETE_TIMEOUT_SECS" out || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    warn "Could not read namespace '$(sanitize_remote_text "$ns" 100)' within ${DELETE_TIMEOUT_SECS}s (kubectl exit ${rc}) — its deletion was not attempted."
+    _note_unresolved "namespace ${ns} could not be read — deletion not attempted"
+    return 2
+  fi
+  [[ -n "${out//[[:space:]]/}" ]] || return 1
+  return 0
+}
+
+# _delete_namespace_bounded <namespace>
+# Returns 1 (and records the namespace as unresolved, and for the closing
+# re-check) on a timeout, naming its termination conditions.
+_delete_namespace_bounded() {
+  local target="$1" err rc=0 conditions
+  # No --request-timeout, for the same reason as _delete_pvc_bounded: it would cap
+  # the --wait=true watch. Bounded by --timeout only.
+  _run_err err kubectl delete namespace "$target" --ignore-not-found \
+    --wait=true --timeout="${DELETE_TIMEOUT_SECS}s" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    # Everything recorded as surviving inside it went with it.
+    _drop_unresolved_in_ns "$target"
+    return 0
+  fi
+  conditions="$(kubectl get namespace "$target" --request-timeout="$REQUEST_TIMEOUT" -o jsonpath='{range .status.conditions[*]}{.type}{": "}{.message}{"; "}{end}' 2>/dev/null || true)"
+  warn "Namespace '${target}' not deleted within ${DELETE_TIMEOUT_SECS}s: $(sanitize_remote_text "$err" 200)"
+  warn "  termination conditions: $(sanitize_remote_text "${conditions:-none reported}" 400)"
+  _note_unresolved "namespace ${target} not deleted within ${DELETE_TIMEOUT_SECS}s; conditions: ${conditions:-none reported}"
+  TIMED_OUT_NAMESPACES+=("$target")
+  return 1
+}
+
+# _recheck_timed_out_namespaces — one more look at every namespace whose bounded
+# deletion timed out, before the summary: it may merely have been finalizing
+# (cloud load balancer release). Polls all of them within a single wall-clock
+# window of DELETE_TIMEOUT_SECS (so each waits at most that long more, and a
+# namespace's deletion at most two windows in total), each read bounded by the
+# time left. A namespace counts as gone only on a successful not-found read
+# (exit 0, empty output); it then loses its "not deleted" entry and every entry
+# scoped to it. One that still exists, or whose read fails or times out, keeps
+# its entries and so keeps the exit status non-zero.
+_recheck_timed_out_namespaces() {
+  [[ "${#TIMED_OUT_NAMESPACES[@]}" -gt 0 ]] || return 0
+  local ns out rc remaining read_secs pending=() still=()
+  local deadline=$(( SECONDS + DELETE_TIMEOUT_SECS ))
+  pending=("${TIMED_OUT_NAMESPACES[@]}")
+  TIMED_OUT_NAMESPACES=()
+  info "Re-checking ${#pending[@]} namespace(s) whose deletion timed out (up to ${DELETE_TIMEOUT_SECS}s more)..."
+  while :; do
+    still=()
+    for ns in "${pending[@]}"; do
+      remaining=$(( deadline - SECONDS ))
+      read_secs=15
+      if (( remaining < read_secs )); then read_secs=$remaining; fi
+      if (( read_secs < 1 )); then read_secs=1; fi
+      out=""; rc=0
+      _read_namespace "$ns" "$read_secs" out || rc=$?
+      if [[ "$rc" -eq 0 && -z "${out//[[:space:]]/}" ]]; then
+        info "Namespace '$(sanitize_remote_text "$ns" 100)' finished terminating after the timeout — no longer unresolved."
+        _drop_unresolved_in_ns "$ns"
+      else
+        still+=("$ns")
+      fi
+    done
+    pending=()
+    if [[ "${#still[@]}" -gt 0 ]]; then
+      pending=("${still[@]}")
+    fi
+    [[ "${#pending[@]}" -gt 0 ]] || return 0
+    if (( SECONDS >= deadline )); then
+      break
+    fi
+    sleep 1
+  done
+  for ns in "${pending[@]}"; do
+    warn "Namespace '$(sanitize_remote_text "$ns" 100)' is still present or could not be read after the ${DELETE_TIMEOUT_SECS}s re-check."
+  done
+}
+
+# _wait_pvs_gone — best-effort, bounded wait for the PVs that were bound to the
+# claims this run deleted. A survivor is only a warning: a `Retain`
+# StorageClass legitimately leaves the PV, so it is not part of UNRESOLVED.
+_wait_pvs_gone() {
+  [[ -n "${PV_WAIT_LIST// /}" ]] || return 0
+  local deadline=$(( SECONDS + DELETE_TIMEOUT_SECS )) pv left found
+  while :; do
+    left=""
+    for pv in $PV_WAIT_LIST; do
+      # `--ignore-not-found`: empty output = gone; a failed read = unknown, which
+      # is kept in the list rather than assumed gone.
+      found="$(kubectl get pv "$pv" --ignore-not-found -o name \
+        --request-timeout="$REQUEST_TIMEOUT" 2>/dev/null)" || found="?"
+      if [[ -n "$found" ]]; then
+        left="${left}${left:+ }${pv}"
+      fi
+    done
+    [[ -z "$left" ]] && return 0
+    if (( SECONDS >= deadline )); then
+      warn "PV(s) retained or still releasing after ${DELETE_TIMEOUT_SECS}s: $(sanitize_remote_text "$left" 300) (a Retain StorageClass leaves them by design)."
+      return 0
+    fi
+    sleep 1
+  done
+}
+
+# _finish_teardown — re-checks timed-out namespaces once, then prints the closing
+# summary; exits non-zero on a non-empty unresolved set.
+_finish_teardown() {
+  _recheck_timed_out_namespaces
+  echo ""
+  if [[ "${#UNRESOLVED[@]}" -gt 0 ]]; then
+    local item
+    warn "Uninstall finished with ${#UNRESOLVED[@]} unresolved item(s) that could not be removed:"
+    for item in "${UNRESOLVED[@]}"; do
+      warn "  - ${item}"
+    done
+    warn "Re-run this script after clearing the cause (the controller sweep is idempotent), or remove them manually."
+    echo ""
+    exit 1
+  fi
+  info "Uninstall complete."
+  echo ""
 }
 
 # ---------------------------------------------------------------------------
@@ -235,6 +881,7 @@ fi
 echo ""
 use_context "${DATASPOKE_KUBE_CLUSTER}"
 _require_cluster_reachable "${DATASPOKE_KUBE_CLUSTER}"
+_resolve_teardown_timeouts
 
 # ---------------------------------------------------------------------------
 # DEV PROFILE — reverse install order
@@ -268,14 +915,10 @@ if [[ "$PROFILE" == "dev" ]]; then
 
   # 3. dataspoke umbrella chart
   info "Removing DataSpoke umbrella Helm release..."
-  if helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
-    helm uninstall dataspoke --namespace "${NS}" --wait --timeout 60s 2>/dev/null \
-      || warn "Helm uninstall timed out — force-deleting remaining pods."
-  else
-    warn "Helm release 'dataspoke' not found in namespace '${NS}' — skipping."
-  fi
-  kubectl delete pod -n "${NS}" -l app.kubernetes.io/instance=dataspoke \
-    --force --grace-period=0 2>/dev/null || true
+  # Best-effort Helm uninstall, then the controller sweep + bounded pod reap
+  # (_teardown_release) — deleting pods alone would just have the surviving
+  # controllers recreate them.
+  _teardown_release dataspoke "${NS}" "${DATASPOKE_SELECTORS}" true
   # dataspoke-secrets (source of DATASPOKE_AIRFLOW_FERNET_KEY and
   # DATASPOKE_POSTGRES_PASSWORD) and its dataspoke-airflow-metadata-
   # encryption-key projection are deleted unconditionally below, while the
@@ -347,15 +990,34 @@ if [[ "$PROFILE" == "dev" ]]; then
 
   # 4. Langfuse
   info "Removing Langfuse..."
-  if helm status langfuse --namespace "${LANGFUSE_NS}" >/dev/null 2>&1; then
-    helm uninstall langfuse --namespace "${LANGFUSE_NS}" --wait --timeout 60s 2>/dev/null \
-      || warn "Langfuse Helm uninstall timed out — force-deleting remaining pods."
-  else
-    warn "Helm release 'langfuse' not found in namespace '${LANGFUSE_NS}' — skipping."
+  # Release label first; the widened sweep of every workload in the namespace
+  # runs only when that leaves workloads behind AND the namespace passes
+  # _langfuse_wide_sweep_allowed (spec §Bounded teardown). A guard-blocked
+  # leftover is recorded as unresolved, never swept.
+  _teardown_release langfuse "${LANGFUSE_NS}" "app.kubernetes.io/instance=langfuse" true
+  _lf_rc=0
+  _langfuse_left="$(_workload_names "${LANGFUSE_NS}" "")" || _lf_rc=$?
+  if [[ "${_lf_rc}" -ne 0 && -z "${_langfuse_left}" ]]; then
+    warn "Could not list workloads in '${LANGFUSE_NS}' to verify the Langfuse teardown."
+    _note_unresolved "workloads in ${LANGFUSE_NS} could not be listed — Langfuse removal could not be verified"
+  elif [[ -n "${_langfuse_left}" ]]; then
+    if _langfuse_wide_sweep_allowed; then
+      warn "Workloads outside the release label remain in '${LANGFUSE_NS}' — widening the sweep to every workload in that namespace."
+      _sweep_controllers "${LANGFUSE_NS}" ""
+      _reap_pods "${LANGFUSE_NS}" "" true
+      _lf_rc=0
+      _langfuse_left="$(_workload_names "${LANGFUSE_NS}" "")" || _lf_rc=$?
+      if [[ "${_lf_rc}" -ne 0 && -z "${_langfuse_left}" ]]; then
+        warn "Could not list workloads in '${LANGFUSE_NS}' after the widened sweep."
+        _note_unresolved "workloads in ${LANGFUSE_NS} could not be listed — Langfuse removal could not be verified"
+      else
+        _note_unresolved_lines "workload ${LANGFUSE_NS}/" "${_langfuse_left}" " still present after the widened sweep"
+      fi
+    else
+      warn "Workloads remain in '${LANGFUSE_NS}' but that namespace fails the widened-sweep guard — not sweeping it."
+      _note_unresolved_lines "workload ${LANGFUSE_NS}/" "${_langfuse_left}" " left behind: widened sweep blocked by the Langfuse namespace guard"
+    fi
   fi
-  kubectl delete pod -n "${LANGFUSE_NS}" \
-    -l app.kubernetes.io/instance=langfuse \
-    --force --grace-period=0 2>/dev/null || true
   if kubectl get secret dataspoke-langfuse-secret -n "${LANGFUSE_NS}" >/dev/null 2>&1; then
     kubectl delete secret dataspoke-langfuse-secret -n "${LANGFUSE_NS}"
   fi
@@ -388,8 +1050,12 @@ if [[ "$PROFILE" == "dev" ]]; then
     else
       warn "Helm release 'ingress-nginx' not found — skipping."
     fi
-    if kubectl get namespace "ingress-nginx" >/dev/null 2>&1; then
-      kubectl delete namespace "ingress-nginx"
+    _ns_presence=0
+    _namespace_presence "ingress-nginx" || _ns_presence=$?
+    if [[ "${_ns_presence}" -eq 0 ]]; then
+      _delete_namespace_bounded "ingress-nginx" || true
+    elif [[ "${_ns_presence}" -eq 1 ]]; then
+      info "Namespace 'ingress-nginx' does not exist — skipping."
     fi
   fi
 
@@ -409,11 +1075,24 @@ if [[ "$PROFILE" == "dev" ]]; then
       PVC_NS="${PVC_NS_LABEL%%:*}"
       PVC_LABEL="${PVC_NS_LABEL#*:}"
       info "Deleting PVCs in '${PVC_NS}' (label ${PVC_LABEL})..."
-      for pvc in $(kubectl get pvc -n "${PVC_NS}" -l "${PVC_LABEL}" \
-          -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-        kubectl delete pvc "$pvc" -n "${PVC_NS}" 2>/dev/null \
-          && info "  Deleted PVC '${pvc}'." \
-          || warn "  Could not delete PVC '${pvc}'."
+      _pvc_rc=0
+      _pvc_names="$(kubectl get pvc -n "${PVC_NS}" -l "${PVC_LABEL}" \
+        --request-timeout="${REQUEST_TIMEOUT}" \
+        -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" || _pvc_rc=$?
+      if [[ "${_pvc_rc}" -ne 0 ]]; then
+        warn "  Could not list PVCs in '${PVC_NS}' — their deletion could not be attempted."
+        _note_unresolved "PVCs in ${PVC_NS} could not be listed — deletion not attempted"
+        continue
+      fi
+      for pvc in ${_pvc_names}; do
+        # Record the bound PV before the claim goes (best-effort PV wait below).
+        _pv="$(kubectl get pvc "$pvc" -n "${PVC_NS}" --request-timeout="${REQUEST_TIMEOUT}" \
+          -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+        if _delete_pvc_bounded "$pvc" "${PVC_NS}"; then
+          if [[ -n "${_pv}" ]]; then
+            PV_WAIT_LIST="${PV_WAIT_LIST} ${_pv}"
+          fi
+        fi
       done
     done
   else
@@ -428,18 +1107,30 @@ if [[ "$PROFILE" == "dev" ]]; then
     [[ "${CONFIRM_NS}" =~ ^[Yy]$ ]] && DELETE_NAMESPACES=true
   fi
   if [[ "${DELETE_NAMESPACES}" == true ]]; then
+    _ns_failed=false
     for NS_TO_DEL in "${NAMESPACES[@]}"; do
-      if kubectl get namespace "${NS_TO_DEL}" >/dev/null 2>&1; then
+      _ns_presence=0
+      _namespace_presence "${NS_TO_DEL}" || _ns_presence=$?
+      if [[ "${_ns_presence}" -eq 0 ]]; then
         info "Deleting namespace '${NS_TO_DEL}'..."
-        kubectl delete namespace "${NS_TO_DEL}"
-      else
+        _delete_namespace_bounded "${NS_TO_DEL}" || _ns_failed=true
+      elif [[ "${_ns_presence}" -eq 1 ]]; then
         info "Namespace '${NS_TO_DEL}' does not exist — skipping."
+      else
+        _ns_failed=true   # unreadable: recorded as unresolved, deletion not attempted
       fi
     done
-    info "Namespaces deleted."
+    if [[ "${_ns_failed}" == true ]]; then
+      warn "Not every namespace was deleted — see the summary below."
+    else
+      info "Namespaces deleted."
+    fi
   else
     info "Namespaces retained."
   fi
+
+  # 9. PVs bound to the claims deleted above (best-effort, bounded).
+  _wait_pvs_gone
 
 # ---------------------------------------------------------------------------
 # PROD PROFILE
@@ -463,11 +1154,12 @@ elif [[ "$PROFILE" == "prod" ]]; then
   fi
 
   info "Removing DataSpoke umbrella Helm release (prod)..."
-  if helm status dataspoke --namespace "${NS}" >/dev/null 2>&1; then
-    helm uninstall dataspoke --namespace "${NS}" --wait --timeout 120s
-  else
-    warn "Helm release 'dataspoke' not found in namespace '${NS}' — skipping."
-  fi
+  # Best-effort: a timeout here must not skip the Secret cleanup below. The
+  # sweep is scoped to the release (release-identity labels, plus the API
+  # Deployment by exact name — the prod namespace may hold operator-owned
+  # objects), never touches PVCs, and never force-deletes a pod that mounts a
+  # retained claim (force-pvc-pods=false).
+  _teardown_release dataspoke "${NS}" "${DATASPOKE_SELECTORS}" false
 
   # Delete only the chart-derived Secrets; the operator-owned credentials
   # Secret is preserved. These four are projections of keys held in that
@@ -531,9 +1223,14 @@ elif [[ "$PROFILE" == "prod" ]]; then
     [[ "${CONFIRM_NS}" =~ ^[Yy]$ ]] && DELETE_NAMESPACES=true
   fi
   if [[ "${DELETE_NAMESPACES}" == true ]]; then
-    if kubectl get namespace "${NS}" >/dev/null 2>&1; then
-      kubectl delete namespace "${NS}"
-      info "Namespace '${NS}' deleted."
+    _ns_presence=0
+    _namespace_presence "${NS}" || _ns_presence=$?
+    if [[ "${_ns_presence}" -eq 0 ]]; then
+      if _delete_namespace_bounded "${NS}"; then
+        info "Namespace '${NS}' deleted."
+      fi
+    elif [[ "${_ns_presence}" -eq 1 ]]; then
+      info "Namespace '${NS}' does not exist — skipping."
     fi
   else
     info "Namespace '${NS}' retained."
@@ -616,6 +1313,4 @@ elif [[ "$PROFILE" == "prod" ]]; then
   fi
 fi
 
-echo ""
-info "Uninstall complete."
-echo ""
+_finish_teardown

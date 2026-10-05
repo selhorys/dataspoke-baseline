@@ -128,6 +128,8 @@ overlay actually serves them.
 ./helm-charts/bin/uninstall.sh --profile dev --components frontend  # Remove only the frontend (helm upgrade frontend.enabled=false)
 ```
 
+Release removal, the controller sweep and pod wait, PVC and namespace deletion, and the PV wait are time-bounded; any resource that cannot be removed (PVC, namespace, surviving pod, guard-blocked workload) is named in a closing summary and the script exits non-zero. Override the defaults with `DATASPOKE_UNINSTALL_RELEASE_TIMEOUT_SECS` (Helm wait per release, default 300) and `DATASPOKE_UNINSTALL_DELETE_TIMEOUT_SECS` (pod/PVC/namespace/PV waits, default 120). See [`HELM_CHART.md` §Bounded teardown](../spec/feature/HELM_CHART.md#bounded-teardown).
+
 ### Prod profile
 
 Prod is a two-command sequence: `bin/install-prod-preflight.sh` validates and
