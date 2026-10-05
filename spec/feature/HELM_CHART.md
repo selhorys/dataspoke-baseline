@@ -309,10 +309,123 @@ suppresses every interactive prompt (gate, PVC, namespace).
 
 After selecting its Kubernetes context, `uninstall.sh` makes one live API round-trip and aborts
 non-zero if the cluster is unreachable at that instant — a preflight check, not a completion
-guarantee. Every later existence probe in the script is still `if <cmd> >/dev/null 2>&1`, so a
-credential expiring or the cluster going away mid-run still reads as "does not exist" and still
-exits 0; a zero exit therefore means the preflight found the cluster reachable, never that the
-teardown completed. Confirming deletion is left to the caller (`AI_PRAUTO.md` §Provisioning).
+guarantee. Existence probes outside the §Bounded teardown contract (such as the Secret and
+release presence checks) are permissive, so a credential expiring or the cluster going away
+mid-run reads as "does not exist"; the bounded steps instead treat an unreadable list or
+namespace check as unknown. A zero exit therefore means the preflight found the cluster
+reachable and nothing was recorded as unresolved, never that the teardown is proven complete.
+Confirming deletion is left to the caller (`AI_PRAUTO.md` §Provisioning).
+
+### Bounded teardown
+
+The release removal, controller sweep and pod wait, PVC deletion, namespace
+deletion and PV wait of `uninstall.sh` are each time-bounded, and a deletion that
+does not complete is reported rather than hidden. Other steps (dev-lock
+resources, dummy-data manifests, Secrets, the DataHub and ingress-nginx
+releases) keep their own semantics and are outside this contract. The contract
+covers the dev umbrella, the dev Langfuse release and the prod umbrella.
+
+**Release removal is best-effort, workload removal is not.** `helm uninstall
+--wait` is given a bounded timeout and its failure is a warning that carries the
+sanitized Helm error, never an abort — a timed-out prod umbrella uninstall still
+reaches the Secret cleanup that follows it. Whatever Helm's outcome, the script
+then deletes the release's **controllers** (StatefulSets, Deployments,
+DaemonSets, Jobs, CronJobs) and waits, bounded, for their pods to terminate.
+Deleting only pods cannot work: a surviving controller recreates them. Only
+when pods outlive the wait is a force-delete (`--grace-period=0`) of the
+remaining pods issued, which is effective because their controllers are already
+gone. In the prod profile a pod that mounts a PVC is never force-deleted: the
+API object going away does not stop the container writing to the retained claim
+(the credential store and the refresh-revocation AOF), and a prompt reinstall
+could attach a second writer. Such pods are reported as unresolved. Because the
+sweep runs unconditionally it is idempotent and also recovers workloads orphaned
+by an earlier timed-out run whose release record is already gone.
+
+| Profile / release | Controller sweep scope |
+|---|---|
+| dev umbrella | the three umbrella selectors below |
+| prod umbrella | the same three selectors, never every workload — the prod namespace may hold operator-owned objects |
+| dev Langfuse | the `app.kubernetes.io/instance=langfuse` label first; a widened sweep of every workload in the Langfuse namespace only under the guard below |
+
+The umbrella release's workloads do not share one label, so the sweep, the pod
+wait and the force-delete each cover the union of three selectors, and no
+selector reaches beyond it:
+
+| Selector | Why it exists |
+|---|---|
+| `app.kubernetes.io/instance=dataspoke` | the DataSpoke-owned subcharts and the Bitnami dependencies |
+| `release=dataspoke` together with `tier=airflow` | the Apache Airflow subchart labels its workloads with these two only |
+| the Deployment named `dataspoke-api`, by exact object name | the API Deployment carries only the `app.kubernetes.io/name` label, which identifies an application rather than a release and could be copied onto an operator-owned object, so it is never used as a delete selector; its pods are matched by that label and must additionally be owned by a ReplicaSet of that Deployment, which excludes look-alike Deployments |
+
+The widened Langfuse sweep runs only when label-selected deletion leaves
+workloads in the namespace named by `DATASPOKE_DEV_KUBE_LANGFUSE_NAMESPACE`,
+and only when that name is non-empty, differs from the dataspoke, DataHub and
+dummy-data namespaces, and is not `default`, `kube-system`, `kube-public`,
+`kube-node-lease` or `ingress-nginx`. A namespace failing the guard never gets
+the widened sweep; its leftover workloads are recorded as unresolved. Pointing
+the variable at a shared namespace is unsupported, because the dev teardown
+treats the namespace as Langfuse-owned and deletes it wholesale.
+
+The sweep never deletes PVCs, so StatefulSet claims are retained exactly as
+§What a prod uninstall leaves behind describes; the prod profile never issues a
+PVC deletion.
+
+**Claim and namespace deletion are time-bounded.** Every PVC and namespace
+deletion waits at most the delete timeout. On a timeout the script does not
+block: it names the PVC (with the pods still mounting it and its finalizers —
+typically `kubernetes.io/pvc-protection` held by a pod that could not be
+removed) or the namespace (with its termination conditions), records it as
+unresolved, and continues. Dev PVs bound to the deleted claims are then awaited
+for a bounded time; one that remains is reported as "retained or still
+releasing" rather than a failure, because a `Retain` StorageClass legitimately
+leaves it. A namespace whose deletion timed out may merely still be finalizing
+(for example while a cloud load balancer is released), so each such namespace is
+checked once more before the closing summary, waiting at most the delete timeout
+again; a namespace's deletion therefore waits at most two delete-timeout windows
+in total (the presence check before deletion is bounded separately). A
+namespace counts as gone only when a successful bounded read reports it not
+found; if it is gone, its entry is dropped from the unresolved set, along with
+every entry scoped to it. If it still exists, or the read fails, errors, is
+unauthorized or times out, the entry and its scoped entries stay. Every
+remote-derived string in these diagnostics and in the closing summary (Helm
+stderr, pod and PVC names, finalizers, condition messages) is passed through
+`sanitize_remote_text` before it is printed.
+
+The presence check before each bounded namespace deletion is part of the same
+contract: a namespace is skipped as absent only on a successful not-found read,
+bounded by the delete timeout. A read that fails, errors, is unauthorized or
+times out records the namespace as unresolved ("could not be read — deletion not
+attempted") and the run exits non-zero.
+
+**The unresolved set** is the single list of everything a bounded step could not
+remove: PVCs and namespaces whose deletion timed out, pods that outlived the
+wait (including prod pods that mount a PVC and are deliberately not
+force-deleted), and Langfuse workloads left behind because the guard blocked the
+widened sweep. A pod, workload or PVC list that cannot be read is itself
+recorded as unresolved ("could not be listed … removal could not be verified"),
+and so is a namespace whose presence check cannot be read ("could not be read —
+deletion not attempted"): an unreadable list, or an unreadable namespace
+existence check (before the deletion or in the re-check), is unknown, never read
+as empty or as gone. Entries scoped to a namespace whose deletion is confirmed
+(the bounded delete completing, or a successful not-found read) are dropped,
+because the pods, claims and workloads in it went with the namespace.
+**A non-empty unresolved set exits non-zero**, after a closing summary of what
+survived and why, so the failure is visible to the caller and the operator. A
+retained or still-releasing PV is only a warning and is not part of the set.
+
+Prauto still keeps its teardown marker until it confirms the namespaces are gone
+(`AI_PRAUTO.md` §Provisioning); it does not rely on this exit code.
+
+| Env var | Default | Bounds |
+|---|---|---|
+| `DATASPOKE_UNINSTALL_RELEASE_TIMEOUT_SECS` | 300 | the `helm uninstall --wait` step per release |
+| `DATASPOKE_UNINSTALL_DELETE_TIMEOUT_SECS` | 120 | each pod-termination wait, PVC deletion, namespace presence check before deletion, namespace deletion (plus one re-check of a timed-out namespace) and PV wait |
+
+Both are validated like `DATASPOKE_UNINSTALL_REACHABILITY_TIMEOUT_SECS`, with an
+upper bound added: a value that is not a positive integer no greater than 86400
+is warned about and the default is used.
+Because the Helm wait is best-effort, neither number is load-bearing for
+correctness.
 
 ### What a prod uninstall leaves behind
 
